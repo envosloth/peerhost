@@ -1,6 +1,7 @@
 import { validateSettings } from './settings.js';
 import { isValidEndpointHost } from './endpoints.js';
-const NO_PAYLOAD=new Set(['getState','importServer','createSnapshot','startServer','stopServer','startPeerListener']);
+import { validTimeout, MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS } from './saved-state.js';
+const NO_PAYLOAD=new Set(['getState','importServer','createSnapshot','startServer','stopServer','startPeerListener','cleanUp']);
 const METHODS=new Set([...NO_PAYLOAD,'saveProfile','sendCommand','saveSettings','addPeer','sendSnapshot','handoff','recoverStopped']);
 function boundedString(v:unknown,max:number):v is string{return typeof v==='string'&&v.length<=max&&!v.includes('\0');}
 function fingerprint(v:unknown):v is string{return typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);}
@@ -16,7 +17,10 @@ export function validateCall(method:unknown,payload:unknown,senderUrl:string,exp
     case 'saveProfile':
       if(!boundedString(p.executable,4096)||!p.executable.trim())throw new Error('Invalid executable');
       if(!Array.isArray(p.args)||p.args.length>100||p.args.some(v=>!boundedString(v,4096)))throw new Error('Launch arguments must be a bounded string array');
-      return {executable:p.executable,args:[...p.args]};
+      for(const key of ['startTimeoutSeconds','stopTimeoutSeconds'] as const){
+        if(key in p&&!validTimeout(p[key]))throw new Error(`Launch timeouts must be whole seconds from ${MIN_TIMEOUT_SECONDS} to ${MAX_TIMEOUT_SECONDS}`);
+      }
+      return {executable:p.executable,args:[...p.args],...('startTimeoutSeconds' in p?{startTimeoutSeconds:p.startTimeoutSeconds}:{}),...('stopTimeoutSeconds' in p?{stopTimeoutSeconds:p.stopTimeoutSeconds}:{})};
     case 'sendCommand':
       if(!boundedString(p.command,1024)||/[\r\n]/.test(p.command)||!p.command.trim())throw new Error('Invalid console command');return {command:p.command};
     case 'addPeer':

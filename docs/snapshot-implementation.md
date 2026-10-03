@@ -62,7 +62,7 @@ JSON.stringify({ version: 1, parentId, files })
 
 Each file entry's property order is `path`, `size`, `hash`. `id` is excluded from its own digest. There are no timestamps or source-root strings in the identity. Equal files and equal ancestry produce equal IDs independent of source location. A changed parent changes the ID even if file content is unchanged. Creation requires an explicitly supplied parent to be an existing valid manifest; reading does not recursively require its ancestry or check every content object.
 
-`readSnapshot` validates the manifest schema, requested ID, ancestry ID syntax, canonical ordering, paths, sizes, hashes, and path collisions. It returns metadata, not a guarantee that every referenced object is present. `materializeSnapshot` verifies the actual objects before promotion.
+`readSnapshot` runs the store safety walk and then validates the manifest schema. Within one operation, run `assertSafeStore` once and use `loadManifest` for further reads, so the walk (and the Windows PowerShell reparse probe) is not repeated per revision. `parseManifest` applies the same validation to untrusted in-memory data. `readSnapshot` validates the manifest schema, requested ID, ancestry ID syntax, canonical ordering, paths, sizes, hashes, and path collisions. It returns metadata, not a guarantee that every referenced object is present. `materializeSnapshot` verifies the actual objects before promotion.
 
 ## Path and filesystem safety
 
@@ -76,7 +76,13 @@ Each file entry's property order is `path`, `size`, `hash`. `id` is excluded fro
 
 ## Immutable publishing and promotion
 
-File data is streamed through SHA256 transforms to exclusive staging files. Staged bytes are read back and compared against the digest computed from source bytes; atomic, same-store hard-link publication never overwrites an existing artifact. Published targets are verified too, including deduplicated targets. A corrupt existing object or manifest causes an error, not an overwrite or silent repair. Every previous manifest and object remains retained; there is no garbage collector.
+File data is streamed through SHA256 transforms to exclusive staging files; atomic, same-store hard-link publication never overwrites an existing artifact. Each published target is read back and verified once, including deduplicated targets. A corrupt existing object or manifest causes an error, not an overwrite or silent repair.
+
+**Durability order.** New objects are flushed before linking, then the objects directory is flushed; only then is the manifest written, flushed, linked and its directory flushed. `createSnapshot` returns after all of that, so the application never records a revision in the ownership ledger before its files are on disk. (Windows cannot flush directories through Node; there, directory flushes are skipped.)
+
+**Stat cache.** Each store keeps `stat-cache/<source-hash>.json`, mapping a relative path to its device, inode, mode, size, nanosecond mtime and ctime plus the object hash. A file is reused without being read only when all of those match, the object is present with the expected size, and the file was last modified more than two seconds before the snapshot began (closing the same-timestamp race). Restoring an old mtime with `utimes` still changes ctime, so it is detected. The cache is advisory: an unreadable or malformed cache simply means every file is read.
+
+**Cleanup.** `pruneStore(store, { keep, ancestors })` validates every manifest first and refuses unexpected entries, keeps each kept revision plus `ancestors` parents, deletes other manifests first and only then objects no surviving revision references. The application's **Clean up storage** keeps the current revision, the ledger's revision, any pending offer's revision, and two parents of each; it also removes earlier execution directories and interrupted staging. Callers must hold the store exclusively.
 
 Materialization copies verified objects into an adjacent private staging directory. It verifies both streamed input and written output against each manifest hash and size. It never hard-links a writable managed server to either the original source or store objects. Missing objects, truncation, same-size tampering, incomplete manifests, and write failures before promotion cannot replace the existing destination.
 

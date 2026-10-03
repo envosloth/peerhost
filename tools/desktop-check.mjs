@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { access, mkdir, mkdtemp, writeFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { _electron as electron } from 'playwright';
+import { createRequire } from 'node:module';
+const electronPath=createRequire(import.meta.url)('electron');
+const linuxKeyring=process.platform==='linux'?['--password-store=gnome-libsecret']:[];
 import { OwnershipLedger } from '../dist/src/core/ownership.js';
 const project=process.cwd();const main=path.join(project,'dist/apps/desktop/main.js');
 await assert.doesNotReject(access(main),'Desktop main is not implemented');
@@ -10,7 +13,7 @@ const root=await mkdtemp(path.join(project,'.test-data/desktop-qa-'));
 const source=path.join(root,'Process fixture - NOT Minecraft');await mkdir(source);await writeFile(path.join(source,'eula.txt'),'eula=true\n');await writeFile(path.join(source,'fixture.bin'),Buffer.from([0,1,2,254,255]));
 const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
 console.log('STEP 1: Launch visible real Electron app with an isolated test profile.');
-const app=await electron.launch({executablePath:path.join(project,'node_modules/electron/dist/electron.exe'),args:[main,'--profile-root='+path.join(root,'profile')],env});
+const app=await electron.launch({executablePath:electronPath,args:[...linuxKeyring,main,'--profile-root='+path.join(root,'profile')],env});
 let page;
 try{
   page=await app.firstWindow();await page.bringToFront();const errors=[];page.on('pageerror',e=>errors.push(String(e)));

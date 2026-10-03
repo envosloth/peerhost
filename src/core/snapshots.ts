@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { constants, createReadStream, createWriteStream } from 'node:fs';
-import { link, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, open, readFile, readdir, realpath, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -16,6 +16,8 @@ export interface SnapshotManifest {
 }
 
 const runFile = promisify(execFile);
+/** Files modified this recently are always re-read: their timestamps may not yet distinguish a later write. */
+const STAT_CACHE_SETTLE_MS = 2000;
 
 function validateRoot(root: string): void {
   const normalized = root.replaceAll('\\', '/');
@@ -142,11 +144,26 @@ function manifestId(parentId: string | null, files: SnapshotManifest['files']): 
   return createHash('sha256').update(JSON.stringify({ version: 1, parentId, files })).digest('hex');
 }
 
+/** Flush a directory entry list (new links/removals). Windows cannot open directories for flushing. */
+export async function syncDirectory(directory: string): Promise<void> {
+  if (process.platform === 'win32') return;
+  const handle = await open(directory, 'r');
+  try { await handle.sync(); } finally { await handle.close(); }
+}
+
+async function writeDurable(filename: string, data: string): Promise<void> {
+  const handle = await open(filename, 'wx');
+  try {
+    await handle.writeFile(data);
+    await handle.sync();
+  } finally { await handle.close(); }
+}
+
+/**
+ * The temporary has already been written, flushed and hashed while streaming. After linking, the target is
+ * either that same inode or a previously published object; both are verified by reading the target once.
+ */
 async function publish(temporary: string, target: string, expected: { size: number; hash: string }): Promise<void> {
-  const staged = await hashFile(temporary);
-  if (staged.hash !== expected.hash || staged.size !== expected.size) {
-    throw new Error(`Staged artifact integrity hash mismatch: ${temporary}`);
-  }
   try {
     await link(temporary, target); // Atomic, never overwrites a published revision/object.
   } catch (error) {
@@ -166,6 +183,11 @@ async function hashFile(filename: string): Promise<{ size: number; hash: string 
     hash.update(chunk);
   }
   return { size, hash: hash.digest('hex') };
+}
+
+async function syncFile(filename: string): Promise<void> {
+  const handle = await open(filename, 'r+');
+  try { await handle.sync(); } finally { await handle.close(); }
 }
 
 async function streamObject(source: string, temporary: string): Promise<{ size: number; hash: string }> {
@@ -192,6 +214,51 @@ async function streamObject(source: string, temporary: string): Promise<{ size: 
 
 function statIdentity(stat: import('node:fs').BigIntStats): string {
   return [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeNs, stat.ctimeNs, stat.nlink].join(':');
+}
+
+/** Content identity for the stat cache: any write, truncate, replace or utimes changes one of these. */
+function contentKey(stat: import('node:fs').BigIntStats): string {
+  return [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
+}
+
+interface StatCache { version: 1; entries: Record<string, { key: string; hash: string; size: number }> }
+
+async function statCacheFile(store: string, sourceDir: string): Promise<string> {
+  const source = await canonicalRoot(sourceDir);
+  return path.join(store, 'stat-cache', `${createHash('sha256').update(pathKey(source)).digest('hex')}.json`);
+}
+
+/** The cache is only an optimization: anything unreadable or malformed is ignored, never trusted. */
+async function readStatCache(filename: string): Promise<Map<string, { key: string; hash: string; size: number }>> {
+  try {
+    const value = JSON.parse(await readFile(filename, 'utf8')) as StatCache;
+    if (value?.version !== 1 || !value.entries || typeof value.entries !== 'object') return new Map();
+    const entries = new Map<string, { key: string; hash: string; size: number }>();
+    for (const [relative, entry] of Object.entries(value.entries)) {
+      if (typeof entry?.key === 'string' && typeof entry.hash === 'string' && /^[a-f0-9]{64}$/u.test(entry.hash) &&
+          Number.isSafeInteger(entry.size) && entry.size >= 0) entries.set(relative, entry);
+    }
+    return entries;
+  } catch { return new Map(); }
+}
+
+async function writeStatCache(filename: string, entries: StatCache['entries']): Promise<void> {
+  await mkdir(path.dirname(filename), { recursive: true });
+  const temporary = `${filename}.${randomUUID()}.tmp`;
+  try {
+    await writeDurable(temporary, JSON.stringify({ version: 1, entries } satisfies StatCache));
+    await rename(temporary, filename);
+  } finally { await rm(temporary, { force: true }); }
+}
+
+async function objectPresent(store: string, hash: string, size: number): Promise<boolean> {
+  try {
+    const stat = await lstat(path.join(store, 'objects', hash));
+    return stat.isFile() && !stat.isSymbolicLink() && stat.size === size;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
 }
 
 async function sourceInventory(source: string): Promise<string> {
@@ -268,8 +335,81 @@ function validateManifest(value: unknown, expectedId: string): SnapshotManifest 
 
 export async function readSnapshot(storeDir: string, id: string): Promise<SnapshotManifest> {
   validateId(id);
+  await assertSafeStore(storeDir);
+  return loadManifest(storeDir, id);
+}
+
+/** Root, ancestor, link and reparse-point checks for a store. A missing store is allowed. Run once per operation. */
+export async function assertSafeStore(storeDir: string): Promise<void> {
   await assertSafeRoots([storeDir]);
-  return validateManifest(JSON.parse(await readFile(path.join(storeDir, 'snapshots', `${id}.json`), 'utf8')), id);
+}
+
+/** Read and fully validate a manifest. The caller must already have run assertSafeStore for this operation. */
+export async function loadManifest(storeDir: string, id: string): Promise<SnapshotManifest> {
+  validateId(id);
+  const filename = path.join(storeDir, 'snapshots', `${id}.json`);
+  const stat = await lstat(filename);
+  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`Unsafe manifest file/link: ${filename}`);
+  return validateManifest(JSON.parse(await readFile(filename, 'utf8')), id);
+}
+
+/** Validate untrusted manifest data (exact schema, canonical sorted paths, collisions, sizes and content id). */
+export function parseManifest(value: unknown, expectedId: string): SnapshotManifest {
+  validateId(expectedId);
+  return validateManifest(value, expectedId);
+}
+
+export interface PruneResult { snapshotsRemoved: number; objectsRemoved: number; bytesFreed: number }
+
+/**
+ * Delete revisions that are neither kept nor within `ancestors` parents of a kept revision, then delete objects no
+ * surviving revision references. Every manifest is validated first; anything unexpected aborts before deletion.
+ * Callers must hold the store exclusively (no concurrent snapshot or transfer).
+ */
+export async function pruneStore(storeDir: string, { keep, ancestors = 0 }: { keep: string[]; ancestors?: number }): Promise<PruneResult> {
+  if (!Array.isArray(keep) || !keep.length) throw new Error('Pruning requires at least one revision to keep');
+  if (!Number.isInteger(ancestors) || ancestors < 0) throw new RangeError('ancestors must be a non-negative integer');
+  await assertSafeStore(storeDir);
+  const store = path.resolve(storeDir);
+  const snapshotsDir = path.join(store, 'snapshots'), objectsDir = path.join(store, 'objects');
+  const manifests = new Map<string, SnapshotManifest>();
+  for (const name of await readdir(snapshotsDir)) {
+    const id = /^([a-f0-9]{64})\.json$/u.exec(name)?.[1];
+    if (!id) throw new Error(`Unexpected entry in snapshot store; refusing to prune: ${name}`);
+    manifests.set(id, await loadManifest(store, id));
+  }
+  const kept = new Set<string>();
+  for (const id of keep) {
+    validateId(id);
+    if (!manifests.has(id)) throw Object.assign(new Error(`Kept snapshot is missing: ${id}`), { code: 'ENOENT' });
+    let current: string | null = id;
+    for (let depth = 0; current !== null && manifests.has(current) && depth <= ancestors; depth++) {
+      kept.add(current);
+      current = manifests.get(current)!.parentId;
+    }
+  }
+  const referenced = new Set<string>();
+  for (const id of kept) for (const file of manifests.get(id)!.files) referenced.add(file.hash);
+  const objects: Array<{ filename: string; size: number }> = [];
+  for (const name of await readdir(objectsDir)) {
+    if (referenced.has(name)) continue;
+    if (!/^[a-f0-9]{64}$/u.test(name)) throw new Error(`Unexpected entry in object store; refusing to prune: ${name}`);
+    const stat = await lstat(path.join(objectsDir, name));
+    if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`Unsafe object entry; refusing to prune: ${name}`);
+    objects.push({ filename: path.join(objectsDir, name), size: stat.size });
+  }
+  // Manifests go first, so no surviving revision ever references a deleted object.
+  let snapshotsRemoved = 0;
+  for (const id of manifests.keys()) {
+    if (kept.has(id)) continue;
+    await rm(path.join(snapshotsDir, `${id}.json`));
+    snapshotsRemoved++;
+  }
+  if (snapshotsRemoved) await syncDirectory(snapshotsDir);
+  let bytesFreed = 0;
+  for (const object of objects) { await rm(object.filename); bytesFreed += object.size; }
+  if (objects.length) await syncDirectory(objectsDir);
+  return { snapshotsRemoved, objectsRemoved: objects.length, bytesFreed };
 }
 
 export async function materializeSnapshot(storeDir: string, id: string, destinationDir: string): Promise<void> {
@@ -335,25 +475,44 @@ export async function createSnapshot(
   await assertSafeRoots([sourceDir, storeDir]);
   await assertPhysicalDisjoint(sourceDir, storeDir);
   if (!(await lstat(sourceDir)).isDirectory()) throw new Error('Source must be a directory');
-  if (parentId !== null) await readSnapshot(storeDir, parentId);
+  // The store was walked once above; reading the parent does not repeat that walk.
+  if (parentId !== null) await loadManifest(storeDir, parentId);
+  const started = Date.now();
   const before = await sourceInventory(sourceDir);
   const store = path.resolve(storeDir);
   await mkdir(path.join(store, 'objects'), { recursive: true });
   await mkdir(path.join(store, 'snapshots'), { recursive: true });
+  const cacheFile = await statCacheFile(store, sourceDir);
+  const cache = await readStatCache(cacheFile);
+  const nextCache: StatCache['entries'] = {};
   const staging = path.join(store, `.staging-${randomUUID()}`);
   await mkdir(staging);
   const files: SnapshotManifest['files'] = [];
+  let published = 0;
   async function visit(directory: string, prefix: string): Promise<void> {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const relative = validateRelativePath(prefix ? `${prefix}/${entry.name}` : entry.name);
       const absolute = path.join(directory, entry.name);
-      if (entry.isDirectory()) await visit(absolute, relative);
-      else {
+      if (entry.isDirectory()) { await visit(absolute, relative); continue; }
+      const stat = await lstat(absolute, { bigint: true });
+      const key = contentKey(stat);
+      const settled = Number(stat.mtimeMs) < started - STAT_CACHE_SETTLE_MS;
+      const cached = cache.get(relative);
+      let result: { size: number; hash: string };
+      if (settled && cached?.key === key && BigInt(cached.size) === stat.size && await objectPresent(store, cached.hash, cached.size)) {
+        // Unchanged since a previous verified snapshot: reuse its immutable object without re-reading the file.
+        result = { size: cached.size, hash: cached.hash };
+      } else {
         const temporary = path.join(staging, randomUUID());
-        const result = await streamObject(absolute, temporary);
+        result = await streamObject(absolute, temporary);
+        if (!await objectPresent(store, result.hash, result.size)) {
+          await syncFile(temporary); // New content must reach the disk before any manifest can reference it.
+          published++;
+        }
         await publish(temporary, path.join(store, 'objects', result.hash), result);
-        files.push({ path: relative, size: result.size, hash: result.hash });
       }
+      if (settled) nextCache[relative] = { key, hash: result.hash, size: result.size };
+      files.push({ path: relative, size: result.size, hash: result.hash });
     }
   }
   try {
@@ -361,14 +520,18 @@ export async function createSnapshot(
     if (await sourceInventory(sourceDir) !== before) {
       throw new Error('Source changed during snapshot; a stopped, quiescent server is required');
     }
+    // Objects and their directory entries are durable before any manifest can reference them.
+    if (published) await syncDirectory(path.join(store, 'objects'));
     files.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
     const manifest: SnapshotManifest = { version: 1, id: manifestId(parentId, files), parentId, files };
     const temporary = path.join(staging, 'manifest.json');
     const encoded = JSON.stringify(manifest);
-    await writeFile(temporary, encoded, { flag: 'wx' });
+    await writeDurable(temporary, encoded);
     await publish(temporary, path.join(store, 'snapshots', `${manifest.id}.json`), {
       size: Buffer.byteLength(encoded), hash: createHash('sha256').update(encoded).digest('hex'),
     });
+    await syncDirectory(path.join(store, 'snapshots'));
+    await writeStatCache(cacheFile, nextCache).catch(() => {}); // Optimization only; a failed write just means a full read next time.
     return manifest;
   } finally {
     await rm(staging, { recursive: true, force: true });

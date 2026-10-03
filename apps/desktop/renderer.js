@@ -21,7 +21,9 @@
     saveProfile: 'Saving launch profile…', startServer: 'Starting server…', stopServer: 'Stopping server…',
     sendCommand: 'Sending command…', saveSettings: 'Saving preferences…', startPeerListener: 'Starting peer listener…',
     addPeer: 'Saving trusted peer…', sendSnapshot: 'Sending snapshot…', handoff: 'Transferring hosting ownership…',
+    cleanUp: 'Cleaning up old copies and revisions…',
   };
+  const TIMEOUT_MIN = 5, TIMEOUT_MAX = 3600;
   const isBusy = () => Boolean(pendingMethod || state?.busy);
   const isStopped = () => !state?.server || ['offline', 'failed'].includes(state.server.state);
   const isHosting = () => state?.server?.ownership?.state === 'hosting';
@@ -30,6 +32,10 @@
     return Boolean(ownership && typeof ownership === 'object' && ownership.state === 'owned' && ownership.owner === state.deviceId);
   };
   const canSnapshot = () => bridgeReady && !isBusy() && Boolean(state?.server) && isStopped() && ownsServer();
+  const pendingOffer = () => {
+    const ownership = state?.server?.ownership;
+    return ownership?.state === 'offered' && ownership.owner === state.deviceId ? ownership.offer : null;
+  };
   const formatEndpoint = (host, port) => `${String(host).includes(':') ? `[${host}]` : host}:${port}`;
   const errorMessage = (error) => typeof error?.message === 'string' ? error.message : String(error);
   const element = (tag, className, text) => {
@@ -54,7 +60,7 @@
     if (nextServerKey !== serverKey) {
       serverKey = nextServerKey;
       profileDirty = false;
-      for (const id of ['java-executable', 'java-args']) $(id).removeAttribute('aria-invalid');
+      for (const id of ['java-executable', 'java-args', 'start-timeout', 'stop-timeout']) $(id).removeAttribute('aria-invalid');
     }
     $('app-version').textContent = state ? `v${state.version} · alpha` : 'App unavailable';
     $('server-name').textContent = server?.name || 'No server imported';
@@ -76,18 +82,24 @@
     $('start-server').disabled = blocked || !server || active || !ownsServer() || profileDirty || !server.profile?.executable || !Array.isArray(server.profile?.args);
     $('stop-server').disabled = blocked || !server || !['running', 'starting'].includes(server.state);
     $('create-snapshot').disabled = !canSnapshot();
+    const cleanable = Boolean(server) && isStopped() && ['owned', 'offered', 'transferred'].includes(ownership?.state);
+    $('clean-up').disabled = blocked || !cleanable;
     const recoverable = ownership?.owner === state?.deviceId && ownership?.state === 'uncertain' && !ownership?.offer && isStopped();
     $('recover-ownership').hidden = !recoverable;
     $('recover-ownership').disabled = blocked || !recoverable;
     $('java-executable').disabled = !profileEditable;
     $('java-args').disabled = !profileEditable;
+    $('start-timeout').disabled = !profileEditable;
+    $('stop-timeout').disabled = !profileEditable;
     $('save-profile').disabled = !profileEditable || !profileDirty;
     if (!profileDirty) {
       $('java-executable').value = server?.profile?.executable || '';
       $('java-args').value = server ? JSON.stringify(server.profile?.args || [], null, 2) : '';
+      $('start-timeout').value = server?.profile?.startTimeoutSeconds ?? '';
+      $('stop-timeout').value = server?.profile?.stopTimeoutSeconds ?? '';
     }
     $('profile-feedback').textContent = !server ? 'Import a server to configure its launch profile.' : profileDirty ? 'Unsaved changes · save before hosting.' : active ? 'Stop hosting to edit this profile.' : 'Loaded from this server’s saved profile.';
-    $('server-action-hint').textContent = !server ? 'Import a server to enable hosting and snapshots.' : !bridgeReady ? 'App state is unavailable; actions are blocked.' : isBusy() ? 'An operation is in progress. Wait for the app to finish.' : active ? 'Stop hosting before editing, creating a snapshot, or sending it to a peer. Unknown process states are blocked.' : !ownsServer() ? 'Hosting and snapshots are blocked: ownership is not safely held by this device.' : profileDirty ? 'Save your launch profile before starting. Only run executables and mods you trust.' : 'This PC hosts directly. Snapshot creation and sending require a stopped server.';
+    $('server-action-hint').textContent = !server ? 'Import a server to enable hosting and snapshots.' : !bridgeReady ? 'App state is unavailable; actions are blocked.' : isBusy() ? 'An operation is in progress. Wait for the app to finish.' : active ? 'Stop hosting before editing, creating a snapshot, or sending it to a peer. Unknown process states are blocked.' : pendingOffer() ? 'A handoff is pending. This PC stays fenced until it completes: use Retry handoff on that peer. A peer that declines restores ownership here.' : !ownsServer() ? 'Hosting and snapshots are blocked: ownership is not safely held by this device.' : profileDirty ? 'Save your launch profile before starting. Only run executables and mods you trust.' : 'This PC hosts directly. Snapshot creation and sending require a stopped server.';
     $('server-command').disabled = blocked || server?.state !== 'running';
     $('send-command').disabled = $('server-command').disabled || !$('server-command').value.trim();
     const logText = (state?.logs || []).join('\n');
@@ -122,8 +134,10 @@
     const busy = pendingMethod || state?.busy;
     $('activity-message').textContent = !bridgeReady ? 'App connection unavailable · actions blocked.' : busy ? busyLabels[busy] || `Working: ${busy}` : 'Ready · actions run on this PC.';
     $('activity-message').classList.toggle('is-busy', Boolean(busy));
-    const sendStillCurrent = selectedSend && server?.snapshotId === selectedSend.snapshotId && state?.peers.some((peer) => peer.fingerprint === selectedSend.fingerprint);
-    $('confirm-send').disabled = !canSnapshot() || !sendStillCurrent;
+    const sendStillCurrent = selectedSend && server?.snapshotId === selectedSend.snapshotId && state?.peers.some((peer) => peer.fingerprint === selectedSend.fingerprint) &&
+      (!selectedSend.retry || pendingOffer()?.target === selectedSend.fingerprint);
+    const allowed = selectedSend?.retry ? bridgeReady && !isBusy() && isStopped() : canSnapshot();
+    $('confirm-send').disabled = !allowed || !sendStillCurrent;
     if (selectedSend) $('send-dialog-snapshot').textContent = `Snapshot: ${selectedSend.snapshotId}${sendStillCurrent ? '' : ' · State changed. Cancel and review again.'}`;
   }
 
@@ -155,7 +169,13 @@
       });
       $('peer-list').replaceChildren(...nodes);
     }
-    for (const button of $('peer-list').querySelectorAll('button')) button.disabled = !canSnapshot() || !state.server?.snapshotId;
+    const offer = pendingOffer();
+    const idleStopped = bridgeReady && !isBusy() && isStopped();
+    for (const button of $('peer-list').querySelectorAll('button')) {
+      const retry = Boolean(offer) && button.dataset.method === 'handoff' && button.dataset.fingerprint === offer.target;
+      if (button.dataset.method === 'handoff') button.textContent = retry ? 'Retry handoff' : 'Hand off';
+      button.disabled = retry ? !idleStopped : !canSnapshot() || !state.server?.snapshotId;
+    }
   }
 
   async function runAction(method, payload, onVerified) {
@@ -200,7 +220,11 @@
     if ($('recover-ownership').disabled) return;
     return runAction('recoverStopped', { confirmed: true });
   });
-  for (const id of ['java-executable', 'java-args']) {
+  $('clean-up').addEventListener('click', () => {
+    if ($('clean-up').disabled) return;
+    return runAction('cleanUp');
+  });
+  for (const id of ['java-executable', 'java-args', 'start-timeout', 'stop-timeout']) {
     $(id).addEventListener('input', () => {
       profileDirty = true;
       $(id).removeAttribute('aria-invalid');
@@ -215,8 +239,18 @@
     let args;
     try { args = JSON.parse($('java-args').value); } catch { return invalid('java-args', 'Arguments must be a valid JSON array of strings, for example ["-jar", "server.jar", "nogui"].'); }
     if (!Array.isArray(args) || args.some((arg) => typeof arg !== 'string' || /[\0\r\n]/.test(arg))) return invalid('java-args', 'Arguments must be a JSON array of strings without NUL characters or line breaks.');
-    return runAction('saveProfile', { executable, args }, () => {
-      if (state.server?.profile?.executable !== executable || JSON.stringify(state.server.profile.args) !== JSON.stringify(args)) throw new Error('The saved launch profile could not be confirmed. Your edits have been kept.');
+    const timeouts = {};
+    for (const [id, key] of [['start-timeout', 'startTimeoutSeconds'], ['stop-timeout', 'stopTimeoutSeconds']]) {
+      const text = $(id).value.trim();
+      if (!text) continue;
+      const value = Number(text);
+      if (!/^\d+$/.test(text) || value < TIMEOUT_MIN || value > TIMEOUT_MAX) return invalid(id, `Timeouts must be whole seconds from ${TIMEOUT_MIN} to ${TIMEOUT_MAX}.`);
+      timeouts[key] = value;
+    }
+    return runAction('saveProfile', { executable, args, ...timeouts }, () => {
+      const saved = state.server?.profile;
+      if (saved?.executable !== executable || JSON.stringify(saved.args) !== JSON.stringify(args) ||
+          Object.entries(timeouts).some(([key, value]) => saved[key] !== value)) throw new Error('The saved launch profile could not be confirmed. Your edits have been kept.');
       profileDirty = false;
     });
   });
@@ -298,14 +332,16 @@
   });
   $('peer-list').addEventListener('click', (event) => {
     const button = event.target.closest('button[data-fingerprint]');
-    if (!button || button.disabled || !canSnapshot() || !state.server?.snapshotId) return;
+    if (!button || button.disabled || !state.server?.snapshotId) return;
     const peer = state.peers.find((entry) => entry.fingerprint === button.dataset.fingerprint);
     if (!peer) return;
     const method = button.dataset.method === 'handoff' ? 'handoff' : 'sendSnapshot';
-    selectedSend = { fingerprint: peer.fingerprint, snapshotId: state.server.snapshotId, method };
+    const retry = method === 'handoff' && pendingOffer()?.target === peer.fingerprint;
+    if (!retry && !canSnapshot()) return;
+    selectedSend = { fingerprint: peer.fingerprint, snapshotId: state.server.snapshotId, method, retry };
     $('send-dialog-title').textContent = method === 'handoff' ? 'Hand off hosting?' : 'Send this snapshot?';
     $('confirm-send').textContent = method === 'handoff' ? 'Hand off ownership' : 'Send snapshot';
-    $('send-dialog-warning').textContent = method === 'handoff' ? 'This shares server files, including configuration/player data, then transfers hosting authority. This PC is fenced before transfer and stays blocked after a failure or declined offer. Both devices must approve. No automatic server start.' : 'This shares server files, which may contain private configuration or player data. Verify the recipient’s fingerprint. Sending is not a hosting handoff.';
+    $('send-dialog-warning').textContent = retry ? 'This resends the pending handoff offer. If the peer already accepted it, it simply confirms; it is never applied twice. This PC stays fenced until the peer accepts or declines.' : method === 'handoff' ? 'This shares server files, including configuration/player data, then transfers hosting authority. This PC is fenced before transfer. If the attempt fails it stays fenced and you can retry; if the peer declines, ownership returns here. Both devices must approve. No automatic server start.' : 'This shares server files, which may contain private configuration or player data. Verify the recipient’s fingerprint. Sending is not a hosting handoff.';
     $('send-dialog-recipient').textContent = `To ${peer.name} · ${formatEndpoint(peer.host, peer.port)}`;
     $('send-dialog-fingerprint').textContent = peer.fingerprint;
     render();

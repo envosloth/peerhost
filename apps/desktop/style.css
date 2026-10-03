@@ -164,6 +164,9 @@ input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px;
 .peer-form .button { margin-top: 13px; width: 100%; }
 .endpoint-fields { display: grid; grid-template-columns: minmax(0, 1fr) 72px; gap: 8px; margin-top: 12px; }
 .endpoint-fields input { padding: 7px; font-size: 11px; }
+.timeout-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 15px; }
+.timeout-fields label { margin-top: 0; }
+.timeout-fields .label-hint { float: none; margin-left: 4px; }
 .alpha-note { color: var(--dim); font-size: 10px; line-height: 1.7; margin-top: 17px; }
 .inspector-footer { padding: 12px 23px; font-size: 10px; color: var(--dim); border-top: 1px solid var(--border-soft); }
 .settings-section { padding-bottom: 20px; margin-bottom: 20px; border-bottom: 1px solid var(--border); }

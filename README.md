@@ -21,7 +21,7 @@ The app keeps its own profile at `%APPDATA%/PeerHost`. `--profile-root=<absolute
 
 1. Stop the source server, including any launcher-managed Java process.
 2. Click **Import existing**, select its folder, and acknowledge that it is stopped. PeerHost copies it into its profile.
-3. Configure the **local** Java executable and a JSON argument array. Vanilla example: `["-Xmx4G", "-jar", "server.jar", "nogui"]`. Existing modpacks may require different arguments or `@` argument files.
+3. Configure the **local** Java executable and a JSON argument array. Vanilla example: `["-Xmx4G", "-jar", "server.jar", "nogui"]`. Existing modpacks may require different arguments or `@` argument files. The start timeout (default 600 s) and stop timeout (default 180 s) are editable per server; large modpacks can need several minutes to reach `Done (`.
 4. The managed server must already contain your accepted Minecraft EULA. PeerHost does not accept it for you.
 5. Start only executables/mods you trust. Stop cleanly before snapshot or handoff operations.
 
@@ -29,10 +29,11 @@ The app keeps its own profile at `%APPDATA%/PeerHost`. `--profile-root=<absolute
 
 - **Send snapshot:** authenticated replication; the recipient receives verified immutable files, but gains no hosting authority and does not auto-run anything.
 - **Hand off:** capture the final stopped copy, fence this device, transfer/verify files, ask the recipient for explicit local approval, commit recipient authority, then acknowledge. The recipient configures its own executable before starting.
-- **Failed, declined or missing acknowledgment:** the source stays fenced. A network error does not prove the recipient failed to accept. No automatic rollback or heartbeat-loss takeover.
+- **Explicit decline:** if the recipient's pinned acknowledgment says it declined, nothing was committed there, so the offer is cancelled and the source owns the server again.
+- **Failed or missing acknowledgment:** the source stays fenced, because a network error does not prove the recipient did not accept. Use **Retry handoff** on the same peer: it resends the *same* offer, and a recipient that already accepted it simply re-acknowledges it. A pending offer cannot be redirected to a different peer. No automatic rollback or heartbeat-loss takeover.
 - **Uncertain local session:** confirm all previous processes are stopped before using the recovery control. This does not recover pending offers or take ownership back from another peer.
 
-Old server execution directories and revisions are retained. Conflicting ownership is refused rather than silently replaced or merged. Keep independent backups. Only an online device holding the latest complete revision can supply it; no free unlimited always-online availability is implied.
+Old server execution directories and revisions are retained until you click **Clean up storage**, which (after a native confirmation) deletes earlier managed server folders, interrupted transfer staging, and revisions older than the current one and its two parents. The original imported folder is never touched. Conflicting ownership is refused rather than silently replaced or merged. Keep independent backups. Only an online device holding the latest complete revision can supply it; no free unlimited always-online availability is implied.
 
 ## Current boundaries
 
@@ -41,7 +42,8 @@ Old server execution directories and revisions are retained. Conflicting ownersh
 - Persistent address is **optional and OFF by default**. The saved mini-PC gateway setting remains **Unconnected**: routing is not implemented by that checkbox.
 - Start-at-login is a saved preference only. No Windows startup entry is installed.
 - Closing the window hides it to the tray. Use **PeerHost → Quit safely** or the tray menu to exit. Busy operations block quitting; running hosting requires a clean stop.
-- Transfer metadata has explicit bounds; see [transfer documentation](docs/transfers.md). Very large/long snapshot histories can hit alpha limits; no truncation is performed.
+- Transfers send only the current revision, so history length never affects them. Bounds: 65,536 files, 16 GiB per file, 128 GiB per revision, and a 1 GiB free-disk reserve on the receiver; see [transfer documentation](docs/transfers.md). Both peers must run the same alpha (wire protocol v2).
+- Snapshots reuse files whose size, timestamps and inode are unchanged since the previous snapshot (files modified within the last two seconds are always re-read), and flush new objects, the manifest and their directories before the ownership ledger records the revision.
 - No live hosted world, credentials, application state, router, firewall, or mini-PC deployment is used by this project.
 
 ## Verification commands
@@ -65,6 +67,6 @@ node tools/desktop-handoff-check.mjs --packaged="C:/absolute/path/to/PeerHost.ex
 
 Portable TypeScript/Node core; isolated sandboxed Electron renderer; narrow sender/frame-bound IPC; SQLite ownership ledger; SHA256 content-addressed snapshots; mutual certificate-pinned TLS; private identity encrypted by Electron `safeStorage` on Windows.
 
-Configured SQLite durability and filesystem tests are not hardware power-loss proof. See [ownership durability](docs/ownership-durability.md), [snapshots](docs/snapshot-implementation.md), [launcher](docs/launcher-implementation.md), and [transport](docs/transport-implementation.md) for tested scope and limitations.
+Packaged builds omit DevTools and force-reload from the menu. On Linux, run desktop checks with a Secret Service (the checks pass `--password-store=gnome-libsecret`); identity storage refuses to fall back to plaintext. Configured SQLite durability and filesystem tests are not hardware power-loss proof. See [ownership durability](docs/ownership-durability.md), [snapshots](docs/snapshot-implementation.md), [launcher](docs/launcher-implementation.md), and [transport](docs/transport-implementation.md) for tested scope and limitations.
 
 Source is MIT licensed; bundled dependencies retain their own licenses.

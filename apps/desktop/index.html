@@ -53,6 +53,7 @@
             <button id="stop-server" type="button" class="button button-stop" disabled><span aria-hidden="true">□</span> Stop</button>
             <button id="create-snapshot" type="button" class="button" disabled><span aria-hidden="true">＋</span> Create snapshot</button>
             <button id="recover-ownership" type="button" class="button" hidden disabled>Confirm stopped &amp; recover</button>
+            <button id="clean-up" type="button" class="button" disabled title="Delete old server copies and revisions">Clean up storage</button>
           </div>
           <p id="server-action-hint" class="action-hint">Import a server to enable hosting and snapshots.</p>
         </div>
@@ -66,6 +67,8 @@
             <label for="java-args">Arguments <span class="label-hint">JSON array of strings</span></label>
             <textarea id="java-args" class="mono" rows="3" placeholder='["-Xmx4G", "-jar", "server.jar", "nogui"]' spellcheck="false" disabled aria-describedby="args-help profile-warning"></textarea>
             <p id="args-help" class="field-help">Each argument is one quoted entry. Preserve Forge / NeoForge argument files such as “@win_args.txt”. Paths are relative to the managed server folder.</p>
+            <div class="timeout-fields"><div><label for="start-timeout">Start timeout <span class="label-hint">seconds</span></label><input id="start-timeout" type="number" min="5" max="3600" step="1" disabled aria-describedby="timeout-help"></div><div><label for="stop-timeout">Stop timeout <span class="label-hint">seconds</span></label><input id="stop-timeout" type="number" min="5" max="3600" step="1" disabled aria-describedby="timeout-help"></div></div>
+            <p id="timeout-help" class="field-help">How long to wait for “Done (” at startup and for a clean save on stop. Large modpacks often need 5–10 minutes to start.</p>
             <p id="profile-warning" class="warning-copy">Server JARs, mods, and launch executables run code on this PC. Only start files you trust.</p>
             <div class="form-footer"><span id="profile-feedback" class="field-help" role="status">Import a server to configure its launch profile.</span><button id="save-profile" type="submit" class="button button-small" disabled>Save profile</button></div>
           </form>

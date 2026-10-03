@@ -144,18 +144,19 @@ test('delta sends changed objects only, represents deletion, and retries without
   await assertClean(f.incoming);
 });
 
-test('a fresh receiver gets the validated parent ancestry and its historical objects', { timeout: 30000 }, async (t) => {
+test('a fresh receiver needs only the head revision: history is not replayed', { timeout: 30000 }, async (t) => {
   const f = await fixture(t);
   await writeFile(path.join(f.source, 'secret.bin'), Buffer.from([5, 6, 7]));
   const child = await createSnapshot(f.source, f.store, f.snapshot.id);
   const session = await receiving(t, f);
   const result = await transfers.sendSnapshotToPeer(f.sender, session.peer, f.store, child.id);
   assert.equal(await session.completion, undefined);
-  assert.deepEqual(await readSnapshot(f.incoming, f.snapshot.id), f.snapshot);
-  assert.equal(result.filesSent, 2);
-  assert.equal(result.bytesSent, 7);
-  await materializeSnapshot(f.incoming, f.snapshot.id, path.join(f.root, 'historical'));
-  assert.deepEqual(await readFile(path.join(f.root, 'historical', 'secret.bin')), Buffer.from([0, 255, 128, 1]));
+  assert.deepEqual(await readSnapshot(f.incoming, child.id), child);
+  await assert.rejects(readSnapshot(f.incoming, f.snapshot.id), /ENOENT/, 'parents are not transferred');
+  assert.equal(result.filesSent, 1);
+  assert.equal(result.bytesSent, 3);
+  await materializeSnapshot(f.incoming, child.id, path.join(f.root, 'head'));
+  assert.deepEqual(await readFile(path.join(f.root, 'head', 'secret.bin')), Buffer.from([5, 6, 7]));
   await assertClean(f.incoming);
 });
 
@@ -286,16 +287,29 @@ test('receiver bounds pending consent at 120000ms without automatic permission o
     }
   });
 
-function hello(snapshot: SnapshotManifest, offer: unknown = null) {
-  return { type: 'snapshot', version: 1, snapshotId: snapshot.id, manifests: [snapshot], offer };
+/** Protocol v2: a head-only hello followed by bounded `files` batches. */
+function helloFrames(snapshot: SnapshotManifest, offer: unknown = null, override: Record<string, unknown> = {}): unknown[] {
+  const frames: unknown[] = [{ type: 'snapshot', version: 2, snapshotId: snapshot.id, parentId: snapshot.parentId,
+    fileCount: snapshot.files.length, offer, ...override }];
+  if (snapshot.files.length) frames.push({ type: 'files', files: snapshot.files });
+  return frames;
 }
-async function rejectMetadata(t: TestContext, f: Awaited<ReturnType<typeof fixture>>, value: unknown, pattern: RegExp) {
+async function writeFrames(socket: TLSSocket, frames: unknown[]) {
+  for (const value of frames) await writeFrame(socket, value);
+}
+async function readManifestFrames(socket: TLSSocket) {
+  const hello = await readFrame(socket);
+  for (let received = 0; received < hello.fileCount;) received += (await readFrame(socket)).files.length;
+  return hello;
+}
+/** Send only frames the receiver will read before rejecting, so no unread bytes provoke a TCP reset. */
+async function rejectMetadata(t: TestContext, f: Awaited<ReturnType<typeof fixture>>, frames: unknown[], pattern: RegExp) {
   let callbacks = 0;
   const session = await receiving(t, f, async () => { callbacks++; });
   const socket = await connectPeer(f.sender, f.receiver.fingerprint, session.peer.host, session.peer.port);
   t.after(() => socket.destroy());
   const response = readFrame(socket);
-  await writeFrame(socket, value);
+  await writeFrames(socket, frames);
   assert.equal((await response).type, 'error', 'reject before requesting or trusting any objects');
   const error = await session.completion;
   assert.ok(error);
@@ -310,7 +324,7 @@ test('security: malformed ownership offer fields fail before object requests', {
   const offer = { id: randomUUID(), source: f.sender.fingerprint, target: f.receiver.fingerprint, generation: 1, snapshotId: f.snapshot.id };
   for (const invalid of [false, {}, { ...offer, generation: 0 }, { ...offer, id: '' }, { ...offer, target: '\u0000' },
     { ...offer, source: 17 }, { ...offer, extra: true }, { ...offer, snapshotId: 'f'.repeat(64) }]) {
-    await rejectMetadata(t, f, hello(f.snapshot, invalid), /offer|fields|SHA256/i);
+    await rejectMetadata(t, f, helloFrames(f.snapshot, invalid).slice(0, 1), /offer|fields|SHA256/i);
   }
 });
 
@@ -319,17 +333,17 @@ function manifest(files: SnapshotManifest['files'], parentId: string | null = nu
   return { ...value, id: createHash('sha256').update(JSON.stringify(value)).digest('hex') };
 }
 
-test('security: explicit ancestry, file-count, object-byte, and total-byte limits precede object requests',
+test('security: file-count, object-byte, and total-byte limits precede object requests',
   { timeout: 30000 }, async (t) => {
     const f = await fixture(t);
-    await rejectMetadata(t, f, { ...hello(f.snapshot), manifests: Array.from({ length: 129 }, () => f.snapshot) }, /ancestry.*limit/i);
+    await rejectMetadata(t, f, helloFrames(f.snapshot, null, { fileCount: 65537 }).slice(0, 1), /file.*count.*limit/i);
+    const two = manifest([{ ...f.snapshot.files[0]!, path: 'a' }, { ...f.snapshot.files[0]!, path: 'b' }]);
+    await rejectMetadata(t, f, helloFrames(two, null, { fileCount: 1 }), /file.*count/i);
     const oversized = manifest([{ path: 'huge', size: 16 * 1024 ** 3 + 1, hash: 'a'.repeat(64) }]);
-    await rejectMetadata(t, f, hello(oversized), /object.*byte.*limit/i);
-    const many = manifest(Array.from({ length: 4097 }, (_, i) => ({ path: `file-${String(i).padStart(5, '0')}`, size: 0, hash: 'a'.repeat(64) })));
-    await rejectMetadata(t, f, hello(many), /file.*count.*limit/i);
+    await rejectMetadata(t, f, helloFrames(oversized), /object.*byte.*limit/i);
     const total = manifest(Array.from({ length: 9 }, (_, i) => ({ path: `file-${i}`, size: 16 * 1024 ** 3,
       hash: createHash('sha256').update(String(i)).digest('hex') })));
-    await rejectMetadata(t, f, hello(total), /total.*byte.*limit/i);
+    await rejectMetadata(t, f, helloFrames(total), /total.*byte.*limit/i);
   });
 
 async function scriptedReceiver(t: TestContext, f: Awaited<ReturnType<typeof fixture>>,
@@ -352,7 +366,7 @@ test('security: the entire missing-object request is validated before sending an
   for (const hashes of [[hash, '../outside'], [hash, hash], [hash, 'f'.repeat(64)]]) {
     let sentFields = 0;
     const session = await scriptedReceiver(t, f, async (socket) => {
-      assert.equal((await readFrame(socket)).type, 'snapshot');
+      assert.equal((await readManifestFrames(socket)).type, 'snapshot');
       await writeFrame(socket, { type: 'need', hashes });
       const first = await readFrame(socket).catch(() => undefined);
       if (first) sentFields++;
@@ -368,7 +382,7 @@ test('security: sender requires exact acknowledgment id, actual counters, and of
   for (const wrong of [{ snapshotId: 'f'.repeat(64) }, { filesSent: 1 }, { bytesSent: 4 }, { ownershipAccepted: 'yes' },
     { extra: true }, { ownershipAccepted: true }]) {
     const session = await scriptedReceiver(t, f, async (socket) => {
-      const initial = await readFrame(socket);
+      const initial = await readManifestFrames(socket);
       await writeFrame(socket, { type: 'need', hashes: [] });
       const complete = await readFrame(socket);
       assert.deepEqual(complete, { type: 'complete', snapshotId: initial.snapshotId, filesSent: 0, bytesSent: 0 });
@@ -396,7 +410,7 @@ test('security: interrupted or tampered incoming objects preserve the previous r
       const session = await receiving(t, f, async () => { callbacks++; return true; });
       const socket = await connectPeer(f.sender, f.receiver.fingerprint, session.peer.host, session.peer.port);
       t.after(() => socket.destroy());
-      await writeFrame(socket, { ...hello(child), manifests: [child, f.snapshot] });
+      await writeFrames(socket, helloFrames(child));
       assert.deepEqual(await readFrame(socket), { type: 'need', hashes: [object.hash] });
       await writeFrame(socket, { type: 'object', hash: object.hash, size: object.size });
       await writeFrame(socket, { type: 'chunk', data: (attack === 'tampered' ? Buffer.from([3, 4, 6, 8]) :
@@ -449,14 +463,15 @@ test('security: invalid manifest paths, hashes, fields, content and ancestry nev
     const badPath = manifest([{ ...file, path: '../outside' }]);
     const badHash = manifest([{ ...file, hash: '../outside' }]);
     const collision = manifest([{ ...file, path: 'World/a' }, { ...file, path: 'world/b' }]);
-    const missingParent = manifest([file], 'a'.repeat(64));
-    for (const value of [
-      { ...hello(f.snapshot), extra: true },
-      { ...hello(f.snapshot), snapshotId: '../outside' },
-      hello(badPath), hello(badHash), hello(collision), hello(missingParent),
-      { ...hello(f.snapshot), manifests: [{ ...f.snapshot, files: [{ ...file, size: file.size + 1 }] }] },
-      { ...hello(f.snapshot), manifests: [{ ...f.snapshot, extra: 'hidden' }] },
-    ]) await rejectMetadata(t, f, value, /fields|SHA256|unsafe|integrity|ancestry/i);
+    for (const frames of [
+      helloFrames(f.snapshot, null, { extra: true }).slice(0, 1),
+      helloFrames(f.snapshot, null, { snapshotId: '../outside' }).slice(0, 1),
+      helloFrames(f.snapshot, null, { parentId: '../outside' }).slice(0, 1),
+      helloFrames(f.snapshot, null, { version: 1 }).slice(0, 1),
+      helloFrames(badPath), helloFrames(badHash), helloFrames(collision),
+      helloFrames({ ...f.snapshot, files: [{ ...file, size: file.size + 1 }] }),
+      helloFrames({ ...f.snapshot, files: [{ ...file, extra: 'hidden' } as typeof file] }),
+    ]) await rejectMetadata(t, f, frames, /fields|SHA256|unsafe|integrity|metadata|version/i);
   });
 
 test('security: a corrupt existing object is rejected without retransmission or overwrite', { timeout: 15000 }, async (t) => {
@@ -464,7 +479,7 @@ test('security: a corrupt existing object is rejected without retransmission or 
   await mkdir(path.join(f.incoming, 'objects'), { recursive: true });
   const objectPath = path.join(f.incoming, 'objects', f.snapshot.files[0]!.hash);
   await writeFile(objectPath, Buffer.from([9, 9, 9, 9]));
-  await rejectMetadata(t, f, hello(f.snapshot), /integrity/i);
+  await rejectMetadata(t, f, helloFrames(f.snapshot), /integrity/i);
   assert.deepEqual(await readFile(objectPath), Buffer.from([9, 9, 9, 9]));
 });
 
@@ -510,7 +525,7 @@ test('security: chunk size, canonical base64, and object header identity are enf
     const session = await receiving(t, f);
     const socket = await connectPeer(f.sender, f.receiver.fingerprint, session.peer.host, session.peer.port);
     t.after(() => socket.destroy());
-    await writeFrame(socket, hello(f.snapshot));
+    await writeFrames(socket, helloFrames(f.snapshot));
     assert.deepEqual(await readFrame(socket), { type: 'need', hashes: [object.hash] });
     if (attack.type !== 'object') await writeFrame(socket, { type: 'object', hash: object.hash, size: object.size });
     await writeFrame(socket, attack);
@@ -530,7 +545,7 @@ test('receiver closes its socket after acknowledgment without waiting for the pe
   t.after(() => socket.destroy());
   const inbound = await session.inbound;
   const file = f.snapshot.files[0]!;
-  await writeFrame(socket, hello(f.snapshot));
+  await writeFrames(socket, helloFrames(f.snapshot));
   assert.deepEqual(await readFrame(socket), { type: 'need', hashes: [file.hash] });
   await writeFrame(socket, { type: 'object', hash: file.hash, size: file.size });
   await writeFrame(socket, { type: 'chunk', data: Buffer.from([0, 255, 128, 1]).toString('base64') });

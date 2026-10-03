@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { _electron as electron } from 'playwright';
+import { createRequire } from 'node:module';
+const electronPath=createRequire(import.meta.url)('electron') as string;
+// Electron cannot auto-detect the Secret Service on every Linux desktop (e.g. Hyprland); safeStorage then fails closed.
+const linuxKeyring=process.platform==='linux'?['--password-store=gnome-libsecret']:[];
 
 test('real desktop IPC holds launch approval lock and rejects a replacement profile', {timeout:150000},async()=>{
   await mkdir('.test-data',{recursive:true});
@@ -10,7 +14,7 @@ test('real desktop IPC holds launch approval lock and rejects a replacement prof
   const source=path.join(root,'source');await mkdir(source);await writeFile(path.join(source,'eula.txt'),'eula=true\n');
   const env=Object.fromEntries(Object.entries(process.env).filter((entry):entry is [string,string]=>entry[1]!==undefined));delete env.ELECTRON_RUN_AS_NODE;
   console.log('DESKTOP STEP 1: Launch actual visible Electron app with isolated project profile.');
-  const app=await electron.launch({executablePath:path.resolve('node_modules/electron/dist/electron.exe'),args:[path.resolve('dist/apps/desktop/main.js'),'--profile-root='+path.join(root,'profile')],env});
+  const app=await electron.launch({executablePath:electronPath,args:[...linuxKeyring,path.resolve('dist/apps/desktop/main.js'),'--profile-root='+path.join(root,'profile')],env});
   const page=await app.firstWindow();await page.bringToFront();
   try{
     await page.waitForFunction(()=>typeof (window as any).peerhost?.call==='function');

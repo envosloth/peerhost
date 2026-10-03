@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PeerHostApplication } from '../../src/core/application.js';
 import { loadIdentity } from '../../src/core/identity-store.js';
 import { validateCall } from '../../src/core/ipc-policy.js';
+import { applicationMenuTemplate } from './menu.js';
 let window:BrowserWindow;let tray:Tray;let backend:PeerHostApplication;let quitAllowed=false;let quitting=false;
 app.setName('PeerHost');
 const profileArgument=process.argv.find(a=>a.startsWith('--profile-root='));
@@ -29,7 +30,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
   app.on('second-instance',show);
   app.on('before-quit',event=>{if(!quitAllowed){event.preventDefault();void quit();}});
   app.whenReady().then(async()=>{
-    if(!safeStorage.isEncryptionAvailable())throw new Error('Windows protected key storage is unavailable. Refusing to store an unencrypted identity.');
+    if(!safeStorage.isEncryptionAvailable())throw new Error('OS protected key storage (Windows DPAPI, macOS Keychain, or a Linux Secret Service) is unavailable. Refusing to store an unencrypted identity.');
     const identity=await loadIdentity(root,{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)});
     backend=new PeerHostApplication(root,identity,{confirmIncomingHandoff:async(source,snapshot)=>{
       show();return confirm('Accept hosting ownership from this peer?','Verified peer: '+source+'\nSnapshot: '+snapshot.id+'\nThis copies server files into a new local directory. Old files are retained. It will not start automatically; review the local launch profile and executable/mod trust first.');
@@ -59,6 +60,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         case 'startPeerListener':return backend.startPeerListener();
         case 'sendSnapshot':return backend.sendSnapshot(p.fingerprint);
         case 'handoff':if(await confirm('Transfer hosting ownership to this peer?','Stop the server first. A fresh snapshot will be captured and shared, including server configuration/player data. This PC becomes fenced before transfer. If acknowledgment is lost or the peer declines, local hosting remains blocked until ownership is reconciled.'))return backend.handoff(p.fingerprint);return;
+        case 'cleanUp':if(await confirm('Delete old server copies and revisions?','This permanently deletes earlier managed server folders, interrupted transfers, and snapshot revisions older than the current one and its two parents. The current server folder and current revision are kept. Your original imported folder is never touched.'))return backend.cleanUp();return;
         case 'recoverStopped':if(await confirm('Confirm every previous server process is stopped?','An uncertain session is not proof of process exit. Check for orphaned Java/server processes before continuing. This only restores local uncertain ownership without a pending handoff; it cannot take ownership back from a peer.'))return backend.recoverStopped(true);return;
         default:throw new Error('This operation is not available in this build');
       }
@@ -68,7 +70,8 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
     tray=new Tray(image);tray.setToolTip('PeerHost — local-first server hosting');
     tray.setContextMenu(Menu.buildFromTemplate([{label:'Open PeerHost',click:show},{type:'separator'},{label:'Quit safely',click:()=>{void quit();}}]));
     tray.on('double-click',show);
-    Menu.setApplicationMenu(Menu.buildFromTemplate([{label:'PeerHost',submenu:[{label:'Open',click:show},{label:'Quit safely',click:()=>{void quit();}}]},{label:'View',submenu:[{role:'reload'},{role:'toggleDevTools'},{role:'resetZoom'},{role:'zoomIn'},{role:'zoomOut'}]}]));
+    Menu.setApplicationMenu(Menu.buildFromTemplate(applicationMenuTemplate(app.isPackaged,{show,quit:()=>{void quit();}})));
+    if(app.isPackaged)window.webContents.on('devtools-opened',()=>window.webContents.closeDevTools());
     await window.loadFile(html);
   }).catch(error=>{console.error(error);dialog.showErrorBox('PeerHost startup failed',String(error));quitAllowed=true;app.quit();});
 }

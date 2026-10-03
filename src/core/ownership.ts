@@ -2,7 +2,13 @@ import { access, mkdir } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-export interface OwnershipState {version:1;owner:string;generation:number;snapshotId:string;state:'owned'|'hosting'|'offered'|'transferred'|'uncertain';offer?:TransferOffer}
+export interface OwnershipState {
+  version:1;owner:string;generation:number;snapshotId:string;
+  state:'owned'|'hosting'|'offered'|'transferred'|'uncertain';
+  offer?:TransferOffer;
+  /** The offer this device accepted to become owner. Lets a retried offer be re-acknowledged instead of re-applied. */
+  acceptedOfferId?:string;
+}
 export interface TransferOffer {id:string;source:string;target:string;generation:number;snapshotId:string}
 export class OwnershipLedger {
   constructor(private readonly file:string,readonly deviceId:string){}
@@ -71,7 +77,18 @@ export class OwnershipLedger {
     if(!Number.isSafeInteger(offer.generation)||offer.generation<1||typeof offer.id!=='string'||offer.id.length>128)throw new Error('Invalid ownership offer');
     await this.transaction(async s=>{
       if(s && (s.state==='hosting'||s.state==='uncertain'||s.owner!==offer.source||offer.generation!==s.generation+1))throw new Error('Stale or conflicting ownership offer');
-      return {state:{version:1,owner:this.deviceId,generation:offer.generation,snapshotId:offer.snapshotId,state:'owned'},value:undefined};
+      return {state:{version:1,owner:this.deviceId,generation:offer.generation,snapshotId:offer.snapshotId,state:'owned',acceptedOfferId:offer.id},value:undefined};
+    });
+  }
+  /**
+   * Withdraw a pending offer after the authenticated target definitively declined it. Only a decline the target
+   * returned in a pinned acknowledgment qualifies: network errors and timeouts never prove that nothing committed.
+   */
+  async cancelTransfer(offerId:string,authenticatedTarget:string):Promise<void>{
+    await this.transaction(async s=>{
+      if(!s||s.owner!==this.deviceId||s.state!=='offered'||s.offer?.id!==offerId||s.offer.target!==authenticatedTarget)throw new Error('Ownership cancellation mismatch');
+      const {offer:_withdrawn,...rest}=s;
+      return {state:{...rest,state:'owned'},value:undefined};
     });
   }
   async markUncertain():Promise<void>{

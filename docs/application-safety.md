@@ -2,6 +2,8 @@
 
 ## Boundaries
 
+- `state.json` is fully validated on open (version, settings, peers, absolute server paths, snapshot id, launch profile). Corrupt state is refused and left byte-identical; state from the first alpha without launch timeouts loads with the defaults.
+- Handoff: an explicit decline cancels the offer and restores source ownership; any other failure keeps the source fenced, and retrying the same peer resends the same offer, which a recipient that already accepted re-acknowledges without asking again. A pending offer cannot be redirected to another peer.
 - A profile may import a server only when it has no saved server. Reimport (including a different source directory) never resets owned, offered, transferred or uncertain authority. Select a separate explicit profile for a different server. Existing files, metadata and ledger are retained.
 - Desktop launch consent runs inside `startServerWithApproval`, under the application operation lock. The callback receives frozen profile-root, server-directory, snapshot and executable/argument data. After consent, metadata, stopped state, EULA and ledger revision are checked again before spawn. `startServer(true)` remains a trusted core caller API, not the desktop IPC path.
 - Unexpected child exit queues a fence for that launch's captured ledger. An unrelated operation must commit the uncertain fence before releasing its lock. Explicit startup and stop are classified separately; startup/stop failures still fence ownership. Explicit stopped-process recovery remains available.
