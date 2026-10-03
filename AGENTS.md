@@ -1,0 +1,3 @@
+# PeerHost development
+
+Use strict RED/GREEN TDD and report actual command results. Windows Git Bash: native paths C:/..., command node avoids TTY wrapper. Never touch the user's live hosted world, credentials, or app state. No router/firewall/startup modifications, purchases, or remote deployment. GitHub publishing only when the user explicitly requests it for this repository. Development sockets loopback only. Direct hosting requires no gateway; persistentAddress defaults false. Preserve revisions and fail closed on uncertain ownership. Socket/process fixtures are not Minecraft proof. Core independent of Electron; renderer has no Node access. Scoped agents edit assigned files only, not package configuration or others' files. No commits before parent review.

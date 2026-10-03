@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>PeerHost — Operate</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="renderer.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#workspace">Skip to server controls</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Application navigation">
+      <a class="brand" href="#workspace" aria-label="PeerHost home"><span class="brand-mark" aria-hidden="true">p<span>h</span></span><span>PeerHost<small>LOCAL FIRST / ALPHA</small></span></a>
+      <nav class="nav-links" aria-label="Workspace">
+        <a class="nav-link is-active" href="#workspace" aria-current="page"><span class="nav-glyph" aria-hidden="true">⌘</span> Operate</a>
+        <a class="nav-link" href="#console-section"><span class="nav-glyph" aria-hidden="true">›_</span> Console</a>
+        <button class="nav-link" id="nav-peers" type="button"><span class="nav-glyph" aria-hidden="true">⇄</span> Peers</button>
+        <button class="nav-link" id="nav-settings" type="button"><span class="nav-glyph" aria-hidden="true">⚙</span> Settings</button>
+      </nav>
+      <div class="sidebar-footer">
+        <span class="device-label"><span class="status-dot" aria-hidden="true"></span> THIS PC</span>
+        <p>Close to tray.<br>Stop hosting before quitting the app.</p>
+        <span id="app-version" class="version">Connecting to app…</span>
+      </div>
+    </aside>
+
+    <main class="workspace" id="workspace" tabindex="-1">
+      <header class="workspace-header">
+        <div><p class="eyebrow">WORKSPACE / THIS PC</p><h1>Operate</h1></div>
+        <span class="mode-label">Direct hosting · This PC</span>
+      </header>
+
+      <div id="error-banner" class="notice notice-error" role="alert" hidden>
+        <span id="error-text"></span><button id="dismiss-error" type="button" class="text-button" aria-label="Dismiss error">Dismiss</button>
+      </div>
+      <p id="activity-message" class="activity" role="status" aria-live="polite">Reading app state…</p>
+
+      <section class="server-section" aria-labelledby="server-heading">
+        <div class="section-heading"><h2 id="server-heading">Server</h2><button id="import-server" type="button" class="button button-small" disabled>Import existing<span aria-hidden="true"> ↗</span></button></div>
+        <div class="server-card">
+          <div class="server-identity"><div><p class="eyebrow">JAVA SERVER</p><h3 id="server-name">No server imported</h3></div><span id="server-status" class="badge">Not configured</span></div>
+          <div id="server-empty" class="server-empty"><p>Bring your existing server.</p><span>Choose a Java server folder, then review its launch command. Fabric, Forge, NeoForge, and vanilla use the profile you supply.</span></div>
+          <dl id="server-info" class="server-facts" hidden>
+            <div><dt>Managed server</dt><dd id="server-directory" class="mono"></dd></div>
+            <div><dt>Snapshot store</dt><dd id="store-directory" class="mono"></dd></div>
+            <div><dt>Snapshot</dt><dd id="snapshot-id" class="mono"></dd></div>
+            <div><dt>Ownership</dt><dd id="ownership-state"></dd></div>
+          </dl>
+          <div class="server-toolbar" aria-label="Server actions">
+            <button id="start-server" type="button" class="button button-primary" disabled><span aria-hidden="true">▷</span> Start hosting</button>
+            <button id="stop-server" type="button" class="button button-stop" disabled><span aria-hidden="true">□</span> Stop</button>
+            <button id="create-snapshot" type="button" class="button" disabled><span aria-hidden="true">＋</span> Create snapshot</button>
+            <button id="recover-ownership" type="button" class="button" hidden disabled>Confirm stopped &amp; recover</button>
+          </div>
+          <p id="server-action-hint" class="action-hint">Import a server to enable hosting and snapshots.</p>
+        </div>
+
+        <details id="profile-details" class="profile-details">
+          <summary>Launch profile<span class="summary-meta">Java path &amp; arguments</span></summary>
+          <form id="profile-form" class="profile-form" novalidate>
+            <label for="java-executable">Java executable</label>
+            <input id="java-executable" type="text" placeholder="C:\Program Files\Java\…\bin\java.exe" autocomplete="off" spellcheck="false" disabled aria-describedby="java-help">
+            <p id="java-help" class="field-help">Use the Java version your modpack requires. No shell command expansion.</p>
+            <label for="java-args">Arguments <span class="label-hint">JSON array of strings</span></label>
+            <textarea id="java-args" class="mono" rows="3" placeholder='["-Xmx4G", "-jar", "server.jar", "nogui"]' spellcheck="false" disabled aria-describedby="args-help profile-warning"></textarea>
+            <p id="args-help" class="field-help">Each argument is one quoted entry. Preserve Forge / NeoForge argument files such as “@win_args.txt”. Paths are relative to the managed server folder.</p>
+            <p id="profile-warning" class="warning-copy">Server JARs, mods, and launch executables run code on this PC. Only start files you trust.</p>
+            <div class="form-footer"><span id="profile-feedback" class="field-help" role="status">Import a server to configure its launch profile.</span><button id="save-profile" type="submit" class="button button-small" disabled>Save profile</button></div>
+          </form>
+        </details>
+      </section>
+
+      <section id="console-section" class="console-section" aria-labelledby="console-heading">
+        <div class="section-heading"><h2 id="console-heading">Console <span class="section-caption">Process output</span></h2><label class="inline-check"><input id="follow-logs" type="checkbox" checked> Follow output</label></div>
+        <div id="console-output" class="console-output" tabindex="0" aria-label="Server output" aria-describedby="console-help">
+          <div id="console-empty" class="console-empty"><span class="console-prompt" aria-hidden="true">›_</span><p>No process output yet.<span>Once hosting starts, server output appears here.</span></p></div>
+          <pre id="console-lines" class="console-lines"></pre>
+        </div>
+        <form id="command-form" class="command-form"><span aria-hidden="true" class="command-prefix">›</span><label class="sr-only" for="server-command">Server console command</label><input id="server-command" type="text" placeholder="Command, e.g. list or say hello" autocomplete="off" spellcheck="false" disabled><button id="send-command" type="submit" class="button button-small" disabled>Send <span aria-hidden="true">↵</span></button></form>
+        <p id="console-help" class="field-help console-help">Commands go to the server process, not a shell. Stop hosting before creating a snapshot.</p>
+      </section>
+    </main>
+
+    <aside id="inspector" class="inspector" aria-label="Peers and settings">
+      <div class="inspector-tabs" role="tablist" aria-label="Inspector"><button id="peers-tab" type="button" role="tab" aria-selected="true" aria-controls="peers-panel" tabindex="0">Peers</button><button id="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-panel" tabindex="-1">Settings</button></div>
+      <section id="peers-panel" role="tabpanel" aria-labelledby="peers-tab" tabindex="0" class="inspector-panel">
+        <div class="panel-heading"><h2>Peer-to-peer</h2><span class="subtle-label">MANUAL TRUST</span></div>
+        <p class="panel-intro">Send a stopped server’s snapshot to a trusted peer.</p>
+        <div class="identity-block"><div class="compact-heading"><label for="device-fingerprint">Your device fingerprint</label><button id="copy-fingerprint" type="button" class="text-button" disabled>Copy</button></div><textarea id="device-fingerprint" class="fingerprint mono" readonly rows="3" spellcheck="false" aria-describedby="fingerprint-help"></textarea><p id="fingerprint-help" class="field-help">Share this fingerprint through a separate, trusted channel. Both peers must trust each other.</p></div>
+        <div class="listener-block"><div class="compact-heading"><h3>Receive snapshots</h3><span id="listener-status" class="subtle-label">NOT LISTENING</span></div><code id="listener-endpoint" class="listener-endpoint">No listener endpoint</code><p id="listener-help" class="field-help">Start the listener to see the actual endpoint. An endpoint is not proof of public reachability.</p><div class="listener-actions"><button id="start-listener" type="button" class="button button-small" disabled>Start listener</button><button id="copy-peer-details" type="button" class="text-button" disabled>Copy share details</button></div></div>
+        <div class="compact-heading peer-list-heading"><h3>Trusted peers</h3><span id="peer-count" class="subtle-label">NONE ADDED</span></div>
+        <div id="peers-empty" class="peers-empty"><p>No trusted peers yet.</p><span>Exchange fingerprints and listener endpoints first. Adding a peer does not establish a connection.</span></div>
+        <ul id="peer-list" class="peer-list" aria-label="Trusted peers"></ul>
+        <details id="add-peer-details" class="add-peer-details"><summary>Trust a peer<span aria-hidden="true">＋</span></summary><form id="peer-form" class="peer-form" novalidate>
+          <label for="peer-name">Peer name</label><input id="peer-name" type="text" placeholder="A name you recognize" maxlength="80" autocomplete="off" disabled>
+          <label for="peer-fingerprint">Verified fingerprint</label><textarea id="peer-fingerprint" class="mono" rows="3" placeholder="64 lowercase hexadecimal characters" spellcheck="false" autocomplete="off" disabled aria-describedby="peer-trust-help"></textarea>
+          <div class="endpoint-fields"><div><label for="peer-host">Listener host</label><input id="peer-host" type="text" placeholder="127.0.0.1" maxlength="253" spellcheck="false" autocomplete="off" disabled></div><div><label for="peer-port">Port</label><input id="peer-port" type="number" placeholder="Port" min="1" max="65535" step="1" disabled></div></div>
+          <p id="peer-trust-help" class="warning-copy">Verify all 64 fingerprint characters before trusting. A wrong pin can trust the wrong device.</p><button id="add-peer" type="submit" class="button button-small" disabled>Save trusted peer</button>
+        </form></details>
+        <p class="alpha-note">First alpha: manual fingerprint exchange. Simple invitations come later; there is no automatic discovery or NAT traversal here.</p>
+      </section>
+      <section id="settings-panel" role="tabpanel" aria-labelledby="settings-tab" tabindex="0" class="inspector-panel" hidden>
+        <div class="panel-heading"><h2>Hosting settings</h2></div><p class="panel-intro">Direct hosting runs on this Windows PC. No gateway is required.</p>
+        <form id="settings-form" class="settings-form" novalidate>
+          <div class="settings-section"><div class="compact-heading"><h3>Persistent address</h3><span id="gateway-status" class="badge badge-neutral">Unconnected</span></div><label class="switch-row" for="persistent-address"><span>Use a mini-PC gateway<small>Optional · off by default</small></span><input id="persistent-address" class="switch" type="checkbox" disabled></label><label for="gateway-address">Gateway address</label><input id="gateway-address" type="text" placeholder="gateway.example:25565" maxlength="253" autocomplete="off" spellcheck="false" disabled aria-describedby="gateway-help"><p id="gateway-help" class="field-help">Enter the mini-PC gateway’s hostname:port only if you opt in.</p><p class="warning-copy">Saving this preference does not establish a gateway connection. Incoming public availability is not proven.</p></div>
+          <div class="settings-section"><h3>Desktop behavior</h3><label class="check-row"><input id="start-at-login" type="checkbox" disabled><span>Start at login<small>Saved preference only in this alpha; this does not configure Windows startup.</small></span></label><p class="field-help">Closing the window keeps PeerHost in the tray. Use Stop before quitting if this PC is hosting.</p></div>
+          <div class="form-footer"><span id="settings-feedback" class="field-help" role="status">Preferences loaded from this PC.</span><button id="save-settings" type="submit" class="button button-small" disabled>Save settings</button></div>
+        </form>
+      </section>
+      <footer class="inspector-footer">Local by default. Trust is explicit.</footer>
+    </aside>
+  </div>
+  <dialog id="send-dialog" class="send-dialog" aria-labelledby="send-dialog-title" aria-describedby="send-dialog-warning">
+    <button id="close-send" type="button" class="dialog-close text-button" aria-label="Cancel snapshot send">Close</button>
+    <p class="eyebrow">PEER SNAPSHOT</p><h2 id="send-dialog-title">Send this snapshot?</h2><p id="send-dialog-recipient"></p><code id="send-dialog-fingerprint" class="mono dialog-fingerprint"></code><p id="send-dialog-snapshot" class="field-help mono"></p><p id="send-dialog-warning" class="warning-copy">This shares server files, which may contain private configuration or player data. Verify the recipient’s fingerprint. Sending is not proof of a completed hosting handoff.</p><div class="dialog-actions"><button id="cancel-send" type="button" class="button">Cancel</button><button id="confirm-send" type="button" class="button button-primary" disabled>Send snapshot</button></div>
+  </dialog>
+</body>
+</html>

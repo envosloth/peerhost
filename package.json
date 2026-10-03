@@ -1,0 +1,30 @@
+{
+  "name": "peerhost",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/apps/desktop/main.js",
+  "description": "Local-first Minecraft server handoff; optional persistent gateway address",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node tools/run-tests.mjs",
+    "start": "npm run build && electron dist/apps/desktop/main.js",
+    "check:desktop": "npm run build && node tools/desktop-check.mjs",
+    "check:handoff": "npm run build && node tools/desktop-handoff-check.mjs",
+    "package:windows": "npm test && node tools/package-windows.mjs"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "@types/node": "^26.6.4",
+    "electron": "^44.5.1",
+    "playwright": "^1.63.0",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "selfsigned": "^5.5.0"
+  }
+}
