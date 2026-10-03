@@ -24,7 +24,9 @@ export interface SavedServer {
   ledgerFile: string;
 }
 export interface SavedPeer { name: string; fingerprint: string; host: string; port: number }
-export interface SavedState { version: 1; settings: Settings; server: SavedServer | null; peers: SavedPeer[] }
+/** An always-on trusted peer that stores the server between hosts. Its endpoint lives in the matching peer entry. */
+export interface RelayConfig { fingerprint: string; parkOnStop: boolean }
+export interface SavedState { version: 1; settings: Settings; server: SavedServer | null; peers: SavedPeer[]; relay: RelayConfig | null }
 
 export type LaunchProfileInput = { executable: string; args: string[]; startTimeoutSeconds?: number; stopTimeoutSeconds?: number };
 
@@ -61,6 +63,15 @@ export function validateLaunchProfile(input: unknown, allowEmptyExecutable = fal
   };
 }
 
+export function validateRelayConfig(input: unknown): RelayConfig | null {
+  if (input === null) return null;
+  if (!isObject(input) || Object.keys(input).sort().join(',') !== 'fingerprint,parkOnStop' ||
+      typeof input.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(input.fingerprint) || typeof input.parkOnStop !== 'boolean') {
+    throw new Error('Invalid relay configuration');
+  }
+  return { fingerprint: input.fingerprint, parkOnStop: input.parkOnStop };
+}
+
 export function validatePeer(input: unknown): SavedPeer {
   if (!isObject(input)) throw new Error('Invalid peer identity or endpoint');
   const { name, fingerprint, host, port } = input;
@@ -92,5 +103,8 @@ export function parseSavedState(value: unknown): SavedState {
     server = { name: saved.name, serverDir: saved.serverDir as string, storeDir: saved.storeDir as string,
       snapshotId: saved.snapshotId, profile, ledgerFile: saved.ledgerFile as string };
   }
-  return { version: 1, settings, server, peers };
+  let relay: RelayConfig | null = null;
+  try { relay = validateRelayConfig(value.relay ?? null); } catch { invalid('relay'); }
+  if (relay && !peers.some((peer) => peer.fingerprint === relay.fingerprint)) invalid('relay is not a trusted peer');
+  return { version: 1, settings, server, peers, relay };
 }

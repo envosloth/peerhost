@@ -1,8 +1,8 @@
 import { validateSettings } from './settings.js';
 import { isValidEndpointHost } from './endpoints.js';
 import { validTimeout, MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS } from './saved-state.js';
-const NO_PAYLOAD=new Set(['getState','importServer','createSnapshot','startServer','stopServer','startPeerListener','cleanUp']);
-const METHODS=new Set([...NO_PAYLOAD,'saveProfile','sendCommand','saveSettings','addPeer','sendSnapshot','handoff','recoverStopped']);
+const NO_PAYLOAD=new Set(['getState','importServer','createSnapshot','startServer','stopServer','startPeerListener','cleanUp','parkAtRelay','claimFromRelay','checkRelay']);
+const METHODS=new Set([...NO_PAYLOAD,'saveProfile','sendCommand','saveSettings','addPeer','sendSnapshot','handoff','recoverStopped','saveRelay']);
 function boundedString(v:unknown,max:number):v is string{return typeof v==='string'&&v.length<=max&&!v.includes('\0');}
 function fingerprint(v:unknown):v is string{return typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);}
 export interface TrustedIpcContext {senderId:number;expectedSenderId:number;isMainFrame:boolean}
@@ -10,6 +10,12 @@ export function validateCall(method:unknown,payload:unknown,senderUrl:string,exp
   if(senderUrl!==expectedUrl||!context||!Number.isSafeInteger(context.senderId)||context.senderId<1||context.senderId!==context.expectedSenderId||context.isMainFrame!==true)throw new Error('Untrusted IPC sender');
   if(typeof method!=='string'||!METHODS.has(method))throw new Error('Unknown IPC method');
   if(NO_PAYLOAD.has(method))return {};
+  if(method==='saveRelay'){
+    if(payload===null)return {relay:null};
+    const r=payload as Record<string,unknown>;
+    if(!r||typeof r!=='object'||Array.isArray(r)||Object.keys(r).sort().join(',')!=='fingerprint,parkOnStop'||!fingerprint(r.fingerprint)||typeof r.parkOnStop!=='boolean')throw new Error('Invalid relay configuration');
+    return {relay:{fingerprint:r.fingerprint,parkOnStop:r.parkOnStop}};
+  }
   if(!payload||typeof payload!=='object'||Array.isArray(payload))throw new Error('Invalid payload');
   const p=payload as Record<string,unknown>;
   switch(method){

@@ -33,6 +33,10 @@ The app keeps its own profile at `%APPDATA%/PeerHost`. `--profile-root=<absolute
 - **Failed or missing acknowledgment:** the source stays fenced, because a network error does not prove the recipient did not accept. Use **Retry handoff** on the same peer: it resends the *same* offer, and a recipient that already accepted it simply re-acknowledges it. A pending offer cannot be redirected to a different peer. No automatic rollback or heartbeat-loss takeover.
 - **Uncertain local session:** confirm all previous processes are stopped before using the recovery control. This does not recover pending offers or take ownership back from another peer.
 
+### Optional relay (always-on storage)
+
+Direct handoff needs both PCs online at once. An optional **relay**, a headless `peerhost-relay` process on an always-on PC, stores the server between hosts: **Park on relay** when you finish, and any trusted PC can **Claim from relay** later, even while the first PC is off. Park-on-stop can do this automatically. Parking and claiming are ordinary pinned, verified handoffs with one owner at a time; a lineage id stops a different server from passing as a newer one. Setup and guarantees: [relay documentation](docs/relay.md).
+
 Old server execution directories and revisions are retained until you click **Clean up storage**, which (after a native confirmation) deletes earlier managed server folders, interrupted transfer staging, and revisions older than the current one and its two parents. The original imported folder is never touched. Conflicting ownership is refused rather than silently replaced or merged. Keep independent backups. Only an online device holding the latest complete revision can supply it; no free unlimited always-online availability is implied.
 
 ## Current boundaries
@@ -52,10 +56,11 @@ Old server execution directories and revisions are retained until you click **Cl
 npm test
 npm run check:desktop
 npm run check:handoff
+npm run check:relay
 npm run package:windows
 ```
 
-The desktop checks open visible Electron windows, log each step, save screenshots under ignored `.test-data`, and hold windows for 90 seconds. Their server child is explicitly a **Node process fixture, NOT Minecraft**. QA substitutes native consent dialog answers, not the backend or IPC operations. The handoff check uses two actual application instances and pinned TLS on loopback.
+The desktop checks open visible Electron windows, log each step, save screenshots under ignored `.test-data`, and hold windows for 90 seconds. Their server child is explicitly a **Node process fixture, NOT Minecraft**. QA substitutes native consent dialog answers, not the backend or IPC operations. The handoff check uses two actual application instances and pinned TLS on loopback. The relay check runs a real `peerhost-relay` process, parks from one instance, closes it, claims from the other, and reclaims on the first.
 
 Packaging creates a fresh unsigned Windows folder under `release/alpha-*`, checks bundled files and absence of test/private profiles, and prints its exact executable path. Do not distribute or treat a package as release-approved merely because it builds. To run visible handoff verification against that exact binary:
 

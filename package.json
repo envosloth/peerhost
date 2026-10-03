@@ -15,7 +15,9 @@
     "start": "npm run build && electron dist/apps/desktop/main.js",
     "check:desktop": "npm run build && node tools/desktop-check.mjs",
     "check:handoff": "npm run build && node tools/desktop-handoff-check.mjs",
-    "package:windows": "npm test && node tools/package-windows.mjs"
+    "package:windows": "npm test && node tools/package-windows.mjs",
+    "check:relay": "npm run build && node tools/desktop-relay-check.mjs",
+    "relay": "npm run build && node dist/src/relay/cli.js"
   },
   "devDependencies": {
     "@electron/packager": "^20.3.0",
@@ -26,5 +28,8 @@
   },
   "dependencies": {
     "selfsigned": "^5.5.0"
+  },
+  "bin": {
+    "peerhost-relay": "dist/src/relay/cli.js"
   }
 }

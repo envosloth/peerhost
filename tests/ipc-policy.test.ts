@@ -36,4 +36,9 @@ test('desktop accepts only its exact local renderer and bounded known commands',
   assert.deepEqual(mod.validateCall('saveProfile',{executable:'C:/Program Files/Java/bin/java.exe',args:['-Xmx2G','-jar','server.jar']},renderer,renderer,trusted),{executable:'C:/Program Files/Java/bin/java.exe',args:['-Xmx2G','-jar','server.jar']});
   assert.throws(()=>mod.validateCall('saveProfile',{executable:'java',args:'-jar server.jar'},renderer,renderer,trusted),/arguments/i);
   assert.throws(()=>mod.validateCall('addPeer',{name:'Friend',fingerprint:'x',host:'127.0.0.1',port:65536},renderer,renderer,trusted),/peer/i);
+  assert.deepEqual(mod.validateCall('saveRelay',{fingerprint:'a'.repeat(64),parkOnStop:true},renderer,renderer,trusted),{relay:{fingerprint:'a'.repeat(64),parkOnStop:true}});
+  assert.deepEqual(mod.validateCall('saveRelay',null,renderer,renderer,trusted),{relay:null});
+  for(const bad of [{fingerprint:'x',parkOnStop:true},{fingerprint:'a'.repeat(64)},{fingerprint:'a'.repeat(64),parkOnStop:'yes'},{fingerprint:'a'.repeat(64),parkOnStop:true,host:'evil'}])
+    assert.throws(()=>mod.validateCall('saveRelay',bad,renderer,renderer,trusted),/relay/i);
+  for(const method of ['parkAtRelay','claimFromRelay','checkRelay'])assert.deepEqual(mod.validateCall(method,undefined,renderer,renderer,trusted),{});
 });

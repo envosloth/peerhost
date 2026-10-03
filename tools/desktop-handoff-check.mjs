@@ -11,7 +11,8 @@ const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
 const packaged=process.argv.find(v=>v.startsWith('--packaged='))?.slice('--packaged='.length);
 async function launch(name){return electron.launch({executablePath:packaged||electronPath,args:packaged?[...linuxKeyring,'--profile-root='+path.join(root,name)]:[...linuxKeyring,path.join(project,'dist/apps/desktop/main.js'),'--profile-root='+path.join(root,name)],env});}
 let a,b,pa,pb;const errors=[];
-async function idle(page){await page.waitForFunction(async()=>!(await window.peerhost.call('getState')).busy);}
+// page.waitForFunction treats an async predicate's Promise as truthy, so poll from Node instead.
+async function idle(page){const deadline=Date.now()+30000;while((await page.evaluate(()=>window.peerhost.call('getState'))).busy){if(Date.now()>deadline)throw new Error('Timed out waiting for idle');await new Promise(r=>setTimeout(r,100));}}
 async function action(page,selector){await page.bringToFront();await page.locator(selector).click();}
 async function trust(page,name,state){await page.bringToFront();await page.locator('#add-peer-details').evaluate(el=>el.open=true);await page.locator('#peer-name').fill(name);await page.locator('#peer-fingerprint').fill(state.deviceId);await page.locator('#peer-host').fill(state.peerEndpoint.host);await page.locator('#peer-port').fill(String(state.peerEndpoint.port));await action(page,'#add-peer');await idle(page);await page.waitForFunction(()=>document.querySelector('#peer-count').textContent==='1 SAVED');}
 async function closedPort(){const server=createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r));const {port}=server.address();await new Promise(r=>server.close(r));return port;}
@@ -58,7 +59,7 @@ try{
   const returned=await pa.evaluate(()=>window.peerhost.call('getState'));assert.equal(returned.server.ownership.generation,2);assert.equal(returned.server.ownership.owner,sa.deviceId);assert.equal(await readFile(path.join(source,'world.bin'),'utf8'),'original');
   console.log('STEP 7: Clean up storage on A through its visible control; the current revision must stay usable.');
   await action(pa,'#clean-up');
-  await pa.waitForFunction(async()=>(await window.peerhost.call('getState')).logs.some(l=>l.startsWith('Cleanup removed')));await idle(pa);
+  await idle(pa);
   const cleaned=await pa.evaluate(()=>window.peerhost.call('getState'));console.log('  '+cleaned.logs.find(l=>l.startsWith('Cleanup removed')));
   assert.equal(await readFile(path.join(cleaned.server.serverDir,'world.bin'),'utf8'),'original');
   await action(pa,'#start-server');await pa.waitForFunction(()=>document.querySelector('#server-status').textContent==='Hosting');await action(pa,'#stop-server');await ownership(pa,'owned');await idle(pa);

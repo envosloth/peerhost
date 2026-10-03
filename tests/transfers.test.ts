@@ -162,7 +162,7 @@ test('a fresh receiver needs only the head revision: history is not replayed', {
 
 test('ownership offer is callback data and only explicit true accepts it', { timeout: 30000 }, async (t) => {
   const f = await fixture(t);
-  const offer: TransferOffer = { id: randomUUID(), source: f.sender.fingerprint, target: f.receiver.fingerprint,
+  const offer: TransferOffer = { id: randomUUID(), lineage: randomUUID(), source: f.sender.fingerprint, target: f.receiver.fingerprint,
     generation: 1, snapshotId: f.snapshot.id };
   for (const answer of [undefined, false, true]) {
     const session = await receiving(t, f, async (snapshot, source, actual) => {
@@ -321,8 +321,9 @@ async function rejectMetadata(t: TestContext, f: Awaited<ReturnType<typeof fixtu
 
 test('security: malformed ownership offer fields fail before object requests', { timeout: 30000 }, async (t) => {
   const f = await fixture(t);
-  const offer = { id: randomUUID(), source: f.sender.fingerprint, target: f.receiver.fingerprint, generation: 1, snapshotId: f.snapshot.id };
-  for (const invalid of [false, {}, { ...offer, generation: 0 }, { ...offer, id: '' }, { ...offer, target: '\u0000' },
+  const offer = { id: randomUUID(), lineage: randomUUID(), source: f.sender.fingerprint, target: f.receiver.fingerprint, generation: 1, snapshotId: f.snapshot.id };
+  const { lineage: _lineage, ...withoutLineage } = offer;
+  for (const invalid of [false, {}, withoutLineage, { ...offer, lineage: '' }, { ...offer, generation: 0 }, { ...offer, id: '' }, { ...offer, target: '\u0000' },
     { ...offer, source: 17 }, { ...offer, extra: true }, { ...offer, snapshotId: 'f'.repeat(64) }]) {
     await rejectMetadata(t, f, helloFrames(f.snapshot, invalid).slice(0, 1), /offer|fields|SHA256/i);
   }

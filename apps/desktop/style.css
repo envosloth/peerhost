@@ -164,6 +164,10 @@ input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px;
 .peer-form .button { margin-top: 13px; width: 100%; }
 .endpoint-fields { display: grid; grid-template-columns: minmax(0, 1fr) 72px; gap: 8px; margin-top: 12px; }
 .endpoint-fields input { padding: 7px; font-size: 11px; }
+.relay-card { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border-soft); }
+.relay-card h3 { font-size: 12px; }
+.relay-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+#relay-peer { width: 100%; margin-top: 6px; padding: 7px; font: inherit; font-size: 11px; color: inherit; background: var(--input, #1d2321); border: 1px solid var(--border); border-radius: 4px; }
 .timeout-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 15px; }
 .timeout-fields label { margin-top: 0; }
 .timeout-fields .label-hint { float: none; margin-left: 4px; }

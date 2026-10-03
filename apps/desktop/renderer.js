@@ -15,14 +15,18 @@
   let lastLogs = null;
   let selectedSend = null;
   let errorKind = null;
+  let relayDirty = false;
 
   const busyLabels = {
     importServer: 'Selecting / importing a server…', createSnapshot: 'Creating snapshot…',
     saveProfile: 'Saving launch profile…', startServer: 'Starting server…', stopServer: 'Stopping server…',
     sendCommand: 'Sending command…', saveSettings: 'Saving preferences…', startPeerListener: 'Starting peer listener…',
     addPeer: 'Saving trusted peer…', sendSnapshot: 'Sending snapshot…', handoff: 'Transferring hosting ownership…',
-    cleanUp: 'Cleaning up old copies and revisions…',
+    cleanUp: 'Cleaning up old copies and revisions…', saveRelay: 'Saving relay…',
+    parkAtRelay: 'Parking the server on the relay…', claimFromRelay: 'Claiming the server from the relay…', checkRelay: 'Checking the relay…',
   };
+  let relayStatus = null;
+  let relayStatusError = null;
   const TIMEOUT_MIN = 5, TIMEOUT_MAX = 3600;
   const isBusy = () => Boolean(pendingMethod || state?.busy);
   const isStopped = () => !state?.server || ['offline', 'failed'].includes(state.server.state);
@@ -119,6 +123,7 @@
     const localOnly = ['127.0.0.1', '::1', 'localhost'].includes(state?.peerEndpoint?.host);
     $('listener-help').textContent = state?.peerEndpoint ? localOnly ? 'Loopback only: other computers cannot reach this endpoint. No router or firewall configuration is changed.' : 'This is the actual listener endpoint, not proof of public reachability. No automatic NAT traversal.' : 'Start the listener to see the actual endpoint. An endpoint is not proof of public reachability.';
     renderPeerList();
+    renderRelay();
     for (const id of ['peer-name', 'peer-fingerprint', 'peer-host', 'peer-port', 'add-peer']) $(id).disabled = blocked;
     if (!settingsDirty) {
       $('persistent-address').checked = state?.settings?.persistentAddress === true;
@@ -141,9 +146,47 @@
     if (selectedSend) $('send-dialog-snapshot').textContent = `Snapshot: ${selectedSend.snapshotId}${sendStillCurrent ? '' : ' · State changed. Cancel and review again.'}`;
   }
 
+  function renderRelay() {
+    const relay = state?.relay;
+    const server = state?.server;
+    const ownership = server?.ownership;
+    const blocked = !bridgeReady || isBusy();
+    $('relay-card').hidden = !relay;
+    if (relay) {
+      $('relay-name').textContent = relay.name;
+      const atRelay = ownership?.owner === relay.fingerprint;
+      const here = ownership?.owner === state.deviceId && ['owned', 'offered'].includes(ownership.state);
+      $('relay-holder').textContent = relayStatusError ? 'UNREACHABLE' : relayStatus === undefined ? 'EMPTY'
+        : relayStatus ? (relayStatus.state === 'transferred' ? `WITH ${String(relayStatus.ownerName || 'ANOTHER PC').toUpperCase()}` : relayStatus.state === 'offered' ? 'CHECKOUT PENDING' : 'STORED ON RELAY')
+        : 'NOT CHECKED';
+      const pendingPark = ownership?.state === 'offered' && ownership.offer?.target === relay.fingerprint;
+      $('park-relay').textContent = pendingPark ? 'Retry park' : 'Park on relay';
+      $('park-relay').disabled = blocked || !server || !isStopped() || !(ownsServer() || pendingPark);
+      $('claim-relay').disabled = blocked || !isStopped() || here || isHosting();
+      $('check-relay').disabled = blocked;
+      $('relay-help').textContent = relayStatusError ? `Relay unreachable: ${relayStatusError}`
+        : !server ? 'No server on this PC yet. Claim it from the relay to host here.'
+        : atRelay ? 'The server is stored on the relay. Any trusted PC can claim it, including this one.'
+        : here ? 'This PC holds the server. Park it on the relay when you are done so another PC can claim it while this one is off.'
+        : `The server is with ${server.ownerName || 'another PC'}. Check the relay, then claim once it has been parked there.`;
+    }
+    const select = $('relay-peer');
+    const options = [['', 'None: hand off directly between PCs'], ...(state?.peers || []).map((peer) => [peer.fingerprint, `${peer.name} · ${formatEndpoint(peer.host, peer.port)}`])];
+    if (select.dataset.signature !== JSON.stringify(options)) {
+      select.dataset.signature = JSON.stringify(options);
+      select.replaceChildren(...options.map(([value, label]) => { const option = element('option', '', label); option.value = value; return option; }));
+    }
+    if (!relayDirty) {
+      select.value = relay?.fingerprint || '';
+      $('park-on-stop').checked = relay?.parkOnStop === true;
+    }
+    select.disabled = blocked;
+    $('park-on-stop').disabled = blocked || !select.value;
+  }
+
   function renderPeerList() {
     const peers = state?.peers || [];
-    const signature = JSON.stringify(peers);
+    const signature = JSON.stringify([peers, state?.relay?.fingerprint ?? null]);
     $('peers-empty').hidden = peers.length > 0;
     $('peer-count').textContent = peers.length ? `${peers.length} SAVED` : 'NONE ADDED';
     if (signature !== renderedPeers) {
@@ -161,7 +204,8 @@
         handoff.dataset.fingerprint = peer.fingerprint;
         handoff.dataset.method = 'handoff';
         handoff.setAttribute('aria-label', `Hand off hosting to ${peer.name}`);
-        heading.append(element('span', 'peer-name', peer.name), button, handoff);
+        if (peer.fingerprint === state?.relay?.fingerprint) heading.append(element('span', 'peer-name', peer.name), element('span', 'subtle-label', 'RELAY · PARK / CLAIM ABOVE'));
+        else heading.append(element('span', 'peer-name', peer.name), button, handoff);
         const pin = element('details', 'peer-pin');
         pin.append(element('summary', '', 'Verified fingerprint'), element('code', 'peer-fingerprint', peer.fingerprint));
         item.append(heading, element('code', 'peer-endpoint', formatEndpoint(peer.host, peer.port)), pin);
@@ -220,6 +264,29 @@
     if ($('recover-ownership').disabled) return;
     return runAction('recoverStopped', { confirmed: true });
   });
+  async function checkRelay() {
+    if (!state?.relay || !bridgeReady) return;
+    try {
+      const status = await window.peerhost.call('checkRelay');
+      relayStatus = status === null ? undefined : status;
+      relayStatusError = null;
+    } catch (error) {
+      relayStatus = null;
+      relayStatusError = errorMessage(error).replace(/^Error invoking remote method 'peerhost:call': (Error: )?/, '');
+    }
+    render();
+  }
+  $('check-relay').addEventListener('click', () => { if (!$('check-relay').disabled) void checkRelay(); });
+  for (const [id, method] of [['park-relay', 'parkAtRelay'], ['claim-relay', 'claimFromRelay']]) {
+    $(id).addEventListener('click', async () => {
+      if ($(id).disabled) return;
+      await runAction(method);
+      await checkRelay();
+    });
+  }
+  for (const id of ['relay-peer', 'park-on-stop']) {
+    $(id).addEventListener('change', () => { relayDirty = true; settingsDirty = true; render(); });
+  }
   $('clean-up').addEventListener('click', () => {
     if ($('clean-up').disabled) return;
     return runAction('cleanUp');
@@ -345,6 +412,7 @@
     $('send-dialog-recipient').textContent = `To ${peer.name} · ${formatEndpoint(peer.host, peer.port)}`;
     $('send-dialog-fingerprint').textContent = peer.fingerprint;
     render();
+    if (peer.fingerprint === state.relay?.fingerprint) return showError('This peer is your relay. Use Park on relay instead; it stores the server for any PC to claim.');
     $('send-dialog').showModal();
     $('cancel-send').focus();
   });
@@ -377,9 +445,20 @@
       const port = match ? Number(match[2]) : 0;
       if (!match || port < 1 || port > 65535 || match[1].startsWith('.') || match[1].endsWith('.') || match[1].includes('..')) return invalid('gateway-address', 'Enter the mini-PC gateway as hostname:port, with a port from 1 to 65535. No protocol or path.');
     }
+    const relayFingerprint = $('relay-peer').value;
+    const relay = relayFingerprint ? { fingerprint: relayFingerprint, parkOnStop: $('park-on-stop').checked } : null;
+    const relayChanged = JSON.stringify(relay) !== JSON.stringify(state.relay ? { fingerprint: state.relay.fingerprint, parkOnStop: state.relay.parkOnStop } : null);
     return runAction('saveSettings', { persistentAddress, gatewayAddress, startAtLogin }, () => {
       if (state.settings.persistentAddress !== persistentAddress || state.settings.gatewayAddress !== gatewayAddress || state.settings.startAtLogin !== startAtLogin) throw new Error('The saved preferences could not be confirmed. Your edits have been kept.');
+    }).then(async (saved) => {
+      if (!saved) return;
+      if (relayChanged && !await runAction('saveRelay', relay)) return;
+      relayDirty = false;
       settingsDirty = false;
+      relayStatus = null;
+      relayStatusError = null;
+      render();
+      if (relay) void checkRelay();
     });
   });
 
@@ -420,5 +499,5 @@
     clearTimeout(pollTimer);
     if (!document.hidden) void refresh().then(schedulePoll);
   });
-  void refresh().then(schedulePoll);
+  void refresh().then(() => { schedulePoll(); void checkRelay(); });
 })();

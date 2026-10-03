@@ -106,7 +106,7 @@ test('preexisting JSON metadata is refused with explicit migration guidance and 
     await assert.rejects(ledger.status(),/legacy JSON.*explicit migration/i);
     await assert.rejects(ledger.initialize('r2'),/explicit migration/i);
     await assert.rejects(ledger.startHosting(),/explicit migration/i);
-    await assert.rejects(ledger.acceptTransfer({id:'offer',source:'b',target:'a',generation:1,snapshotId:'r2'},'b','r2'),/explicit migration/i);
+    await assert.rejects(ledger.acceptTransfer({id:'offer',lineage:'L',source:'b',target:'a',generation:1,snapshotId:'r2'},'b','r2'),/explicit migration/i);
     assert.equal(await readFile(file,'utf8'),legacy);
   }finally{await rm(dir,{recursive:true,force:true});}
 });
@@ -153,7 +153,7 @@ test('incoming self-transfer cannot manufacture ownership',async t=>{
       await a.initialize('r1');
       if(uncertain)await a.markUncertain();
       const before=await a.status();
-      await assert.rejects(a.acceptTransfer({id:'self',source:'a',target:'a',generation:1,snapshotId:'r1'},'a','r1'),/self|source|target/i);
+      await assert.rejects(a.acceptTransfer({id:'self',lineage:'L',source:'a',target:'a',generation:1,snapshotId:'r1'},'a','r1'),/self|source|target/i);
       assert.deepEqual(await a.status(),before);
     }finally{await rm(dir,{recursive:true,force:true});}
   });
@@ -166,7 +166,7 @@ test('incoming transfer cannot clear uncertain ownership',async()=>{
     await previous.initialize('r1');await previous.markUncertain();
     const recipient=new mod.OwnershipLedger(file,'b');
     const before=await recipient.status();
-    await assert.rejects(recipient.acceptTransfer({id:'incoming',source:'a',target:'b',generation:1,snapshotId:'r1'},'a','r1'),/uncertain|conflicting|ownership/i);
+    await assert.rejects(recipient.acceptTransfer({id:'incoming',lineage:'L',source:'a',target:'b',generation:1,snapshotId:'r1'},'a','r1'),/uncertain|conflicting|ownership/i);
     assert.deepEqual(await recipient.status(),before);
     await assert.rejects(recipient.startHosting(),/ownership/i);
   }finally{await rm(dir,{recursive:true,force:true});}

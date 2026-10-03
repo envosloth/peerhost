@@ -36,8 +36,8 @@ function fields(value: unknown, keys: string[]): asserts value is Record<string,
 }
 function validateOffer(value: unknown, snapshotId: string): TransferOffer | undefined {
   if (value === null) return undefined;
-  fields(value, ['id', 'source', 'target', 'generation', 'snapshotId']);
-  for (const key of ['id', 'source', 'target']) {
+  fields(value, ['id', 'lineage', 'source', 'target', 'generation', 'snapshotId']);
+  for (const key of ['id', 'lineage', 'source', 'target']) {
     const item = value[key];
     if (typeof item !== 'string' || !item.length || item.length > 128 || /[\u0000-\u001f\u007f]/u.test(item)) throw new Error('Invalid ownership offer identifier');
   }
@@ -45,7 +45,7 @@ function validateOffer(value: unknown, snapshotId: string): TransferOffer | unde
   if (value.snapshotId !== snapshotId || typeof value.generation !== 'number' || !Number.isSafeInteger(value.generation) || value.generation < 1) {
     throw new Error('Invalid ownership offer revision/generation');
   }
-  return { id: value.id as string, source: value.source as string, target: value.target as string,
+  return { id: value.id as string, lineage: value.lineage as string, source: value.source as string, target: value.target as string,
     generation: value.generation, snapshotId: value.snapshotId };
 }
 async function frame(socket: TLSSocket, timeoutMs?: number): Promise<Record<string, unknown>> {
@@ -139,19 +139,40 @@ async function requireFreeSpace(directory: string, needed: number, reserve: numb
   }
 }
 
+export interface SendResult { snapshot: SnapshotManifest; filesSent: number; bytesSent: number; ownershipAccepted: boolean }
+
+/**
+ * Dial a pinned peer and send a snapshot. `preface` is an optional first frame (the relay uses it to select an
+ * operation); everything after it is the ordinary transfer protocol.
+ */
 export async function sendSnapshotToPeer(identity: PeerIdentity, peer: TransferPeer, storeDir: string,
-  snapshotId: string, offer?: TransferOffer): Promise<{ snapshot: SnapshotManifest; filesSent: number; bytesSent: number; ownershipAccepted: boolean }> {
+  snapshotId: string, offer?: TransferOffer, { preface }: { preface?: unknown } = {}): Promise<SendResult> {
+  const prepared = await prepareSend(storeDir, snapshotId, offer);
+  const socket = await connectPeer(identity, peer.fingerprint, peer.host, peer.port);
+  try {
+    if (preface !== undefined) await writeFrame(socket, preface);
+    return await sendPrepared(socket, prepared);
+  } finally { socket.destroy(); }
+}
+
+/** Send a snapshot over an already pinned socket, in either connection direction. The caller owns the socket. */
+export async function sendSnapshot(socket: TLSSocket, storeDir: string, snapshotId: string, offer?: TransferOffer): Promise<SendResult> {
+  return sendPrepared(socket, await prepareSend(storeDir, snapshotId, offer));
+}
+
+async function prepareSend(storeDir: string, snapshotId: string, offer?: TransferOffer) {
   hex(snapshotId);
   await assertSafeStore(storeDir);
   const manifestStat = await lstat(path.join(storeDir, 'snapshots', `${snapshotId}.json`));
   if (manifestStat.size > MAX_MANIFEST_BYTES) throw new Error('Snapshot metadata 64-MiB limit exceeded');
   const snapshot = await loadManifest(storeDir, snapshotId);
-  offer = validateOffer(offer ?? null, snapshotId);
+  const validated = validateOffer(offer ?? null, snapshotId);
   // Only the head revision is sent. The receiver can materialize it alone, so history never grows a transfer.
-  const batches = fileBatches(snapshot.files);
-  const objects = objectsOf(snapshot.files);
-  const socket = await connectPeer(identity, peer.fingerprint, peer.host, peer.port);
-  try {
+  return { storeDir, snapshotId, snapshot, offer: validated, batches: fileBatches(snapshot.files), objects: objectsOf(snapshot.files) };
+}
+
+async function sendPrepared(socket: TLSSocket, { storeDir, snapshotId, snapshot, offer, batches, objects }: Awaited<ReturnType<typeof prepareSend>>): Promise<SendResult> {
+  {
     await writeFrame(socket, { type: 'snapshot', version: PROTOCOL_VERSION, snapshotId, parentId: snapshot.parentId,
       fileCount: snapshot.files.length, offer: offer ?? null });
     for (const files of batches) await writeFrame(socket, { type: 'files', files });
@@ -193,7 +214,7 @@ export async function sendSnapshotToPeer(identity: PeerIdentity, peer: TransferP
         typeof ack.ownershipAccepted !== 'boolean') throw new Error('Snapshot acknowledgment id/counters mismatch');
     if (ack.ownershipAccepted && !offer) throw new Error('Ownership acknowledgment without a transfer offer');
     return { snapshot, filesSent, bytesSent, ownershipAccepted: ack.ownershipAccepted };
-  } finally { socket.destroy(); }
+  }
 }
 
 export async function receiveSnapshot(socket: TLSSocket, authenticatedFingerprint: string, storeDir: string,
