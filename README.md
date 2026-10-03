@@ -6,6 +6,8 @@ A Windows-first Minecraft Java server manager under development. Import a **stop
 
 ## Run from source
 
+**Linux launcher:** `npm run install:linux` adds PeerHost to your app menu (and `~/Desktop` if it exists), rebuilding automatically when sources change.
+
 Use a modern Node runtime with built-in `node:sqlite` (development tested with Node 26.7.0; Electron's embedded Node 24.21.0 is used by the desktop). Java is not bundled.
 
 ```sh
@@ -33,6 +35,15 @@ The app keeps its own profile at `%APPDATA%/PeerHost`. `--profile-root=<absolute
 - **Failed or missing acknowledgment:** the source stays fenced, because a network error does not prove the recipient did not accept. Use **Retry handoff** on the same peer: it resends the *same* offer, and a recipient that already accepted it simply re-acknowledges it. A pending offer cannot be redirected to a different peer. No automatic rollback or heartbeat-loss takeover.
 - **Uncertain local session:** confirm all previous processes are stopped before using the recovery control. This does not recover pending offers or take ownership back from another peer.
 
+### Mods
+
+Open **Mods** on the Operate page (server stopped and owned by this PC):
+
+- **Server mods** are copied into the server's `mods/` folder and load on the next start.
+- **Client pack** holds client-only mods (shaders, minimaps, the client half of a modpack). The server never loads them. **Export client pack** writes a zip with a `mods/` folder and install instructions to hand to players.
+
+Only real `.jar` files are accepted; a batch with any invalid, duplicate or unsafe file is refused as a whole, and an existing mod is never overwritten (remove it first to update). Both lists live inside the managed server, so they travel with snapshots, handoffs and relay claims. Remove buttons delete from the current copy only; earlier snapshots keep their files.
+
 ### Optional relay (always-on storage)
 
 Direct handoff needs both PCs online at once. An optional **relay**, a headless `peerhost-relay` process on an always-on PC, stores the server between hosts: **Park on relay** when you finish, and any trusted PC can **Claim from relay** later, even while the first PC is off. Park-on-stop can do this automatically. Parking and claiming are ordinary pinned, verified handoffs with one owner at a time; a lineage id stops a different server from passing as a newer one. Setup and guarantees: [relay documentation](docs/relay.md).
@@ -57,6 +68,7 @@ npm test
 npm run check:desktop
 npm run check:handoff
 npm run check:relay
+npm run check:mods
 npm run package:windows
 ```
 

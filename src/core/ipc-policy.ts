@@ -1,8 +1,9 @@
 import { validateSettings } from './settings.js';
 import { isValidEndpointHost } from './endpoints.js';
 import { validTimeout, MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS } from './saved-state.js';
-const NO_PAYLOAD=new Set(['getState','importServer','createSnapshot','startServer','stopServer','startPeerListener','cleanUp','parkAtRelay','claimFromRelay','checkRelay']);
-const METHODS=new Set([...NO_PAYLOAD,'saveProfile','sendCommand','saveSettings','addPeer','sendSnapshot','handoff','recoverStopped','saveRelay']);
+import { isModKind, isModName } from './mods.js';
+const NO_PAYLOAD=new Set(['getState','importServer','createSnapshot','startServer','stopServer','startPeerListener','cleanUp','parkAtRelay','claimFromRelay','checkRelay','exportClientPack']);
+const METHODS=new Set([...NO_PAYLOAD,'saveProfile','sendCommand','saveSettings','addPeer','sendSnapshot','handoff','recoverStopped','saveRelay','addMods','removeMod']);
 function boundedString(v:unknown,max:number):v is string{return typeof v==='string'&&v.length<=max&&!v.includes('\0');}
 function fingerprint(v:unknown):v is string{return typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);}
 export interface TrustedIpcContext {senderId:number;expectedSenderId:number;isMainFrame:boolean}
@@ -34,6 +35,12 @@ export function validateCall(method:unknown,payload:unknown,senderUrl:string,exp
       return {name:p.name,fingerprint:p.fingerprint,host:p.host,port:p.port};
     case 'sendSnapshot':case 'handoff':
       if(!fingerprint(p.fingerprint))throw new Error('Invalid peer fingerprint');return {fingerprint:p.fingerprint};
+    case 'addMods':
+      if(Object.keys(p).join(',')!=='kind'||!isModKind(p.kind))throw new Error('Invalid mod kind');
+      return {kind:p.kind};
+    case 'removeMod':
+      if(Object.keys(p).sort().join(',')!=='kind,name'||!isModKind(p.kind)||!isModName(p.name))throw new Error('Invalid mod name');
+      return {kind:p.kind,name:p.name};
     case 'recoverStopped':
       if(p.confirmed!==true)throw new Error('Confirm the previous server process is stopped');return {confirmed:true};
     default:throw new Error('Unknown IPC method');

@@ -32,7 +32,7 @@ async function launch(name) {
   const app = await electron.launch({ executablePath: electronPath, args: [...linuxKeyring, path.join(project, 'dist/apps/desktop/main.js'), '--profile-root=' + path.join(root, name)], env });
   const page = await app.firstWindow();
   page.on('pageerror', (error) => errors.push(String(error)));
-  await page.waitForFunction(() => document.querySelector('#app-version').textContent.includes('v0.1.0'));
+  await page.waitForFunction(() => document.querySelector('#app-version').textContent.includes('v0.2.0'));
   await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response: 1 }); });
   return { app, page };
 }

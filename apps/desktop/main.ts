@@ -60,6 +60,21 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         case 'startPeerListener':return backend.startPeerListener();
         case 'sendSnapshot':return backend.sendSnapshot(p.fingerprint);
         case 'handoff':if(await confirm('Transfer hosting ownership to this peer?','Stop the server first. A fresh snapshot will be captured and shared, including server configuration/player data. This PC becomes fenced before transfer. If acknowledgment is lost or the peer declines, local hosting remains blocked until ownership is reconciled.'))return backend.handoff(p.fingerprint);return;
+        case 'addMods':{
+          // Paths come only from the native picker, never from the renderer.
+          const client=p.kind==='client';
+          const picked=await dialog.showOpenDialog(window,{title:client?'Add client-only mods (for players)':'Add server mods',buttonLabel:'Add mods',filters:[{name:'Minecraft mods',extensions:['jar']}],properties:['openFile','multiSelections']});
+          if(picked.canceled||!picked.filePaths.length)return [];
+          return backend.addMods(p.kind,picked.filePaths);
+        }
+        case 'removeMod':if(await confirm('Remove '+p.name+'?',p.kind==='server'?'It is deleted from the server\'s mods folder and will not load on the next start. Earlier snapshots still contain it.':'It is removed from the client pack. Earlier snapshots still contain it.'))return backend.removeMod(p.kind,p.name);return;
+        case 'exportClientPack':{
+          const state=await backend.getState();
+          const saved=await dialog.showSaveDialog(window,{title:'Save the client mod pack',buttonLabel:'Save pack',defaultPath:path.join(app.getPath('downloads'),(state.server?.name||'server').replace(/[^\w .-]+/g,'_')+' client mods.zip'),filters:[{name:'Zip archive',extensions:['zip']}]});
+          if(saved.canceled||!saved.filePath)return;
+          const destination=/\.zip$/i.test(saved.filePath)?saved.filePath:saved.filePath+'.zip';
+          return backend.exportClientPack(destination);
+        }
         case 'saveRelay':return backend.saveRelay(p.relay);
         case 'checkRelay':return backend.checkRelay();
         case 'parkAtRelay':if(await confirm('Park the server on the relay?','A final snapshot is captured and stored on the always-on relay. This PC stops being the host until a PC claims the server back. Any PC that trusts the relay can claim it while this one is off.'))return backend.parkAtRelay();return;

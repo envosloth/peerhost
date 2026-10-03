@@ -1,6 +1,6 @@
 {
   "name": "peerhost",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "main": "dist/apps/desktop/main.js",
@@ -17,7 +17,9 @@
     "check:handoff": "npm run build && node tools/desktop-handoff-check.mjs",
     "package:windows": "npm test && node tools/package-windows.mjs",
     "check:relay": "npm run build && node tools/desktop-relay-check.mjs",
-    "relay": "npm run build && node dist/src/relay/cli.js"
+    "relay": "npm run build && node dist/src/relay/cli.js",
+    "check:mods": "npm run build && node tools/desktop-mods-check.mjs",
+    "install:linux": "bash tools/install-linux-launcher.sh"
   },
   "devDependencies": {
     "@electron/packager": "^20.3.0",

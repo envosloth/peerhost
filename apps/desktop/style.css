@@ -164,6 +164,15 @@ input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px;
 .peer-form .button { margin-top: 13px; width: 100%; }
 .endpoint-fields { display: grid; grid-template-columns: minmax(0, 1fr) 72px; gap: 8px; margin-top: 12px; }
 .endpoint-fields input { padding: 7px; font-size: 11px; }
+.mods-panel { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; padding: 14px 15px 0; }
+.mods-column h3 { font-size: 12px; }
+.mod-list { list-style: none; margin: 10px 0; padding: 0; max-height: 220px; overflow-y: auto; border: 1px solid var(--border-soft); border-radius: 4px; }
+.mod-list:empty::before { content: 'None yet'; display: block; padding: 10px; color: var(--dim); font-size: 11px; }
+.mod-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; font-size: 11px; border-bottom: 1px solid var(--border-soft); }
+.mod-item:last-child { border-bottom: 0; }
+.mod-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono, monospace); }
+.mod-size { color: var(--dim); margin-left: auto; white-space: nowrap; }
+.mods-warning { padding: 0 15px 14px; }
 .relay-card { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border-soft); }
 .relay-card h3 { font-size: 12px; }
 .relay-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }

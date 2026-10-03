@@ -8,6 +8,7 @@ import { ServerProcess } from './launcher.js';
 import { OwnershipLedger, canAcceptOffer, type TransferOffer } from './ownership.js';
 import { receiveSnapshot, sendSnapshotToPeer } from './transfers.js';
 import { listenPeer, type PeerIdentity } from './peer-transport.js';
+import { addMods, exportClientPack, listMods, removeMod, type ModKind } from './mods.js';
 import { openRelayOperation, relayRequest, relayStatus, type RelayStatus } from './relay-client.js';
 import {
   parseSavedState, validateLaunchProfile, validatePeer, validateRelayConfig,
@@ -65,12 +66,14 @@ export class PeerHostApplication {
     let server = null;
     if (this.saved.server) {
       const ownership = await this.ledger().status();
+      const serverDir = this.saved.server.serverDir;
+      const mods = { server: await listMods(serverDir, 'server').catch(() => []), client: await listMods(serverDir, 'client').catch(() => []) };
       server = { ...this.saved.server, profile: { ...this.saved.server.profile, args: [...this.saved.server.profile.args] },
-        state: this.process?.state ?? 'offline', ownership, ownerName: this.nameOf(ownership.owner) };
+        state: this.process?.state ?? 'offline', ownership, ownerName: this.nameOf(ownership.owner), mods };
     }
     const relay = this.saved.relay;
     return {
-      version: '0.1.0',
+      version: '0.2.0',
       deviceId: this.identity.fingerprint,
       settings: { ...this.saved.settings },
       server,
@@ -337,6 +340,50 @@ export class PeerHostApplication {
       const pruned = await pruneStore(server.storeDir, { keep, ancestors: CLEANUP_ANCESTORS });
       this.log(`Cleanup removed ${serverDirsRemoved} old server folder(s), ${pruned.snapshotsRemoved} old revision(s) and ${pruned.objectsRemoved} unused object(s) (${(pruned.bytesFreed / 1024 ** 2).toFixed(1)} MiB of objects).`);
       return { serverDirsRemoved, ...pruned };
+    });
+  }
+
+  // ---------------------------------------------------------------- mods
+
+  /** Mods change the world's files, so they follow the same rule as snapshots: stopped, and owned by this PC. */
+  private async requireEditableServer(): Promise<SavedServer> {
+    const server = this.saved.server;
+    if (!server) throw new Error('No server imported');
+    const ownership = await this.ledger().status();
+    if (ownership.state !== 'owned' || ownership.owner !== this.identity.fingerprint) {
+      throw new Error('Mods can only change while this PC safely holds ownership of the stopped server');
+    }
+    return server;
+  }
+
+  /** Server mods go into mods/; client mods go into the client pack, which the server never loads. */
+  async addMods(kind: ModKind, files: string[]): Promise<string[]> {
+    this.assertStopped();
+    return this.operation('addMods', async () => {
+      const server = await this.requireEditableServer();
+      const added = await addMods(server.serverDir, kind, files);
+      this.log(`Added ${added.length} ${kind} mod(s): ${added.join(', ')}. ${kind === 'server' ? 'They load on the next start.' : 'Export the client pack to share them with players.'}`);
+      return added;
+    });
+  }
+
+  async removeMod(kind: ModKind, name: string): Promise<void> {
+    this.assertStopped();
+    await this.operation('removeMod', async () => {
+      const server = await this.requireEditableServer();
+      await removeMod(server.serverDir, kind, name);
+      this.log(`Removed ${kind} mod ${name}. Earlier snapshots still contain it.`);
+    });
+  }
+
+  /** Read-only, so it is allowed while hosting and on any PC that has the files. */
+  async exportClientPack(destination: string): Promise<{ mods: number; bytes: number }> {
+    return this.operation('exportClientPack', async () => {
+      const server = this.saved.server;
+      if (!server) throw new Error('No server imported');
+      const result = await exportClientPack(server.serverDir, destination);
+      this.log(`Exported ${result.mods} client mod(s) to ${destination}.`);
+      return result;
     });
   }
 

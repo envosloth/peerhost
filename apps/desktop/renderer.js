@@ -23,6 +23,7 @@
     sendCommand: 'Sending command…', saveSettings: 'Saving preferences…', startPeerListener: 'Starting peer listener…',
     addPeer: 'Saving trusted peer…', sendSnapshot: 'Sending snapshot…', handoff: 'Transferring hosting ownership…',
     cleanUp: 'Cleaning up old copies and revisions…', saveRelay: 'Saving relay…',
+    addMods: 'Adding mods…', removeMod: 'Removing mod…', exportClientPack: 'Exporting the client pack…',
     parkAtRelay: 'Parking the server on the relay…', claimFromRelay: 'Claiming the server from the relay…', checkRelay: 'Checking the relay…',
   };
   let relayStatus = null;
@@ -124,6 +125,7 @@
     $('listener-help').textContent = state?.peerEndpoint ? localOnly ? 'Loopback only: other computers cannot reach this endpoint. No router or firewall configuration is changed.' : 'This is the actual listener endpoint, not proof of public reachability. No automatic NAT traversal.' : 'Start the listener to see the actual endpoint. An endpoint is not proof of public reachability.';
     renderPeerList();
     renderRelay();
+    renderMods();
     for (const id of ['peer-name', 'peer-fingerprint', 'peer-host', 'peer-port', 'add-peer']) $(id).disabled = blocked;
     if (!settingsDirty) {
       $('persistent-address').checked = state?.settings?.persistentAddress === true;
@@ -144,6 +146,36 @@
     const allowed = selectedSend?.retry ? bridgeReady && !isBusy() && isStopped() : canSnapshot();
     $('confirm-send').disabled = !allowed || !sendStillCurrent;
     if (selectedSend) $('send-dialog-snapshot').textContent = `Snapshot: ${selectedSend.snapshotId}${sendStillCurrent ? '' : ' · State changed. Cancel and review again.'}`;
+  }
+
+  let renderedMods = null;
+  function renderMods() {
+    const server = state?.server;
+    const mods = server?.mods || { server: [], client: [] };
+    const editable = bridgeReady && !isBusy() && Boolean(server) && isStopped() && ownsServer();
+    $('mods-summary').textContent = server ? `${mods.server.length} server · ${mods.client.length} client` : 'Server & client';
+    $('add-server-mods').disabled = !editable;
+    $('add-client-mods').disabled = !editable;
+    $('export-client-pack').disabled = !bridgeReady || isBusy() || !mods.client.length;
+    const signature = JSON.stringify(mods);
+    if (signature !== renderedMods) {
+      renderedMods = signature;
+      for (const kind of ['server', 'client']) {
+        $(`${kind}-mods`).replaceChildren(...mods[kind].map((mod) => {
+          const item = element('li', 'mod-item');
+          const remove = element('button', 'text-button', 'Remove');
+          remove.type = 'button';
+          remove.dataset.kind = kind;
+          remove.dataset.name = mod.name;
+          remove.setAttribute('aria-label', `Remove ${mod.name}`);
+          const name = element('span', 'mod-name', mod.name);
+          name.title = mod.name;
+          item.append(name, element('span', 'mod-size', mod.size >= 1048576 ? `${(mod.size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(mod.size / 1024))} KB`), remove);
+          return item;
+        }));
+      }
+    }
+    for (const button of document.querySelectorAll('.mod-list button')) button.disabled = !editable;
   }
 
   function renderRelay() {
@@ -287,6 +319,21 @@
   for (const id of ['relay-peer', 'park-on-stop']) {
     $(id).addEventListener('change', () => { relayDirty = true; settingsDirty = true; render(); });
   }
+  for (const kind of ['server', 'client']) {
+    $(`add-${kind}-mods`).addEventListener('click', () => {
+      if ($(`add-${kind}-mods`).disabled) return;
+      return runAction('addMods', { kind });
+    });
+    $(`${kind}-mods`).addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-name]');
+      if (!button || button.disabled) return;
+      return runAction('removeMod', { kind: button.dataset.kind, name: button.dataset.name });
+    });
+  }
+  $('export-client-pack').addEventListener('click', () => {
+    if ($('export-client-pack').disabled) return;
+    return runAction('exportClientPack');
+  });
   $('clean-up').addEventListener('click', () => {
     if ($('clean-up').disabled) return;
     return runAction('cleanUp');

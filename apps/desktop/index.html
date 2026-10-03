@@ -67,6 +67,24 @@
           </div>
         </div>
 
+        <details id="mods-details" class="profile-details">
+          <summary>Mods<span id="mods-summary" class="summary-meta">Server &amp; client</span></summary>
+          <div class="mods-panel">
+            <div class="mods-column">
+              <div class="compact-heading"><h3>Server mods <span class="section-caption">mods/</span></h3><button id="add-server-mods" type="button" class="button button-small" disabled>Add .jar…</button></div>
+              <p class="field-help">Loaded by the server on its next start. Players usually need the same mods too.</p>
+              <ul id="server-mods" class="mod-list" aria-label="Server mods"></ul>
+            </div>
+            <div class="mods-column">
+              <div class="compact-heading"><h3>Client pack <span class="section-caption">players only</span></h3><button id="add-client-mods" type="button" class="button button-small" disabled>Add .jar…</button></div>
+              <p class="field-help">Never loaded by the server. Export a zip for players: shaders, minimaps, and the client side of your modpack.</p>
+              <ul id="client-mods" class="mod-list" aria-label="Client mods"></ul>
+              <button id="export-client-pack" type="button" class="button button-small" disabled>Export client pack (.zip)…</button>
+            </div>
+          </div>
+          <p class="warning-copy mods-warning">Mods run code on every PC that loads them. Only add files you trust.</p>
+        </details>
+
         <details id="profile-details" class="profile-details">
           <summary>Launch profile<span class="summary-meta">Java path &amp; arguments</span></summary>
           <form id="profile-form" class="profile-form" novalidate>
