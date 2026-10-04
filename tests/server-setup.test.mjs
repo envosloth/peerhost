@@ -103,6 +103,32 @@ test('Fabric failure removes its whole private source without touching sibling f
     assert.equal(await readFile(path.join(f.staging, 'existing-world'), 'utf8'), 'leave me');
   }
 });
+test('Fabric on an unobfuscated release (no intermediary mappings) prepares; mismatched profiles still fail closed', async t => {
+  const unobfuscated = [{ loader: { version: '0.19.5', stable: true }, intermediary: { maven: 'net.fabricmc:intermediary:0.0.0' }, launcherMeta: { version: 2, min_java_version: 8 } }];
+  const serveProfile = (withIntermediary) => (req, res, origin) => {
+    if (req.url !== '/v2/versions/loader/1.21.1/0.19.5/server/json') return false;
+    const fabricJar = Buffer.from('PK fixture Fabric library bytes, NOT executable code');
+    const libraries = [
+      { name: 'org.ow2.asm:asm:9.10.1', url: origin + '/', sha256: hash(fabricJar, 'sha256'), size: fabricJar.length },
+      ...(withIntermediary ? [{ name: 'net.fabricmc:intermediary:1.21.1', url: origin + '/' }] : []),
+      { name: 'net.fabricmc:fabric-loader:0.19.5', url: origin + '/' },
+    ];
+    res.end(JSON.stringify({ id: 'fabric-loader-0.19.5-1.21.1', inheritsFrom: '1.21.1', mainClass: 'net.fabricmc.loader.impl.launch.knot.KnotServer', libraries }));
+    return true;
+  };
+  const ok = await fixture(t, { loaders: unobfuscated, handle: serveProfile(false) });
+  const prepared = await ok.client.prepare(ok.staging, { ...ok.input, loader: 'fabric' });
+  assert.ok((await readdir(prepared.sourceDir)).includes('fabric-server-launch.jar'));
+  assert.deepEqual(prepared.profile.args.slice(-3), ['-jar', 'fabric-server-launch.jar', 'nogui']);
+  // Declared unobfuscated but the profile carries an intermediary: refused, nothing left behind.
+  const extra = await fixture(t, { loaders: unobfuscated, handle: serveProfile(true) });
+  await assert.rejects(extra.client.prepare(extra.staging, { ...extra.input, loader: 'fabric' }), /intermediary/);
+  assert.deepEqual(await readdir(extra.staging), []);
+  // Obfuscated (no declaration) but the profile lacks its intermediary: still refused.
+  const missing = await fixture(t, { handle: serveProfile(false) });
+  await assert.rejects(missing.client.prepare(missing.staging, { ...missing.input, loader: 'fabric' }), /intermediary/);
+  assert.deepEqual(await readdir(missing.staging), []);
+});
 function zipEntries(bytes) {
   const entries = {}; let offset = 0;
   while (bytes.readUInt32LE(offset) === 0x04034b50) {

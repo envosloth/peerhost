@@ -44,6 +44,22 @@ function validateCreateInput(input: CreateServerInput): void {
       !versionId(input.gameVersion) || !['vanilla', 'fabric'].includes(input.loader) || !Number.isInteger(input.memoryMiB) || input.memoryMiB < 256 || input.memoryMiB > 1048576 || typeof input.eulaAccepted !== 'boolean') throw new Error('Invalid new-server input');
   validateJavaExecutable(input.javaExecutable);
 }
+const UNOBFUSCATED_INTERMEDIARY = 'net.fabricmc:intermediary:0.0.0';
+/** Requires exactly the mappings Fabric's loader metadata declares. Releases from Minecraft 26.1 on are
+ * unobfuscated: Fabric declares the placeholder intermediary 0.0.0 and the server profile carries none.
+ * Older releases declare (or, in older metadata, imply) `intermediary:<gameVersion>`, which must be present.
+ * Anything else fails closed. */
+export function checkFabricMappings(declared: unknown, names: ReadonlySet<string>, loaderVersion: string, gameVersion: string): void {
+  if (!names.has(`net.fabricmc:fabric-loader:${loaderVersion}`)) throw new Error(`Fabric profile is missing its loader ${loaderVersion}`);
+  const intermediaries = [...names].filter(name => name.startsWith('net.fabricmc:intermediary:'));
+  if (declared === UNOBFUSCATED_INTERMEDIARY) {
+    if (intermediaries.length) throw new Error('Fabric profile lists intermediary mappings for an unobfuscated release');
+    return;
+  }
+  const expected = `net.fabricmc:intermediary:${gameVersion}`;
+  if (declared !== undefined && declared !== expected) throw new Error('Fabric loader metadata declares unexpected intermediary mappings');
+  if (intermediaries.length !== 1 || intermediaries[0] !== expected) throw new Error('Fabric profile is missing its intermediary mappings for this release');
+}
 export class ServerSetupClient {
   private readonly timeoutMs: number;
   private readonly operationTimeoutMs: number;
@@ -148,7 +164,7 @@ export class ServerSetupClient {
       if (library.sha256 !== undefined && !isHash(library.sha256, 64)) throw new Error('Invalid Fabric library integrity metadata');
       return { url, size, checksum: library.sha256 as string | undefined, filename: `libraries/lib-${index}.jar` };
     });
-    if (!names.has(`net.fabricmc:fabric-loader:${loaderVersion}`) || !names.has(`net.fabricmc:intermediary:${gameVersion}`)) throw new Error('Fabric profile is missing its loader or intermediary');
+    checkFabricMappings(selected.intermediary === undefined ? undefined : object(selected.intermediary).maven, names, loaderVersion, gameVersion);
     await mkdir(path.join(sourceDir, 'libraries'));
     for (const library of libraries) {
       const checksum = library.checksum ?? (await this.bytes(library.url + '.sha256', ['maven.fabricmc.net'], 256, operation)).toString('utf8').trim();
