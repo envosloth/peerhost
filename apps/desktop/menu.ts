@@ -6,7 +6,7 @@ export function applicationMenuTemplate(packaged: boolean, actions: { show: () =
     ? [{ role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }]
     : [{ role: 'reload' }, { role: 'forceReload' }, { role: 'toggleDevTools' }, { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }];
   return [
-    { label: 'PeerHost', submenu: [{ label: 'Open', click: actions.show }, { label: 'Quit safely', click: actions.quit }] },
+    { label: 'Seed Hosting', submenu: [{ label: 'Open', click: actions.show }, { label: 'Quit safely', click: actions.quit }] },
     { label: 'View', submenu: view },
   ];
 }

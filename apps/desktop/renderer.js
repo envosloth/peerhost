@@ -1,4 +1,4 @@
-/* PeerHost's local renderer. All privileged operations go through the preload bridge. */
+/* Seed Hosting's local renderer. All privileged operations go through the preload bridge. */
 'use strict';
 
 (() => {
@@ -48,7 +48,20 @@
     return ownership?.state === 'offered' && ownership.owner === state.deviceId ? ownership.offer : null;
   };
   const formatEndpoint = (host, port) => `${String(host).includes(':') ? `[${host}]` : host}:${port}`;
-  const errorMessage = (error) => typeof error?.message === 'string' ? error.message : String(error);
+  // Electron wraps main-process errors as "Error invoking remote method 'peerhost:call': Error: <reason>"; show the reason.
+  const errorMessage = (error) => (typeof error?.message === 'string' ? error.message : String(error)).replace(/^Error invoking remote method '[^']*': (?:\w*Error: )?/, '');
+  const ACTION_FAILURES = {
+    createServer: 'Couldn’t create the server', importServer: 'Couldn’t import the server', startServer: 'Couldn’t start the server',
+    stopServer: 'Couldn’t stop the server', createSnapshot: 'Couldn’t save a backup', restoreSnapshot: 'Couldn’t restore the backup',
+    saveProfile: 'Couldn’t save the launch settings', configureSimpleProfile: 'Couldn’t save Java and memory', pickJava: 'Couldn’t use that Java',
+    saveSettings: 'Couldn’t save your settings', saveRelay: 'Couldn’t save the relay', addPeer: 'Couldn’t save the trusted peer',
+    sendSnapshot: 'Couldn’t send the snapshot', handoff: 'Couldn’t hand off hosting', sendCommand: 'Couldn’t send the command',
+    startPeerListener: 'Couldn’t start the listener', cleanUp: 'Couldn’t free up space', addMods: 'Couldn’t add the mods',
+    removeMod: 'Couldn’t remove the mod', exportClientPack: 'Couldn’t export the client pack', installMod: 'Couldn’t install the mod',
+    saveModTarget: 'Couldn’t save mod compatibility', createInvite: 'Couldn’t create an invitation', joinWithInvite: 'Couldn’t join the group',
+    parkAtRelay: 'Couldn’t hand off to the always-on PC', claimFromRelay: 'Couldn’t take over hosting', saveOnboarding: 'Couldn’t save your setup progress',
+    saveGameGateway: 'Couldn’t save the player address', checkGameGateway: 'Couldn’t test the player address', recoverStopped: 'Couldn’t recover ownership',
+  };
   const element = (tag, className, text) => {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -84,7 +97,7 @@
     const facts = [
       ['Server', serverText], ['Hosting', hostText], ['Friends', state?.relay ? state.relay.name : 'No group'],
       ['Latest backup', server?.snapshotId ? server.snapshotId.slice(0, 10) : 'None'], ['Mods', String(mods)],
-      ['Join at', address], ['PeerHost', 'Runs on your PCs · Nothing is shared unless you choose'],
+      ['Join at', address], ['Seed Hosting', 'Runs on your PCs · Nothing is shared unless you choose'],
     ];
     const signature = JSON.stringify(facts);
     if (signature === renderedTicker) return;
@@ -149,6 +162,83 @@
     const values = [...new Set([...MEMORY_CHOICES, ...(Number.isSafeInteger(selected) ? [selected] : [])])].sort((x, y) => x - y);
     $(id).replaceChildren(...values.map(mib => { const option = element('option', '', `${formatMemory(mib)}${mib === 2048 ? ' · recommended' : ''}`); option.value = String(mib); return option; }));
     $(id).value = String(Number.isSafeInteger(selected) ? selected : 2048);
+    syncBridges();
+  }
+  // Tiles and chips are the visible controls. Each hidden <select> stays the single form value the guide
+  // reads and validates; picks flow into it and programmatic changes flow back onto the tiles.
+  function syncBridges() {
+    for (const group of document.querySelectorAll('[data-bridge]')) {
+      const select = $(group.dataset.bridge);
+      if (group.classList.contains('chip-options')) {
+        const options = [...select.options];
+        const signature = JSON.stringify(options.map((option) => [option.value, option.textContent]));
+        if (group.dataset.signature !== signature) {
+          group.dataset.signature = signature;
+          group.replaceChildren(...options.map((option) => {
+            const [size, note] = option.textContent.split(' · ');
+            const chip = element('label', 'chip-option');
+            const input = element('input');
+            input.type = 'radio'; input.name = `${select.id}-choice`; input.value = option.value;
+            chip.append(input, element('span', 'chip-value', size));
+            if (note) chip.append(element('span', 'chip-note', note));
+            return chip;
+          }));
+        }
+      }
+      for (const input of group.querySelectorAll('input[type="radio"]')) {
+        input.checked = input.value === select.value;
+        input.disabled = select.disabled;
+      }
+    }
+  }
+  // Live preview of the world being created: it follows every choice and says plainly what is still needed.
+  function renderWorldPreview() {
+    const name = $('setup-name').value.trim();
+    $('world-preview-name').textContent = name || 'Untitled world';
+    const memory = Number($('setup-memory').value);
+    $('world-preview-meta').textContent = [$('setup-loader').value === 'fabric' ? 'Fabric · mods ready' : 'Vanilla', $('setup-version').value || 'pick a version', memory ? formatMemory(memory) : 'pick memory'].join(' · ');
+    const missing = [!name && 'a name', !$('setup-version').value && 'a version', !$('setup-java').value && 'Java', !$('setup-eula').checked && 'the EULA'].filter(Boolean);
+    $('world-preview-ready').textContent = missing.length ? 'Still needed: ' + missing.join(', ') : 'Ready to create ✓';
+    $('world-preview-ready').classList.toggle('is-ready', !missing.length);
+  }
+  for (const id of ['setup-name', 'setup-loader', 'setup-version', 'setup-memory', 'setup-java', 'setup-eula']) {
+    for (const type of ['input', 'change']) $(id).addEventListener(type, renderWorldPreview);
+  }
+  const NAME_START = ['Mossy', 'Sunny', 'Willow', 'Amber', 'Clover', 'Maple', 'Misty', 'Pebble', 'Fern', 'Honey', 'Cedar', 'Bramble', 'Starlit', 'Copper', 'Juniper', 'Sprout'];
+  const NAME_END = ['Hollow', 'Meadow', 'Grove', 'Shores', 'Valley', 'Ridge', 'Haven', 'Glade', 'Peaks', 'Springs', 'Orchard', 'Cove', 'Fields', 'Hills', 'Isle', 'Garden'];
+  const pick = (list) => list[Math.floor(Math.random() * list.length)];
+  $('setup-random-name').addEventListener('click', () => {
+    if ($('setup-random-name').disabled) return;
+    let next;
+    do next = pick(NAME_START) + ' ' + pick(NAME_END); while (next === $('setup-name').value);
+    $('setup-name').value = next;
+    $('setup-name').removeAttribute('aria-invalid');
+    $('setup-name').dispatchEvent(new Event('input', { bubbles: true }));
+    $('setup-random-name').classList.remove('is-rolling');
+    void $('setup-random-name').offsetWidth; // Restart the roll animation.
+    $('setup-random-name').classList.add('is-rolling');
+  });
+  // Sunflower seed-head pattern (golden-angle phyllotaxis) for the decorative art.
+  for (const svg of document.querySelectorAll('svg.phyllo')) {
+    const count = Number(svg.dataset.seeds) || 120;
+    const step = 92 / Math.sqrt(count);
+    for (let n = 1; n <= count; n++) {
+      const angle = n * 2.399963229728653, radius = step * Math.sqrt(n);
+      const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      dot.setAttribute('cx', (radius * Math.cos(angle)).toFixed(2));
+      dot.setAttribute('cy', (radius * Math.sin(angle)).toFixed(2));
+      dot.setAttribute('r', (1.1 + 2.7 * n / count).toFixed(2));
+      svg.append(dot);
+    }
+  }
+  for (const group of document.querySelectorAll('[data-bridge]')) {
+    const select = $(group.dataset.bridge);
+    group.addEventListener('change', (event) => {
+      if (event.target.type !== 'radio' || select.disabled) return;
+      select.value = event.target.value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    select.addEventListener('change', syncBridges);
   }
   function setupPayload() {
     return { step: setupDraft.step, dismissed: setupDraft.dismissed, completed: setupDraft.completed, skipped: [...setupDraft.skipped], draft: { name: $('setup-name').value, loader: $('setup-loader').value, gameVersion: $('setup-version').value, memoryMiB: Number($('setup-memory').value) } };
@@ -203,7 +293,7 @@
       button.dataset.done = String(stepDone(button.dataset.setupStep));
       button.disabled = blocked;
     }
-    $('setup-title').textContent = server ? 'Setup guide' : 'Welcome to PeerHost';
+    $('setup-title').textContent = server ? 'Setup guide' : 'Welcome to Seed Hosting';
     for (const id of ['setup-back', 'setup-later', 'setup-save-close', 'setup-skip', 'setup-next']) $(id).disabled = blocked;
     $('setup-back').hidden = step === 'server' && (setupMode !== 'create' || Boolean(server));
     $('setup-skip').hidden = !['friends', 'gateway'].includes(step) || stepDone(step);
@@ -238,6 +328,9 @@
     // Ready stage.
     $('setup-ready-title').textContent = setupPrepared() ? 'You’re all set' : 'Almost there';
     renderReadySummary();
+    syncBridges();
+    $('setup-random-name').disabled = $('setup-name').disabled;
+    renderWorldPreview();
   }
   function openSetup(step) {
     if (!bridgeReady || isBusy()) return;
@@ -337,7 +430,7 @@
     $('setup-runtime-java').replaceChildren(runtimePlaceholder, ...candidates.map(java => { const option = element('option', '', java.major ? `Java ${java.major} · ${java.executable}` : `Current · ${java.executable}`); option.value = java.executable; return option; }));
     $('setup-runtime-java').value = runtimeSelected;
     $('setup-java-help').classList.toggle('warning-copy', !setupMetadataLoading && !setupJava.length);
-    $('setup-java-help').textContent = setupMetadataLoading ? 'Looking for Java on this PC…' : setupJava.length ? 'Found on this PC. The newest is picked for you; PeerHost checks it works with your Minecraft version.' : 'No Java found. Install Java 21 or newer (see “How to install Java”), then press Search again.';
+    $('setup-java-help').textContent = setupMetadataLoading ? 'Looking for Java on this PC…' : setupJava.length ? 'Found on this PC. The newest is picked for you; Seed Hosting checks it works with your Minecraft version.' : 'No Java found. Install Java 21 or newer (see “How to install Java”), then press Search again.';
   }
   $('setup-discover-java').addEventListener('click', () => void loadSetupMetadata());
   $('setup-pick-java').addEventListener('click', () => runAction('pickJava', undefined, java => {
@@ -467,7 +560,7 @@
     const heading = element('p', 'join-title', running ? 'Your server is running. In Minecraft: Multiplayer → Add Server, then use:' : 'How to join: press Start server, then in Minecraft choose Multiplayer → Add Server and use:');
     const list = element('dl', 'join-list');
     for (const [label, value] of rows) { const row = element('div'); row.append(element('dt', '', label), element('dd', 'mono', value)); list.append(row); }
-    const note = element('p', 'field-help', 'Friends outside your home network need an always-on PC (Setup guide) or a VPN such as Tailscale. PeerHost never changes your router.');
+    const note = element('p', 'field-help', 'Friends outside your home network need an always-on PC (Setup guide) or a VPN such as Tailscale. Seed Hosting never changes your router.');
     $('join-help').replaceChildren(heading, list, note);
   }
   function renderGettingStarted() {
@@ -525,7 +618,7 @@
       $('stop-timeout').value = server?.profile?.stopTimeoutSeconds ?? '';
     }
     $('profile-feedback').textContent = !server ? 'Create or import a server first.' : profileDirty ? 'Unsaved changes · save before starting.' : active ? 'Stop the server to edit these settings.' : 'Saved.';
-    const hint = !server ? '' : !bridgeReady ? 'PeerHost can’t reach its background service; buttons are paused.' : isBusy() ? '' : active ? '' : server.modInstallError ? `${server.modInstallError}. Repair the mod files before starting.` : pendingOffer() ? 'Your world is being handed to another PC. Use Retry on that PC if it didn’t finish; if they decline, it comes back here.' : !ownsServer() ? `${server.ownerName || 'Another PC'} is hosting this world right now. Use Take over hosting once they’ve stopped.` : profileDirty ? 'Save your launch settings before starting.' : '';
+    const hint = !server ? '' : !bridgeReady ? 'Seed Hosting can’t reach its background service; buttons are paused.' : isBusy() ? '' : active ? '' : server.modInstallError ? `${server.modInstallError}. Repair the mod files before starting.` : pendingOffer() ? 'Your world is being handed to another PC. Use Retry on that PC if it didn’t finish; if they decline, it comes back here.' : !ownsServer() ? `${server.ownerName || 'Another PC'} is hosting this world right now. Use Take over hosting once they’ve stopped.` : profileDirty ? 'Save your launch settings before starting.' : '';
     const needsJava = Boolean(server) && !hint && !active && (!server.profile?.executable || !server.profile?.args?.length);
     $('server-action-hint').textContent = needsJava ? 'Choose Java before starting: open the Setup guide → Java & memory.' : hint; $('server-action-hint').hidden = !needsJava && !hint;
     $('server-toolbar').hidden = !server;
@@ -973,7 +1066,7 @@
       if (state?.relay) void refreshFriends();
       return true;
     } catch (error) {
-      const message = `${method} failed: ${errorMessage(error)}`;
+      const message = `${ACTION_FAILURES[method] || `${method} failed`}: ${errorMessage(error)}`;
       if (refreshInFlight) await refreshInFlight;
       await refresh(); // Failed operations can still alter process / ownership state.
       showError(message);
@@ -1236,7 +1329,7 @@
     if (refreshInFlight) return refreshInFlight;
     refreshInFlight = Promise.resolve().then(async () => {
       try {
-        if (typeof window.peerhost?.call !== 'function') throw new Error('The PeerHost desktop bridge is unavailable. Open this window from the desktop app.');
+        if (typeof window.peerhost?.call !== 'function') throw new Error('The Seed Hosting desktop bridge is unavailable. Open this window from the desktop app.');
         const next = await window.peerhost.call('getState');
         if (!next || typeof next !== 'object' || !next.settings || !Array.isArray(next.peers) || !Array.isArray(next.logs)) throw new Error('The app returned an invalid state.');
         state = next;
@@ -1269,10 +1362,10 @@
   // Appearance is a renderer-only preference remembered on this PC. Storage can be unavailable; defaults then apply.
   const APPEARANCE_KEY = 'peerhost.appearance';
   const appearanceChoices = {
-    theme: ['dark', 'light', 'system'], accent: ['teal', 'ocean', 'violet', 'amber', 'rose'], depth: ['soft', 'tactile'],
+    theme: ['dark', 'light', 'system'], accent: ['sprout', 'teal', 'ocean', 'violet', 'amber', 'rose'], depth: ['soft', 'tactile'],
     density: ['comfortable', 'compact'], motion: ['full', 'reduced'], close: ['tray', 'quit'],
   };
-  const appearanceDefaults = { theme: 'dark', accent: 'teal', depth: 'soft', density: 'comfortable', motion: 'full', close: 'tray' };
+  const appearanceDefaults = { theme: 'dark', accent: 'sprout', depth: 'soft', density: 'comfortable', motion: 'full', close: 'tray' };
   const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
   const appearance = { ...appearanceDefaults };
   try {
@@ -1290,7 +1383,7 @@
       const input = $(`appearance-${key}`).querySelector(`input[value="${appearance[key]}"]`);
       if (input) input.checked = true;
     }
-    const closeLabel = appearance.close === 'quit' ? 'Quit PeerHost safely' : 'Close to tray';
+    const closeLabel = appearance.close === 'quit' ? 'Quit Seed Hosting safely' : 'Close to tray';
     $('window-close').setAttribute('aria-label', closeLabel);
     $('window-close').title = closeLabel;
   }
@@ -1326,7 +1419,7 @@
     $('window-mode').title = `${label} (F11)`;
   }
   async function windowCall(method) {
-    if (!hasBridge()) return showError('Window controls need the PeerHost desktop app.');
+    if (!hasBridge()) return showError('Window controls need the Seed Hosting desktop app.');
     try {
       renderWindowState(await window.peerhost.call(method));
     } catch (error) {
@@ -1362,7 +1455,7 @@
       $('splash').classList.add('is-leaving');
       document.body.classList.remove('is-splashing');
       setTimeout(() => { $('splash').hidden = true; }, reduced ? 0 : 420);
-    }, reduced ? 0 : Math.max(0, 1300 - (performance.now() - splashStarted)));
+    }, reduced ? 0 : Math.max(0, 1900 - (performance.now() - splashStarted)));
   }
   setTimeout(dismissSplash, 6000);
 

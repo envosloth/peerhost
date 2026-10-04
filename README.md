@@ -1,5 +1,7 @@
 # PeerHost — local-first experimental alpha
 
+The desktop app is presented as **Seed Hosting**. The repository, package, IPC channel and profile folder keep the `peerhost` name.
+
 A Windows-first Minecraft Java server manager under development. Create a checked official Vanilla/Fabric server or import a **stopped** existing server into a separate managed copy, run it locally, retain world revisions, and explicitly hand ownership to a trusted peer. The original source is not edited. No cloud object storage or gateway is required for local hosting.
 
 **This is a development alpha, not a production-ready Minecraft hosting service.** Checks include actual disposable Vanilla/Fabric 1.21.1 JVM servers, saved-world transfer and Minecraft status through an opt-in pinned TLS player gateway, plus visible Electron controls. They do not establish authenticated player login/gameplay, arbitrary modpack compatibility, cross-household networking, physical mini-PC deployment, or power-loss durability.

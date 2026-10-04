@@ -13,7 +13,8 @@ const setupLinks: Record<string,string> = Object.freeze({
   relay:'https://github.com/envosloth/peerhost/blob/main/docs/relay.md',
 });
 let window:BrowserWindow;let tray:Tray;let backend:PeerHostApplication;let quitAllowed=false;let quitting=false;
-app.setName('PeerHost');
+// Display name only. The profile folder below stays %APPDATA%/PeerHost so existing worlds and identity are kept.
+app.setName('Seed Hosting');
 const profileArgument=process.argv.find(a=>a.startsWith('--profile-root='));
 const root=profileArgument?path.resolve(profileArgument.slice('--profile-root='.length)):path.join(app.getPath('appData'),'PeerHost');
 app.setPath('userData',root);
@@ -29,10 +30,10 @@ async function quit(){
     const state=await backend.getState();
     if(state.busy){show();await dialog.showMessageBox(window,{type:'warning',message:'An operation is still in progress.',detail:'Wait until it completes before quitting.',buttons:['Keep app open']});return;}
     if(state.server?.state==='running'||state.server?.state==='starting'){
-      show();if(!await confirm('Stop hosting and quit?','Players will disconnect. PeerHost will request a clean stop and save a final local snapshot. This does not guarantee another device has received it.'))return;
+      show();if(!await confirm('Stop hosting and quit?','Players will disconnect. Seed Hosting will request a clean stop and save a final local snapshot. This does not guarantee another device has received it.'))return;
     }
     await backend.close();quitAllowed=true;app.quit();
-  }catch(e){show();await dialog.showMessageBox(window,{type:'error',message:'PeerHost could not quit safely.',detail:String(e),buttons:['Keep app open']});}
+  }catch(e){show();await dialog.showMessageBox(window,{type:'error',message:'Seed Hosting could not quit safely.',detail:String(e),buttons:['Keep app open']});}
   finally{quitting=false;}
 }
 if(!app.requestSingleInstanceLock()){app.quit();}else{
@@ -46,7 +47,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
     }});await backend.open();
     const image=nativeImage.createFromPath(fileURLToPath(new URL('../../../apps/desktop/icon.png',import.meta.url)));
     if(image.isEmpty())throw new Error('App icon could not be loaded');
-    window=new BrowserWindow({width:1240,height:860,minWidth:1000,minHeight:700,title:'PeerHost',icon:image,frame:false,fullscreenable:true,backgroundColor:'#0f1116',show:true,webPreferences:{preload:fileURLToPath(new URL('./preload.cjs',import.meta.url)),nodeIntegration:false,contextIsolation:true,sandbox:true}});
+    window=new BrowserWindow({width:1240,height:860,minWidth:1000,minHeight:700,title:'Seed Hosting',icon:image,frame:false,fullscreenable:true,backgroundColor:'#0f1116',show:true,webPreferences:{preload:fileURLToPath(new URL('./preload.cjs',import.meta.url)),nodeIntegration:false,contextIsolation:true,sandbox:true}});
     window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
     window.webContents.on('will-navigate',event=>event.preventDefault());
     window.on('close',event=>{if(!quitAllowed){event.preventDefault();window.hide();}});
@@ -60,17 +61,17 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         case 'pickJava':{
           const selected=await dialog.showOpenDialog(window,{title:'Choose an installed Java executable (java or java.exe)',properties:['openFile'],...(process.platform==='win32'?{filters:[{name:'Java executable',extensions:['exe']}]}:{})});
           if(selected.canceled||!selected.filePaths[0])return null;
-          if(!await confirm('Check this Java executable?', 'PeerHost will execute this selected file with -version, without a shell. Select only an installed Java runtime you trust. No Java installation or server start occurs.'))return null;
+          if(!await confirm('Check this Java executable?', 'Seed Hosting will execute this selected file with -version, without a shell. Select only an installed Java runtime you trust. No Java installation or server start occurs.'))return null;
           return probeJava(selected.filePaths[0]);
         }
         case 'createServer':{
           const input={...p} as CreateServerInput;
           if(input.eulaAccepted!==true)throw new Error('Explicit Minecraft EULA acceptance is required before creating a server');
-          if(!await confirm('Create this Minecraft server and accept its EULA?', 'By continuing you explicitly accept https://www.minecraft.net/en-us/eula for this server. PeerHost downloads and checks official '+input.loader+' server files, creates a managed copy, and checks the chosen Java runtime. Checksums do not prove executable code harmless. Nothing starts automatically.'))return;
+          if(!await confirm('Create this Minecraft server and accept its EULA?', 'By continuing you explicitly accept https://www.minecraft.net/en-us/eula for this server. Seed Hosting downloads and checks official '+input.loader+' server files, creates a managed copy, and checks the chosen Java runtime. Checksums do not prove executable code harmless. Nothing starts automatically.'))return;
           return backend.createServer(input);
         }
         case 'configureSimpleProfile':
-          if(!await confirm('Check Java and save this launch profile?', 'PeerHost will execute '+p.javaExecutable+' with -version, without a shell, then save Java and RAM. Only approve a trusted installed runtime. Nothing starts automatically.'))return;
+          if(!await confirm('Check Java and save this launch profile?', 'Seed Hosting will execute '+p.javaExecutable+' with -version, without a shell, then save Java and RAM. Only approve a trusted installed runtime. Nothing starts automatically.'))return;
           return backend.configureSimpleProfile(p as {javaExecutable:string;memoryMiB:number});
         case 'saveGameGateway':return backend.saveGameGateway(p as {enabled:boolean;localPort:number});
         case 'checkGameGateway':return backend.checkGameGateway();
@@ -82,12 +83,12 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         case 'saveOnboarding':return backend.saveOnboarding(p);
         case 'listSnapshots':return backend.listSnapshots();
         case 'restoreSnapshot':
-          if(!await confirm('Restore this saved world revision?', 'Stop hosting first. PeerHost will preserve a safety snapshot and the previous folder, then restore into a separate managed folder. Hosting ownership is not rewound. Nothing starts automatically.'))return;
+          if(!await confirm('Restore this saved world revision?', 'Stop hosting first. Seed Hosting will preserve a safety snapshot and the previous folder, then restore into a separate managed folder. Hosting ownership is not rewound. Nothing starts automatically.'))return;
           return backend.restoreSnapshot(p.snapshotId);
         case 'importServer':{
           const selected=await dialog.showOpenDialog(window,{title:'Import a stopped Minecraft Java server',properties:['openDirectory']});
           if(selected.canceled||!selected.filePaths[0])return;
-          if(!await confirm('Is the source server stopped?','Copying a running world can produce an inconsistent snapshot. Confirm that the source has stopped. PeerHost creates its own copy and will not edit the source.'))return;
+          if(!await confirm('Is the source server stopped?','Copying a running world can produce an inconsistent snapshot. Confirm that the source has stopped. Seed Hosting creates its own copy and will not edit the source.'))return;
           return backend.importExisting(selected.filePaths[0],true);
         }
         case 'saveProfile':return backend.saveProfile(p as {executable:string;args:string[]});
@@ -142,11 +143,11 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         default:throw new Error('This operation is not available in this build');
       }
     });
-    tray=new Tray(image.resize({width:32,height:32,quality:'best'}));tray.setToolTip('PeerHost — local-first server hosting');
-    tray.setContextMenu(Menu.buildFromTemplate([{label:'Open PeerHost',click:show},{type:'separator'},{label:'Quit safely',click:()=>{void quit();}}]));
+    tray=new Tray(image.resize({width:32,height:32,quality:'best'}));tray.setToolTip('Seed Hosting — Minecraft servers you share with friends');
+    tray.setContextMenu(Menu.buildFromTemplate([{label:'Open Seed Hosting',click:show},{type:'separator'},{label:'Quit safely',click:()=>{void quit();}}]));
     tray.on('double-click',show);
     Menu.setApplicationMenu(Menu.buildFromTemplate(applicationMenuTemplate(app.isPackaged,{show,quit:()=>{void quit();}})));
     if(app.isPackaged)window.webContents.on('devtools-opened',()=>window.webContents.closeDevTools());
     await window.loadFile(html);
-  }).catch(error=>{console.error(error);dialog.showErrorBox('PeerHost startup failed',String(error));quitAllowed=true;app.quit();});
+  }).catch(error=>{console.error(error);dialog.showErrorBox('Seed Hosting startup failed',String(error));quitAllowed=true;app.quit();});
 }
