@@ -43,4 +43,4 @@ Unreadable optional metadata produces a scoped warning and is not silently overw
 
 ## Verification boundaries
 
-Automated tests, real Electron checks and disposable real-server smoke results are recorded separately in the verification documents. Socket/process fixtures are not Minecraft proof; protocol status responses are not gameplay login tests. Verification results are recorded per release.
+Automated tests, real Electron checks and disposable real-server smoke results are recorded separately in the verification documents. Socket/process fixtures are not Minecraft proof; protocol status responses are not gameplay login tests. Published in v0.2.1-alpha; see that release for its verification summary.

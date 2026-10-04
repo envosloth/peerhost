@@ -18,7 +18,7 @@ const app=await electron.launch({executablePath:electronPath,args:[...linuxKeyri
 let page;
 try{
   page=await app.firstWindow();await page.bringToFront();const errors=[];page.on('pageerror',e=>errors.push(String(e)));
-  await page.waitForFunction(()=>document.querySelector('#app-version')?.textContent?.includes('v0.2.0'));
+  await page.waitForFunction(()=>document.querySelector('#app-version')?.textContent?.includes('v0.2.1'));
   let state=await page.evaluate(()=>window.peerhost.call('getState'));assert.equal(state.settings.persistentAddress,false);assert.match(state.deviceId,/^[a-f0-9]{64}$/);
   assert.equal((await readFile(path.join(root,'profile','identity.json'),'utf8')).includes('PRIVATE KEY'),false);
   await dismissInitialSetup(page);

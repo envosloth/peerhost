@@ -108,7 +108,7 @@ export class PeerHostApplication {
     const gateway = await readGameGateway(this.root);
     if (gateway.error && this.gatewayTunnel) await this.closeGameGateway();
     return {
-      version: '0.2.0',
+      version: '0.2.1',
       deviceId: this.identity.fingerprint,
       settings: { ...this.saved.settings },
       server,
