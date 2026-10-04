@@ -20,6 +20,6 @@
 - Mods, launch settings and console stay hidden until a server exists.
 
 ### Validation notes
-- Full automated suite and eight visible Electron checks run on this tree (counts in the release notes).
+- 383 automated tests pass (0 failed, 0 skipped); all 8 visible Electron desktop checks pass, including official Vanilla 1.21.1 creation through the new wizard.
 - Earlier in this cycle, real Vanilla and Fabric 1.21.1 servers started, answered Minecraft status requests, saved, and moved between two profiles on one PC through the always-on PC path.
 - **Not tested:** real player login/gameplay, two physical PCs over the internet, arbitrary modpacks, power loss. The Windows build is unsigned.
