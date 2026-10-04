@@ -7,11 +7,18 @@ import { isValidEndpointHost } from '../core/endpoints.js';
 const USAGE = `Usage:
   peerhost-relay init   --root <dir>
   peerhost-relay trust  --root <dir> --name <name> --fingerprint <64 hex>
-  peerhost-relay serve  --root <dir> [--host 127.0.0.1] [--port ${DEFAULT_RELAY_PORT}] [--keep 10]
+  peerhost-relay untrust --root <dir> --fingerprint <64 hex>
+  peerhost-relay invite --root <dir> [--hours 24] [--advertise <reachable host>] [--advertise-port <port>]
+  peerhost-relay member-invites --root <dir> --enabled <on|off>
+  peerhost-relay serve  --root <dir> [--name <relay name>] [--host 127.0.0.1] [--port ${DEFAULT_RELAY_PORT}] [--advertise <reachable host>] [--keep 10] [--game-port <port>] [--game-host 127.0.0.1]
   peerhost-relay status --root <dir>
 
 serve binds 127.0.0.1 unless --host is given. To reach it from other PCs, pass your LAN or
-Tailscale address (for example --host 0.0.0.0) and allow the port in your firewall yourself.`;
+Tailscale address (for example --host 0.0.0.0) and allow the port in your firewall yourself.
+Wildcard binds require --advertise for member invites. Loopback invites work only on this machine.
+The player gateway is OFF unless --game-port is given; its separate --game-host defaults to loopback.
+Only an enrolled, confirmed checked-out host's outbound pinned tunnel receives player bytes.
+Trust/invite changes take effect on a running relay; untrust disconnects that host's players.`;
 
 function fail(message: string): never {
   console.error(message + '\n\n' + USAGE);
@@ -24,6 +31,8 @@ try {
   values = parseArgs({ args: rest, options: {
     root: { type: 'string' }, name: { type: 'string' }, fingerprint: { type: 'string' },
     host: { type: 'string' }, port: { type: 'string' }, keep: { type: 'string' },
+    'game-host': { type: 'string' }, 'game-port': { type: 'string' },
+    hours: { type: 'string' }, advertise: { type: 'string' }, 'advertise-port': { type: 'string' }, enabled: { type: 'string' },
   } }).values as Record<string, string | undefined>;
 } catch (error) { fail((error as Error).message); }
 if (!values.root) fail('--root is required');
@@ -34,17 +43,47 @@ const keep = values.keep === undefined ? undefined : Number(values.keep);
 if (keep !== undefined && (!Number.isInteger(keep) || keep < 1)) fail('--keep must be a positive whole number');
 const relay = new RelayNode(root, identity, { keepRevisions: keep });
 await relay.open();
+if (values.name && (command === 'init' || command === 'serve')) await relay.setName(values.name);
+
+function advertised(defaultPort: number): { host: string; port: number } | undefined {
+  const host = values.advertise ?? (command === 'invite' ? values.host : undefined);
+  if (!host) {
+    if (values['advertise-port']) fail('--advertise-port requires --advertise');
+    return undefined;
+  }
+  const port = Number(values['advertise-port'] ?? (command === 'invite' ? values.port : undefined) ?? defaultPort);
+  if (!isValidEndpointHost(host) || host === '0.0.0.0') fail('--advertise must be a reachable host, not a wildcard address');
+  if (!Number.isInteger(port) || port < 1 || port > 65535) fail('--advertise-port must be 1–65535');
+  if (host === 'localhost' || /^127\./.test(host)) console.error('WARNING: this invite address is loopback; friends on other machines cannot reach it.');
+  return { host, port };
+}
 
 switch (command) {
   case 'init':
     console.log(`FINGERPRINT=${identity.fingerprint}`);
-    console.log('Add this fingerprint as a trusted peer on each host PC, then trust each host here with `trust`.');
+    console.log('Start the relay with serve, then create a friend code with invite. Manual trust is also supported.');
     break;
   case 'trust':
     if (!values.name || !values.fingerprint || !/^[a-f0-9]{64}$/.test(values.fingerprint)) fail('trust needs --name and a 64-character lowercase --fingerprint');
     await relay.trust(values.name, values.fingerprint);
     console.log(`TRUSTED=${values.name.trim()} ${values.fingerprint}`);
     break;
+  case 'untrust':
+    if (!values.fingerprint) fail('untrust needs --fingerprint');
+    await relay.untrust(values.fingerprint);
+    console.log(`REMOVED=${values.fingerprint}`);
+    break;
+  case 'member-invites':
+    if (values.enabled !== 'on' && values.enabled !== 'off') fail('--enabled must be on or off');
+    await relay.setMemberInvites(values.enabled === 'on');
+    console.log(`MEMBER_INVITES=${values.enabled}`);
+    break;
+  case 'invite': {
+    const invite = await relay.createInvite({ hours: values.hours === undefined ? 24 : Number(values.hours), advertise: advertised(DEFAULT_RELAY_PORT) });
+    console.log(invite.code);
+    console.log(`EXPIRES=${new Date(invite.expiresAt).toISOString()}`);
+    break;
+  }
   case 'status': {
     console.log(`FINGERPRINT=${identity.fingerprint}`);
     const custody = await relay.custody();
@@ -57,10 +96,20 @@ switch (command) {
     const port = values.port === undefined ? DEFAULT_RELAY_PORT : Number(values.port);
     if (host !== '0.0.0.0' && !isValidEndpointHost(host)) fail('--host must be an IPv4 address or hostname');
     if (!Number.isInteger(port) || port < 0 || port > 65535) fail('--port must be 0–65535');
-    if (!relay.trusted.length) console.log('WARNING: no trusted hosts yet; every connection will be refused.');
-    await relay.listen({ host, port });
+    if (values['game-host'] !== undefined && values['game-port'] === undefined) fail('--game-host requires --game-port');
+    const gameHost = values['game-host'] ?? '127.0.0.1';
+    const gamePort = values['game-port'] === undefined ? undefined : Number(values['game-port']);
+    if (gameHost !== '0.0.0.0' && !isValidEndpointHost(gameHost)) fail('--game-host must be an IPv4 address or hostname');
+    if (gamePort !== undefined && (!Number.isInteger(gamePort) || gamePort < 0 || gamePort > 65535)) fail('--game-port must be 0–65535');
+    if (!relay.trusted.length) console.log('No friends yet. Create an invite in another terminal to let a friend join.');
+    const advertise = advertised(port);
+    if (host === '0.0.0.0' && !advertise) console.error('WARNING: pass --advertise with a reachable LAN/Tailscale host to enable member invite codes.');
+    await relay.listen({ host, port, advertise });
+    try { if (gamePort !== undefined) await relay.listenGame({ host: gameHost, port: gamePort }); }
+    catch (error) { await relay.close(); throw error; }
     console.log(`FINGERPRINT=${identity.fingerprint}`);
     console.log(`LISTENING=${relay.endpoint!.host}:${relay.endpoint!.port}`);
+    if (relay.gameEndpoint) console.log(`GAME_LISTENING=${relay.gameEndpoint.host}:${relay.gameEndpoint.port}`);
     const stop = () => { void relay.close().then(() => process.exit(0), (error) => { console.error(error); process.exit(1); }); };
     process.once('SIGTERM', stop);
     process.once('SIGINT', stop);

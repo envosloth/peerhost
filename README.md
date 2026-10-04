@@ -1,8 +1,8 @@
 # PeerHost — local-first experimental alpha
 
-A Windows-first Minecraft Java server manager under development. Import a **stopped** existing server into a separate managed copy, run it locally, replicate immutable snapshots, and explicitly hand ownership to a trusted peer. The original source is not edited. No cloud object storage or gateway is required for local hosting.
+A Windows-first Minecraft Java server manager under development. Create a checked official Vanilla/Fabric server or import a **stopped** existing server into a separate managed copy, run it locally, retain world revisions, and explicitly hand ownership to a trusted peer. The original source is not edited. No cloud object storage or gateway is required for local hosting.
 
-**This is a development alpha, not a production-ready Minecraft hosting service.** Tests so far use disposable files, real local processes, real loopback TLS, and visible Electron controls. They do not establish real Minecraft/modpack compatibility, cross-household networking, power-loss durability, or working mini-PC routing.
+**This is a development alpha, not a production-ready Minecraft hosting service.** Checks include actual disposable Vanilla/Fabric 1.21.1 JVM servers, saved-world transfer and Minecraft status through an opt-in pinned TLS player gateway, plus visible Electron controls. They do not establish authenticated player login/gameplay, arbitrary modpack compatibility, cross-household networking, physical mini-PC deployment, or power-loss durability.
 
 ## Run from source
 
@@ -21,11 +21,11 @@ On the development Windows Git Bash session, use `command node` if its wrapper r
 
 The app keeps its own profile at `%APPDATA%/PeerHost`. `--profile-root=<absolute path>` selects an isolated development/test profile. Never copy, delete, or reinitialize ownership databases to unblock hosting. That can erase a safety fence.
 
-1. Stop the source server, including any launcher-managed Java process.
-2. Click **Import existing**, select its folder, and acknowledge that it is stopped. PeerHost copies it into its profile.
-3. Configure the **local** Java executable and a JSON argument array. Vanilla example: `["-Xmx4G", "-jar", "server.jar", "nogui"]`. Existing modpacks may require different arguments or `@` argument files. The start timeout (default 600 s) and stop timeout (default 180 s) are editable per server; large modpacks can need several minutes to reach `Done (`.
-4. The managed server must already contain your accepted Minecraft EULA. PeerHost does not accept it for you.
-5. Start only executables/mods you trust. Stop cleanly before snapshot or handoff operations.
+1. Open **Setup guide**, or use the prominent **create a server** action in an empty **My server** page. Setup saves non-secret drafts/stages and can be closed or resumed at any time.
+2. **Create:** choose Vanilla/Fabric, release, trusted installed Java and RAM; explicitly read/accept the Minecraft EULA and approve native confirmation. Official files are checked before adoption. **Import:** stop the original server, select its folder through the native picker and confirm it is stopped; PeerHost preserves the original.
+3. **Java & hosting:** discover/select Java and configure RAM with native execution consent. Simple setup preserves existing Java arguments; argument files controlling RAM or ambiguous/scripted modpacks need **advanced Launch profile**. Example: `["-Xmx4G", "-jar", "server.jar", "nogui"]`. Start/stop timeouts default to 600/180 s.
+4. Friends and **Always-on PC** are optional skippable stages. Local hosting requires neither. The managed server must contain your explicitly accepted EULA; imported servers need their own acceptance.
+5. Start only executables/mods you trust. Nothing starts automatically. Stop cleanly before snapshots/handoffs; **Backups** offers confirmed restore into a separate managed folder with a safety revision and preserved ownership generation. See [beginner setup](docs/onboarding.md).
 
 ## Snapshot versus hosting handoff
 
@@ -37,24 +37,30 @@ The app keeps its own profile at `%APPDATA%/PeerHost`. `--profile-root=<absolute
 
 ### Mods
 
-Open **Mods** on the Operate page (server stopped and owned by this PC):
+Open **Mods → Browse Modrinth** on the Operate page. PeerHost detects common Fabric, Quilt, Forge and NeoForge layouts; if detection is incomplete, select the loader and Minecraft version and click **Save compatibility**. Browse popular compatible mods, search, and click **Install**. Required dependencies are resolved and downloaded with SHA-512 verification before files are added; native consent is required. Installing requires this PC to own the stopped server.
 
 - **Server mods** are copied into the server's `mods/` folder and load on the next start.
 - **Client pack** holds client-only mods (shaders, minimaps, the client half of a modpack). The server never loads them. **Export client pack** writes a zip with a `mods/` folder and install instructions to hand to players.
+
+Placement follows Modrinth's declared client/server requirements. The existing **Add .jar…** buttons remain available for local files. Files and their Modrinth provenance travel with snapshots and relay claims. A checksum proves download integrity, not that a mod is harmless; review trusted sources and use the correct loader. PeerHost does not install or upgrade the loader itself. See [mod browsing](docs/mod-browser.md).
 
 Only real `.jar` files are accepted; a batch with any invalid, duplicate or unsafe file is refused as a whole, and an existing mod is never overwritten (remove it first to update). Both lists live inside the managed server, so they travel with snapshots, handoffs and relay claims. Remove buttons delete from the current copy only; earlier snapshots keep their files.
 
 ### Optional relay (always-on storage)
 
-Direct handoff needs both PCs online at once. An optional **relay**, a headless `peerhost-relay` process on an always-on PC, stores the server between hosts: **Park on relay** when you finish, and any trusted PC can **Claim from relay** later, even while the first PC is off. Park-on-stop can do this automatically. Parking and claiming are ordinary pinned, verified handoffs with one owner at a time; a lineage id stops a different server from passing as a newer one. Setup and guarantees: [relay documentation](docs/relay.md).
+Direct handoff needs both PCs online at once. An optional **relay**, a headless `peerhost-relay` process on an always-on PC, stores the server between hosts: **Hand off to always-on PC** when you finish, and any trusted PC can **Take over hosting** later, even while the first PC is off. Park-on-stop can do this automatically. Parking and claiming are ordinary pinned, verified handoffs with one owner at a time; a lineage id stops a different server from passing as a newer one. Setup and guarantees: [relay documentation](docs/relay.md).
 
-Old server execution directories and revisions are retained until you click **Clean up storage**, which (after a native confirmation) deletes earlier managed server folders, interrupted transfer staging, and revisions older than the current one and its two parents. The original imported folder is never touched. Conflicting ownership is refused rather than silently replaced or merged. Keep independent backups. Only an online device holding the latest complete revision can supply it; no free unlimited always-online availability is implied.
+### Add a friend
+
+With a reachable relay configured, open **Peers → Add friend → Create invitation**, then send the single-use code privately. Your friend chooses **Join with an invitation**, enters their name and pastes the code. This enrolls their PC and configures the same relay without manual fingerprint exchange; nothing downloads or starts automatically. **Refresh members** shows the group and the current holder. The first member needs an invitation created on the relay itself. Invites expire after 24 hours by default; loopback codes work only on the same machine. Setup and owner controls: [friend invitations](docs/friends.md).
+
+Old server execution directories and revisions are retained until you click **Free up space**, which (after a native confirmation) deletes earlier managed server folders, interrupted transfer staging, and revisions older than the current one and its two parents. The original imported folder is never touched. Conflicting ownership is refused rather than silently replaced or merged. Keep independent backups. Only an online device holding the latest complete revision can supply it; no free unlimited always-online availability is implied.
 
 ## Current boundaries
 
-- Peer listeners bind **127.0.0.1 only** in this development build. Two isolated profiles on this PC can exercise replication/handoff. Another computer cannot reach these listeners yet.
-- Manual certificate-fingerprint trust on both sides. No automatic invitations, discovery, NAT traversal, encrypted transit relay, or public deployment.
-- Persistent address is **optional and OFF by default**. The saved mini-PC gateway setting remains **Unconnected**: routing is not implemented by that checkbox.
+- Direct peer listeners bind **127.0.0.1 only**. For separate PCs, use the optional relay with an explicitly reachable LAN/Tailscale endpoint.
+- Single-use invitations pin the relay certificate; manual fingerprint trust remains available for advanced direct peers. No automatic discovery, NAT traversal, firewall/router changes, or public deployment. An explicitly enabled relay player listener supports host-initiated pinned TLS forwarding; see [game gateway](docs/game-gateway.md).
+- Persistent address is **optional and OFF by default**. The displayed-address preference does not enable routing. Enable actual host tunnels in **Setup → Always-on PC**, configure the local Minecraft port, and enable the third PC's separate player listener. Park/Claim establishes custody; only the confirmed running holder forwards. Players reconnect after a host change, and tunnel readiness is not Internet reachability.
 - Start-at-login is a saved preference only. No Windows startup entry is installed.
 - Closing the window hides it to the tray. Use **PeerHost → Quit safely** or the tray menu to exit. Busy operations block quitting; running hosting requires a clean stop.
 - Transfers send only the current revision, so history length never affects them. Bounds: 65,536 files, 16 GiB per file, 128 GiB per revision, and a 1 GiB free-disk reserve on the receiver; see [transfer documentation](docs/transfers.md). Both peers must run the same alpha (wire protocol v2).
@@ -69,10 +75,16 @@ npm run check:desktop
 npm run check:handoff
 npm run check:relay
 npm run check:mods
+npm run check:browser-friends
+npm run check:mod-recovery
+npm run check:onboarding
+# Requires approved disposable Java and explicit test EULA environment variables:
+npm run check:server-create
+npm run check:minecraft
 npm run package:windows
 ```
 
-The desktop checks open visible Electron windows, log each step, save screenshots under ignored `.test-data`, and hold windows for 90 seconds. Their server child is explicitly a **Node process fixture, NOT Minecraft**. QA substitutes native consent dialog answers, not the backend or IPC operations. The handoff check uses two actual application instances and pinned TLS on loopback. The relay check runs a real `peerhost-relay` process, parks from one instance, closes it, claims from the other, and reclaims on the first.
+The desktop checks open visible Electron windows and log each step. Legacy checks save screenshots under ignored `.test-data` and hold windows for inspection. Their server child is explicitly a **Node process fixture, NOT Minecraft**. QA substitutes native consent dialog answers, not the backend or IPC operations. The handoff check uses two actual application instances and pinned TLS on loopback. The relay check runs a real `peerhost-relay` process, parks from one instance, closes it, claims from the other, and reclaims on the first. The browser/friends check uses scratch profiles, downloads Lithium from live Modrinth, checks cancellation/install/persistence, and enrolls two profiles with real relay invites before park/claim. It saves screenshots in the scratch directory it prints and closes its instances automatically.
 
 Packaging creates a fresh unsigned Windows folder under `release/alpha-*`, checks bundled files and absence of test/private profiles, and prints its exact executable path. Do not distribute or treat a package as release-approved merely because it builds. To run visible handoff verification against that exact binary:
 

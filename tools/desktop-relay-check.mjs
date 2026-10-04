@@ -1,6 +1,7 @@
 // Visible relay check: a real headless relay process, two real desktop instances, and the original host closed
 // while the other PC claims the server. Only native consent dialogs are answered by QA. Fixture is NOT Minecraft.
 import assert from 'node:assert/strict';
+import { dismissInitialSetup } from './desktop-test-setup.mjs';
 import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -34,6 +35,7 @@ async function launch(name) {
   page.on('pageerror', (error) => errors.push(String(error)));
   await page.waitForFunction(() => document.querySelector('#app-version').textContent.includes('v0.2.0'));
   await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response: 1 }); });
+  await dismissInitialSetup(page);
   return { app, page };
 }
 const state = (page) => page.evaluate(() => window.peerhost.call('getState'));
@@ -51,6 +53,7 @@ const idle = (page) => until(page, (s) => !s.busy, 'idle');
 async function click(page, selector) { await page.bringToFront(); await page.locator(selector).click(); }
 async function useRelay(page, fingerprint, host, port) {
   await page.bringToFront();
+  await page.locator('#advanced-peers').evaluate((el) => { el.open = true; });
   await page.locator('#add-peer-details').evaluate((el) => { el.open = true; });
   await page.locator('#peer-name').fill('Mini PC relay');
   await page.locator('#peer-fingerprint').fill(fingerprint);
@@ -100,13 +103,13 @@ try {
   await writeFile(path.join((await state(a.page)).server.serverDir, 'world.bin'), 'played on A');
   await click(a.page, '#stop-server'); await a.page.waitForFunction(() => document.querySelector('#server-status').textContent === 'Stopped'); await idle(a.page);
   await click(a.page, '#park-relay'); await idle(a.page);
-  await holder(a.page, 'STORED ON RELAY');
+  await holder(a.page, 'WAITING ON ALWAYS-ON PC');
   assert.equal(await a.page.locator('#start-server').isDisabled(), true, 'A is fenced once the relay holds the server');
   await a.page.screenshot({ path: path.join(root, 'A-parked.png') });
 
   console.log('STEP 4: Close A completely. B, which has never had the server, claims it from the relay.');
   await a.app.close(); a = undefined;
-  await b.page.bringToFront(); await click(b.page, '#check-relay'); await holder(b.page, 'STORED ON RELAY');
+  await b.page.bringToFront(); await click(b.page, '#check-relay'); await holder(b.page, 'WAITING ON ALWAYS-ON PC');
   await click(b.page, '#claim-relay'); await idle(b.page);
   await b.page.waitForFunction(() => document.querySelector('#ownership-state').textContent.includes('this device'));
   const claimed = await state(b.page);
@@ -133,7 +136,7 @@ try {
 
   console.log('STEP 6: A comes back and claims the newest revision, skipping the generations it missed.');
   a = await launch('a');
-  await click(a.page, '#check-relay'); await holder(a.page, 'STORED ON RELAY');
+  await click(a.page, '#check-relay'); await holder(a.page, 'WAITING ON ALWAYS-ON PC');
   await click(a.page, '#claim-relay'); await idle(a.page);
   await a.page.waitForFunction(() => document.querySelector('#ownership-state').textContent.includes('this device'));
   const back = await state(a.page);

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { dismissInitialSetup } from './desktop-test-setup.mjs';
 import { access, mkdir, mkdtemp, writeFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { _electron as electron } from 'playwright';
@@ -20,6 +21,7 @@ try{
   await page.waitForFunction(()=>document.querySelector('#app-version')?.textContent?.includes('v0.2.0'));
   let state=await page.evaluate(()=>window.peerhost.call('getState'));assert.equal(state.settings.persistentAddress,false);assert.match(state.deviceId,/^[a-f0-9]{64}$/);
   assert.equal((await readFile(path.join(root,'profile','identity.json'),'utf8')).includes('PRIVATE KEY'),false);
+  await dismissInitialSetup(page);
   await page.screenshot({path:path.join(root,'desktop-empty.png')});
   console.log('STEP 2: Substitute ONLY native dialog answers; import actual disposable fixture through the real IPC/backend.');
   await app.evaluate(({dialog},source)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[source]});dialog.showMessageBox=async()=>({response:1,checkboxChecked:false});},source);

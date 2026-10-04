@@ -1,14 +1,16 @@
 import { constants } from 'node:fs';
-import { copyFile, link, lstat, mkdir, open, readdir, rm } from 'node:fs/promises';
+import { copyFile, link, lstat, mkdir, open, readdir, rm, rmdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { validateRelativePath } from './paths.js';
 import { writeZip } from './zip.js';
+import type { ModSource } from './mod-index.js';
+import { assertModInstallComplete, beginModInstall, finishModInstall, modIndexFingerprint, syncModDirectory } from './mod-transaction.js';
 
 export type ModKind = 'server' | 'client';
 /** Client-only mods live here inside the managed server, so they travel with snapshots but are never loaded. */
 export const CLIENT_PACK_DIR = 'peerhost-client-mods';
-export interface ModEntry { name: string; size: number }
+export interface ModEntry { name: string; size: number; source?: ModSource }
 
 const MAX_MOD_BYTES = 512 * 1024 ** 2;
 const MAX_BATCH = 200;
@@ -26,7 +28,7 @@ export function modsDirectory(serverDir: string, kind: ModKind): string {
   return path.join(serverDir, kind === 'server' ? 'mods' : CLIENT_PACK_DIR);
 }
 
-async function ordinaryDirectory(directory: string, create: boolean): Promise<boolean> {
+export async function ordinaryDirectory(directory: string, create: boolean): Promise<boolean> {
   try {
     const stat = await lstat(directory);
     if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`Refusing to use ${directory}: it is not an ordinary folder`);
@@ -52,9 +54,9 @@ export async function listMods(serverDir: string, kind: ModKind): Promise<ModEnt
   return mods.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-async function inspectSource(source: string): Promise<{ name: string; size: number }> {
+async function inspectSource(source: string, name = path.basename(source)): Promise<{ name: string; size: number }> {
   if (typeof source !== 'string' || !path.isAbsolute(source)) throw new Error(`Mod paths must be absolute: ${String(source)}`);
-  const name = path.basename(source);
+
   if (!/\.jar$/i.test(name)) throw new Error(`${name} is not a .jar file`);
   if (!isModName(name)) throw new Error(`${name} has a reserved or unsafe file name`);
   const stat = await lstat(source);
@@ -75,30 +77,96 @@ async function inspectSource(source: string): Promise<{ name: string; size: numb
  * interrupted copy never leaves a half-written `.jar` for the server to load.
  */
 export async function addMods(serverDir: string, kind: ModKind, sources: string[]): Promise<string[]> {
-  if (!isModKind(kind)) throw new Error('Mod kind must be server or client');
-  if (!Array.isArray(sources) || !sources.length) throw new Error('Choose at least one .jar file');
-  if (sources.length > MAX_BATCH) throw new Error(`Add at most ${MAX_BATCH} mods at a time`);
-  const directory = modsDirectory(serverDir, kind);
-  const existing = new Set((await listMods(serverDir, kind)).map((mod) => mod.name.toLowerCase()));
+  if (!Array.isArray(sources)) throw new Error('Choose at least one .jar file');
+  return addModBatch(serverDir, sources.map((source) => ({ kind, source })));
+}
+
+/** Fenced transaction across both folders. Proven ordinary failures roll back; uncertainty requires explicit repair. */
+export async function addModBatch(serverDir: string, items: Array<{ kind: ModKind; source: string }>, commit?: () => Promise<void>): Promise<string[]> {
+  await assertModInstallComplete(serverDir);
+  if (!Array.isArray(items) || !items.length) throw new Error('Choose at least one .jar file');
+  if (items.length > MAX_BATCH) throw new Error(`Add at most ${MAX_BATCH} mods at a time`);
+  const existing = new Set<string>();
+  for (const kind of ['server', 'client'] as const) {
+    const directory = modsDirectory(serverDir, kind);
+    if (await ordinaryDirectory(directory, false)) {
+      for (const name of await readdir(directory)) existing.add(`${kind}:${name.toLowerCase()}`);
+    }
+  }
   const batch = new Set<string>();
   const inspected = [];
-  for (const source of sources) {
+  for (const { kind, source } of items) {
+    if (!isModKind(kind)) throw new Error('Mod kind must be server or client');
     const mod = await inspectSource(source);
-    const key = mod.name.toLowerCase();
+    const key = `${kind}:${mod.name.toLowerCase()}`;
     if (existing.has(key)) throw new Error(`${mod.name} is already installed. Remove the old copy first to replace it.`);
     if (batch.has(key)) throw new Error(`${mod.name} was chosen twice`);
     batch.add(key);
-    inspected.push({ source, ...mod });
+    inspected.push({ source, kind, ...mod });
   }
-  await ordinaryDirectory(directory, true);
   const added: string[] = [];
-  for (const mod of inspected) {
-    const temporary = path.join(directory, `.peerhost-adding-${randomUUID()}.tmp`);
-    try {
+  const staged: Array<{ temporary: string; destination: string; name: string; identity?: { dev: number; ino: number; size: number; mtimeMs: number } }> = [];
+  const published: typeof staged = [];
+  const created: string[] = [];
+  const metadataBefore = commit ? await modIndexFingerprint(serverDir) : null;
+  const transaction = await beginModInstall(serverDir, inspected.map(({ kind, name }) => ({ kind, name })));
+  let complete = false;
+  let commitStarted = false, commitSucceeded = false;
+  let publishUncertain = false;
+  try {
+    for (const mod of inspected) {
+      const directory = modsDirectory(serverDir, mod.kind);
+      if (!await ordinaryDirectory(directory, false)) { await ordinaryDirectory(directory, true); created.push(directory); }
+      const temporary = path.join(directory, `.peerhost-adding-${randomUUID()}.tmp`);
+      const entry: (typeof staged)[number] = { temporary, destination: path.join(directory, mod.name), name: mod.name };
+      staged.push(entry);
       await copyFile(mod.source, temporary, constants.COPYFILE_EXCL);
-      await link(temporary, path.join(directory, mod.name));
+      const stagedMod = await inspectSource(temporary, mod.name);
+      if (stagedMod.size !== mod.size) throw new Error(`${mod.name} changed during the copy`);
+      const handle = await open(temporary, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      try { await handle.sync(); entry.identity = await handle.stat(); } finally { await handle.close(); }
+    }
+    for (const mod of staged) {
+      publishUncertain = true;
+      await link(mod.temporary, mod.destination);
+      published.push(mod);
+      publishUncertain = false;
       added.push(mod.name);
-    } finally { await rm(temporary, { force: true }); }
+    }
+    for (const directory of new Set(staged.map((mod) => path.dirname(mod.destination)))) await syncModDirectory(directory);
+    commitStarted = !!commit;
+    await commit?.();
+    commitSucceeded = !!commit;
+    await syncModDirectory(serverDir);
+    complete = true;
+  } catch (error) {
+    // A callback may have renamed its index and THEN failed. Never delete jars on an uncertain commit.
+    if (commitSucceeded || publishUncertain) throw error;
+    if (commitStarted) {
+      let metadataAfter;
+      try { metadataAfter = await modIndexFingerprint(serverDir); }
+      catch (verificationError) { throw new AggregateError([error, verificationError], 'Mod install failed; explicit repair is required'); }
+      if (metadataAfter !== metadataBefore) throw error;
+    }
+    for (const mod of published) {
+      const stat = await lstat(mod.destination);
+      const owned = mod.identity;
+      if (!owned || !stat.isFile() || stat.isSymbolicLink() || stat.dev !== owned.dev || stat.ino !== owned.ino || stat.size !== owned.size || stat.mtimeMs !== owned.mtimeMs) {
+        throw new AggregateError([error], 'Mod install rollback ownership is uncertain; explicit repair is required');
+      }
+    }
+    for (const mod of published.reverse()) await rm(mod.destination);
+    for (const directory of new Set(published.map((mod) => path.dirname(mod.destination)))) await syncModDirectory(directory);
+    complete = true;
+    throw error;
+  } finally {
+    for (const mod of staged) await rm(mod.temporary, { force: true });
+    for (const directory of new Set(staged.map((mod) => path.dirname(mod.temporary)))) await syncModDirectory(directory);
+    for (const directory of created) {
+      if (!(await readdir(directory)).length) await rmdir(directory);
+    }
+    await syncModDirectory(serverDir);
+    if (complete) await finishModInstall(serverDir, transaction);
   }
   return added;
 }

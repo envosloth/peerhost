@@ -70,8 +70,8 @@ In PeerHost on each host PC: **Peers → Trust a peer** with the relay's fingerp
 
 ## Day to day
 
-- **Done playing:** Stop, then **Park on relay** (or let park-on-stop do it).
-- **Want to host:** **Claim from relay**. The world appears in a new folder; set the launch profile once per PC.
+- **Done playing:** Stop, then **Hand off to always-on PC** (or let park-on-stop do it).
+- **Want to host:** **Take over hosting**. The world appears in a new folder; set the launch profile once per PC.
 - **Check relay** shows whether the server is stored, pending, or checked out and by whom.
 
 ## Limits

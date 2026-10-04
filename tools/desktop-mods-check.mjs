@@ -1,5 +1,6 @@
 // Visible mods check: real Electron UI and native-dialog paths. Only file pickers and confirmations are answered.
 import assert from 'node:assert/strict';
+import { dismissInitialSetup } from './desktop-test-setup.mjs';
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -42,6 +43,7 @@ try {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [source] });
     dialog.showMessageBox = async () => ({ response: 1 });
   }, source);
+  await dismissInitialSetup(page);
   await click(page, '#import-server'); await idle(page);
   await page.locator('#mods-details').evaluate((el) => { el.open = true; });
 

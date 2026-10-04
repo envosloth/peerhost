@@ -1,10 +1,17 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, safeStorage, Tray } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, safeStorage, shell, Tray } from 'electron';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PeerHostApplication } from '../../src/core/application.js';
 import { loadIdentity } from '../../src/core/identity-store.js';
 import { validateCall } from '../../src/core/ipc-policy.js';
 import { applicationMenuTemplate } from './menu.js';
+import { ServerSetupClient, discoverJava, probeJava, type CreateServerInput } from '../../src/core/server-setup.js';
+const setupLinks: Record<string,string> = Object.freeze({
+  eula:'https://www.minecraft.net/en-us/eula',
+  java:'https://adoptium.net/temurin/releases/',
+  fabric:'https://fabricmc.net/use/server/',
+  relay:'https://github.com/envosloth/peerhost/blob/main/docs/relay.md',
+});
 let window:BrowserWindow;let tray:Tray;let backend:PeerHostApplication;let quitAllowed=false;let quitting=false;
 app.setName('PeerHost');
 const profileArgument=process.argv.find(a=>a.startsWith('--profile-root='));
@@ -44,6 +51,35 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
       const p=validateCall(method,payload,sender.href,rendererUrl,{senderId:event.sender.id,expectedSenderId:window.webContents.id,isMainFrame:event.senderFrame===window.webContents.mainFrame});
       switch(method){
         case 'getState':return backend.getState();
+        case 'listServerVersions':return new ServerSetupClient().listVersions();
+        case 'discoverJava':return discoverJava();
+        case 'pickJava':{
+          const selected=await dialog.showOpenDialog(window,{title:'Choose an installed Java executable (java or java.exe)',properties:['openFile'],...(process.platform==='win32'?{filters:[{name:'Java executable',extensions:['exe']}]}:{})});
+          if(selected.canceled||!selected.filePaths[0])return null;
+          if(!await confirm('Check this Java executable?', 'PeerHost will execute this selected file with -version, without a shell. Select only an installed Java runtime you trust. No Java installation or server start occurs.'))return null;
+          return probeJava(selected.filePaths[0]);
+        }
+        case 'createServer':{
+          const input={...p} as CreateServerInput;
+          if(input.eulaAccepted!==true)throw new Error('Explicit Minecraft EULA acceptance is required before creating a server');
+          if(!await confirm('Create this Minecraft server and accept its EULA?', 'By continuing you explicitly accept https://www.minecraft.net/en-us/eula for this server. PeerHost downloads and checks official '+input.loader+' server files, creates a managed copy, and checks the chosen Java runtime. Checksums do not prove executable code harmless. Nothing starts automatically.'))return;
+          return backend.createServer(input);
+        }
+        case 'configureSimpleProfile':
+          if(!await confirm('Check Java and save this launch profile?', 'PeerHost will execute '+p.javaExecutable+' with -version, without a shell, then save Java and RAM. Only approve a trusted installed runtime. Nothing starts automatically.'))return;
+          return backend.configureSimpleProfile(p as {javaExecutable:string;memoryMiB:number});
+        case 'saveGameGateway':return backend.saveGameGateway(p as {enabled:boolean;localPort:number});
+        case 'checkGameGateway':return backend.checkGameGateway();
+        case 'openSetupLink':{
+          const url=setupLinks[p.page];
+          if(!url)throw new Error('Invalid setup link');
+          return shell.openExternal(url);
+        }
+        case 'saveOnboarding':return backend.saveOnboarding(p);
+        case 'listSnapshots':return backend.listSnapshots();
+        case 'restoreSnapshot':
+          if(!await confirm('Restore this saved world revision?', 'Stop hosting first. PeerHost will preserve a safety snapshot and the previous folder, then restore into a separate managed folder. Hosting ownership is not rewound. Nothing starts automatically.'))return;
+          return backend.restoreSnapshot(p.snapshotId);
         case 'importServer':{
           const selected=await dialog.showOpenDialog(window,{title:'Import a stopped Minecraft Java server',properties:['openDirectory']});
           if(selected.canceled||!selected.filePaths[0])return;
@@ -60,6 +96,19 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         case 'startPeerListener':return backend.startPeerListener();
         case 'sendSnapshot':return backend.sendSnapshot(p.fingerprint);
         case 'handoff':if(await confirm('Transfer hosting ownership to this peer?','Stop the server first. A fresh snapshot will be captured and shared, including server configuration/player data. This PC becomes fenced before transfer. If acknowledgment is lost or the peer declines, local hosting remains blocked until ownership is reconciled.'))return backend.handoff(p.fingerprint);return;
+        case 'searchMods':return backend.searchMods(p as {query:string;offset:number});
+        case 'saveModTarget':return backend.saveModTarget(p as any);
+        case 'installMod':
+          if(!await confirm('Install this Modrinth mod and its required dependencies?', 'Files are filtered for your selected Minecraft version and loader and verified against Modrinth’s SHA-512 checksums. Mods run code; a valid checksum does not make a mod safe. Server/client placement follows its published metadata unless you choose a destination. Nothing starts automatically.'))return;
+          return backend.installMod(p as any);
+        case 'openModPage':return shell.openExternal('https://modrinth.com/mod/'+encodeURIComponent(p.slug));
+        case 'createInvite':
+          if(!await confirm('Invite a friend to share hosting?', 'Anyone who redeems this one-use invitation can access the server files and take a turn hosting through your relay. Send it privately to someone you trust.'))return;
+          return backend.createInvite();
+        case 'listFriends':return backend.listFriends();
+        case 'joinWithInvite':
+          if(!await confirm('Join this friend’s hosting relay?', 'Only use an invitation received privately from a trusted friend. It pins their relay certificate and authorizes this PC to share hosting. It does not download or start a server.'))return;
+          return backend.joinWithInvite(p as {code:string;name:string});
         case 'addMods':{
           // Paths come only from the native picker, never from the renderer.
           const client=p.kind==='client';

@@ -1,15 +1,25 @@
-import { mkdir, readFile, readdir, lstat, open, rename, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, lstat, open, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { TLSSocket } from 'node:tls';
 import { defaultSettings, validateSettings, type Settings } from './settings.js';
-import { importServer, createSnapshot, materializeSnapshot, pruneStore, syncDirectory, type SnapshotManifest } from './snapshots.js';
+import { importServer, createSnapshot, materializeSnapshot, readSnapshot, pruneStore, syncDirectory, type SnapshotManifest } from './snapshots.js';
 import { ServerProcess } from './launcher.js';
 import { OwnershipLedger, canAcceptOffer, type TransferOffer } from './ownership.js';
 import { receiveSnapshot, sendSnapshotToPeer } from './transfers.js';
 import { listenPeer, type PeerIdentity } from './peer-transport.js';
-import { addMods, exportClientPack, listMods, removeMod, type ModKind } from './mods.js';
-import { openRelayOperation, relayRequest, relayStatus, type RelayStatus } from './relay-client.js';
+import { addMods, exportClientPack, modsDirectory, ordinaryDirectory, removeMod, type ModKind } from './mods.js';
+import { ModrinthClient, assertModTarget, isGameVersion, isModLoader } from './modrinth.js';
+import { indexedMods, modTarget, readModIndex, writeModIndex, type ModVerificationCache } from './mod-index.js';
+import { installMod, assertModInstallComplete, type InstallModInput } from './mod-install.js';
+import { openRelayOperation, relayRequest, relayStatus, relayInvite, relayFriends, joinRelayInvite, type RelayStatus } from './relay-client.js';
+import { decodeInvite } from './invites.js';
+import { friendName } from './relay-friends-store.js';
+import { readOnboarding, saveOnboarding, validateOnboarding } from './onboarding.js';
+import { ServerSetupClient, probeJava, type CreateServerInput } from './server-setup.js';
+import { readGameGateway, saveGameGatewayConfig, validateGameGateway } from './game-gateway-config.js';
+import { gatewayStatus, startHostGameGateway } from './game-gateway.js';
+import { privateLanAddresses, readServerPort } from './network-info.js';
 import {
   parseSavedState, validateLaunchProfile, validatePeer, validateRelayConfig,
   type LaunchProfileInput, type RelayConfig, type SavedPeer, type SavedServer, type SavedState,
@@ -23,6 +33,8 @@ export interface LaunchApproval {
 }
 export interface CleanUpResult { serverDirsRemoved: number; snapshotsRemoved: number; objectsRemoved: number; bytesFreed: number }
 interface ApplicationOptions {
+  serverSetup?: ServerSetupClient;
+  modrinth?: ModrinthClient;
   confirmIncomingHandoff?: (source: string, snapshot: SnapshotManifest, offer: TransferOffer) => Promise<boolean>;
 }
 
@@ -31,7 +43,11 @@ const CLEANUP_ANCESTORS = 2;
 
 export class PeerHostApplication {
   private saved: SavedState = { version: 1, settings: defaultSettings(), server: null, peers: [], relay: null };
+  private gatewayTunnel?: { close: () => Promise<void> };
+  private gatewayEpoch = 0;
+  private gatewayState: {state: 'off' | 'connecting' | 'ready' | 'error'; detail: string} = { state: 'off', detail: 'No local host tunnel is active' };
   private logs: string[] = [];
+  private modVerificationCache: ModVerificationCache = new Map();
   private busy: string | null = null;
   private operationToken?: symbol;
   private process?: ServerProcess;
@@ -67,11 +83,30 @@ export class PeerHostApplication {
     if (this.saved.server) {
       const ownership = await this.ledger().status();
       const serverDir = this.saved.server.serverDir;
-      const mods = { server: await listMods(serverDir, 'server').catch(() => []), client: await listMods(serverDir, 'client').catch(() => []) };
+      // Optional catalogue state must never block lifecycle/ownership state or graceful shutdown.
+      let mods: { server: Awaited<ReturnType<typeof indexedMods>>; client: Awaited<ReturnType<typeof indexedMods>> } = { server: [], client: [] };
+      let target: Awaited<ReturnType<typeof modTarget>> = { loader: null, gameVersion: null, detected: true };
+      let modsError: string | null = null;
+      let modInstallError: string | null = null;
+      try { await assertModInstallComplete(serverDir); }
+      catch (error) { modInstallError = String((error as Error).message); }
+      try {
+        if (modInstallError) throw new Error(modInstallError);
+        // Empty directories are not represented in snapshots. Restore only when owned.
+        if (ownership.state === 'owned' && ownership.owner === this.identity.fingerprint && !this.process?.pid && !this.busy) await ordinaryDirectory(modsDirectory(serverDir, 'server'), true);
+        const index = await readModIndex(serverDir);
+        mods = { server: await indexedMods(serverDir, 'server', index, this.modVerificationCache), client: await indexedMods(serverDir, 'client', index, this.modVerificationCache) };
+        target = await modTarget(serverDir, index);
+      } catch (error) {
+        modsError = `Mod information unavailable; repair the managed mod index/folders before changing mods. ${String((error as Error).message).slice(0, 240)}`;
+      }
       server = { ...this.saved.server, profile: { ...this.saved.server.profile, args: [...this.saved.server.profile.args] },
-        state: this.process?.state ?? 'offline', ownership, ownerName: this.nameOf(ownership.owner), mods };
+        state: this.process?.state ?? 'offline', ownership, ownerName: this.nameOf(ownership.owner), mods, modsError, modInstallError, modTarget: target,
+        playerPort: await readServerPort(serverDir) };
     }
     const relay = this.saved.relay;
+    const gateway = await readGameGateway(this.root);
+    if (gateway.error && this.gatewayTunnel) await this.closeGameGateway();
     return {
       version: '0.2.0',
       deviceId: this.identity.fingerprint,
@@ -82,6 +117,9 @@ export class PeerHostApplication {
       logs: [...this.logs],
       peerEndpoint: this.listener ? { host: this.listener.host, port: this.listener.port } : null,
       busy: this.busy,
+      onboarding: await readOnboarding(this.root, Boolean(this.saved.server)),
+      gateway: { ...gateway, ...this.gatewayState, ...(gateway.error ? {state: 'error', detail: gateway.error} : {}) },
+      lanAddresses: privateLanAddresses(),
     };
   }
 
@@ -89,6 +127,14 @@ export class PeerHostApplication {
     if (this.process?.pid || this.process?.state === 'starting' || this.process?.state === 'stopping') {
       throw new Error('Stop the server before this operation');
     }
+  }
+
+  async saveOnboarding(input: unknown): Promise<void> {
+    await this.operation('saveOnboarding', async () => {
+      const progress = validateOnboarding(input);
+      if (progress.completed && (!this.saved.server?.profile.executable || !this.saved.server.profile.args.length)) throw new Error('Configure a server and its launch profile before completing setup');
+      await saveOnboarding(this.root, progress);
+    });
   }
 
   private ledger(): OwnershipLedger {
@@ -156,6 +202,32 @@ export class PeerHostApplication {
 
   // ---------------------------------------------------------------- server lifecycle
 
+  async createServer(input: CreateServerInput): Promise<void> {
+    this.assertStopped();
+    if (!input || input.eulaAccepted !== true) throw new Error('Explicit Minecraft EULA acceptance is required before creating a server');
+    input = { ...input }; // Capture consent before the lock's first asynchronous fence.
+    await this.operation('createServer', async () => {
+      if (this.saved.server) throw new Error('A server is already imported; its lineage cannot be replaced');
+      const staging = await mkdtemp(path.join(this.root, 'server-setup-'));
+      const prepared = await (this.options.serverSetup ?? new ServerSetupClient()).prepare(staging, input);
+      if (prepared.loader === 'fabric') {
+        const index = await readModIndex(prepared.sourceDir);
+        await writeModIndex(prepared.sourceDir, { ...index, target: { loader: 'fabric', gameVersion: prepared.gameVersion } });
+      }
+      const result = await importServer(prepared.sourceDir, path.join(this.root, 'managed'));
+      const ledgerFile = path.join(this.root, `ownership-${randomUUID()}.sqlite`);
+      await new OwnershipLedger(ledgerFile, this.identity.fingerprint).initialize(result.snapshot.id);
+      this.saved.server = {
+        name: input.name, serverDir: result.serverDir, storeDir: result.storeDir, snapshotId: result.snapshot.id,
+        profile: validateLaunchProfile(prepared.profile), ledgerFile,
+      };
+      try { await this.persist(); }
+      catch (error) { await new OwnershipLedger(ledgerFile, this.identity.fingerprint).markUncertain(); throw error; }
+      await rm(staging, { recursive: true, force: true });
+      this.log('Created a verified managed server. Nothing was started.');
+    });
+  }
+
   async importExisting(source: string, confirmedStopped: boolean): Promise<void> {
     this.assertStopped();
     if (!confirmedStopped) throw new Error('Confirm the source server is stopped before importing');
@@ -184,6 +256,96 @@ export class PeerHostApplication {
     });
   }
 
+  async configureSimpleProfile(input: { javaExecutable: string; memoryMiB: number }): Promise<void> {
+    this.assertStopped();
+    if (!input || Object.keys(input).sort().join(',') !== 'javaExecutable,memoryMiB' || !Number.isInteger(input.memoryMiB) || input.memoryMiB < 512 || input.memoryMiB > 65536) throw new Error('Invalid simple launch profile');
+    input = { ...input };
+    await this.operation('configureSimpleProfile', async () => {
+      const server = this.saved.server;
+      if (!server) throw new Error('No server imported');
+      await probeJava(input.javaExecutable);
+      let args = [...server.profile.args];
+      if (!args.length) {
+        const entries = await readdir(server.serverDir, { withFileTypes: true });
+        if (entries.some(e => e.isFile() && /\.(?:sh|bat|cmd|ps1)$/i.test(e.name))) throw new Error('Use advanced Launch profile for a scripted server');
+        const candidates = entries.filter(e => e.isFile() && /^(?:server|minecraft_server[._][\w.+-]+|fabric-server-launch)\.jar$/i.test(e.name));
+        const allJars = entries.filter(e => e.isFile() && /\.jar$/i.test(e.name));
+        // A Fabric layout deliberately contains its Vanilla dependency beside its launcher.
+        const fabric = candidates.find(e => e.name === 'fabric-server-launch.jar');
+        const jar = fabric && allJars.every(e => e.name === 'server.jar' || e.name === fabric.name) ? fabric.name : allJars.length === 1 && candidates.length === 1 ? candidates[0]!.name : undefined;
+        if (!jar) throw new Error('Use advanced Launch profile: no unambiguous server JAR command was found');
+        args = ['-jar', jar, 'nogui'];
+      }
+      // JVM argument files may override later command-line heap flags; never claim a RAM change we cannot prove.
+      for (const arg of args.filter(a => a.startsWith('@'))) {
+        const filename = path.resolve(server.serverDir, arg.slice(1));
+        if (!filename.startsWith(server.serverDir + path.sep)) throw new Error('Use advanced Launch profile for external argument files');
+        let handle;
+        try {
+          const stat = await lstat(filename);
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 65536) throw new Error('Use advanced Launch profile for unsafe argument files');
+          handle = await open(filename, 'r');
+          const buffer = Buffer.alloc(65537); const {bytesRead} = await handle.read(buffer, 0, buffer.length, 0);
+          if (bytesRead > 65536 || /-Xm[sx]|@[\w./\\]/.test(buffer.subarray(0, bytesRead).toString('utf8'))) throw new Error('Use advanced Launch profile: RAM is controlled by an argument file');
+        } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+        finally { await handle?.close(); }
+      }
+      args = args.filter(arg => !/^-Xm[sx]/.test(arg));
+      const profile = validateLaunchProfile({ ...server.profile, executable: input.javaExecutable, args: ['-Xms512M', `-Xmx${input.memoryMiB}M`, ...args] });
+      const previous = server.profile;
+      server.profile = profile;
+      try { await this.persist(); } catch (error) { server.profile = previous; throw error; }
+    });
+  }
+
+  async saveGameGateway(input: unknown): Promise<void> {
+    this.assertStopped();
+    const config = validateGameGateway(input);
+    await this.operation('saveGameGateway', async () => {
+      if (config.enabled) this.requireRelay();
+      await this.closeGameGateway();
+      await saveGameGatewayConfig(this.root, config);
+    });
+  }
+
+  private async closeGameGateway(): Promise<void> {
+    this.gatewayEpoch++;
+    const tunnel = this.gatewayTunnel;
+    this.gatewayTunnel = undefined;
+    this.gatewayState = { state: 'off', detail: 'No local host tunnel is active' };
+    try { await tunnel?.close(); } catch (error) { this.log('Gateway cleanup error: ' + String(error)); }
+  }
+
+  private async startGameGateway(): Promise<void> {
+    const config = await readGameGateway(this.root);
+    if (config.error) { this.gatewayState = { state: 'error', detail: config.error }; return; }
+    if (!config.enabled) return;
+    const epoch = this.gatewayEpoch;
+    try {
+      const ownership = await this.ledger().status();
+      if (this.process?.state !== 'running' || ownership.owner !== this.identity.fingerprint || ownership.state !== 'hosting' || !ownership.lineage) throw new Error('Gateway requires the running local owner');
+      const relay = this.requireRelay();
+      const custody = await relayStatus(this.identity, relay);
+      if (!custody || custody.owner !== this.identity.fingerprint || custody.state !== 'transferred' || custody.pendingTarget !== null || custody.generation !== ownership.generation) throw new Error('Park and Claim once to establish confirmed relay custody before forwarding');
+      const tunnel = await startHostGameGateway(this.identity, relay, config.localPort, {
+        expectedRoute: { generation: ownership.generation, lineage: ownership.lineage },
+        onStatus: status => { if (epoch === this.gatewayEpoch) this.gatewayState = status; },
+      });
+      if (epoch !== this.gatewayEpoch || this.process?.state !== 'running') await tunnel.close();
+      else this.gatewayTunnel = tunnel;
+    } catch (error) {
+      if (epoch === this.gatewayEpoch) this.gatewayState = { state: 'error', detail: String((error as Error).message).slice(0, 512) };
+      this.log('Player gateway unavailable; local server remains running. ' + String((error as Error).message));
+    }
+  }
+
+  async checkGameGateway() {
+    const config = await readGameGateway(this.root);
+    if (config.error || !this.relayPeer()) return { enabled: false, host: null, port: null, ready: false, detail: config.error ?? 'No relay is configured' };
+    try { return await gatewayStatus(this.identity, this.requireRelay()); }
+    catch (error) { return { enabled: false, host: null, port: null, ready: false, detail: String((error as Error).message).slice(0, 512) }; }
+  }
+
   async startServer(approved: boolean): Promise<void> {
     if (!approved) throw new Error('Confirm that you trust the server executables and mods');
     await this.startServerWithApproval(async () => true);
@@ -194,6 +356,7 @@ export class PeerHostApplication {
     await this.operation('startServer', async () => {
       const server = this.saved.server;
       if (!server?.profile.executable) throw new Error('Configure a launch profile first');
+      await assertModInstallComplete(server.serverDir);
       const original = JSON.stringify(server);
       const approval: LaunchApproval = Object.freeze({
         root: this.root, serverDir: server.serverDir, snapshotId: server.snapshotId,
@@ -215,6 +378,7 @@ export class PeerHostApplication {
       const ledger = this.ledger();
       if ((await ledger.status()).snapshotId !== approval.snapshotId) throw new Error('Snapshot revision mismatch; reconcile metadata before hosting');
       revalidate();
+      await assertModInstallComplete(server.serverDir);
       await ledger.startHosting();
       try {
         revalidate();
@@ -227,10 +391,12 @@ export class PeerHostApplication {
         launched.on('line', (line: string) => this.log(line));
         launched.on('state', (state: string) => {
           if ((state !== 'offline' && state !== 'failed') || this.process !== launched || this.controlledProcess === launched) return;
+          void this.closeGameGateway();
           this.unexpectedExit = ledger;
           if (!this.busy) void this.operation('processExit', async () => {}).catch((error) => this.log('Ownership recovery error: ' + String(error)));
         });
         await launched.start();
+        await this.startGameGateway();
       } catch (error) {
         await ledger.markUncertain();
         throw error;
@@ -250,6 +416,7 @@ export class PeerHostApplication {
     await this.operation('stopServer', async () => {
       const server = this.saved.server;
       if (!server || !this.process?.pid) throw new Error('No owned process is running');
+      await this.closeGameGateway();
       this.controlledProcess = this.process;
       try {
         await this.process.stop();
@@ -281,11 +448,70 @@ export class PeerHostApplication {
       if (!server) throw new Error('No server imported');
       const owner = await this.ledger().status();
       if (owner.state !== 'owned' || owner.owner !== this.identity.fingerprint) throw new Error('Snapshot requires safely held ownership');
+      await assertModInstallComplete(server.serverDir);
       const snapshot = await createSnapshot(server.serverDir, server.storeDir, server.snapshotId);
       await this.ledger().updateSnapshot(snapshot.id);
       server.snapshotId = snapshot.id;
       await this.persist();
       this.log('Verified snapshot ' + snapshot.id);
+    });
+  }
+
+  async listSnapshots(): Promise<Array<{ id: string; parentId: string | null; fileCount: number; bytes: number; current: boolean }>> {
+    const server = this.saved.server;
+    if (!server) return [];
+    const rows: Array<{ id: string; parentId: string | null; fileCount: number; bytes: number; current: boolean }> = [];
+    const seen = new Set<string>();
+    let id: string | null = server.snapshotId;
+    while (id && rows.length < 1000) {
+      if (seen.has(id)) throw new Error('Snapshot history contains a cycle');
+      seen.add(id);
+      let manifest: SnapshotManifest;
+      try { manifest = await readSnapshot(server.storeDir, id); }
+      catch (error) { if (rows.length && (error as NodeJS.ErrnoException).code === 'ENOENT') break; throw error; }
+      rows.push({ id, parentId: manifest.parentId, fileCount: manifest.files.length,
+        bytes: manifest.files.reduce((sum, file) => sum + file.size, 0), current: id === server.snapshotId });
+      id = manifest.parentId;
+    }
+    return rows;
+  }
+
+  async restoreSnapshot(snapshotId: string): Promise<void> {
+    this.assertStopped();
+    if (typeof snapshotId !== 'string' || !/^[a-f0-9]{64}$/.test(snapshotId)) throw new Error('Invalid snapshot revision');
+    await this.operation('restoreSnapshot', async () => {
+      const server = this.saved.server;
+      if (!server) throw new Error('No server imported');
+      const ledger = this.ledger(), ownership = await ledger.status();
+      if (ownership.state !== 'owned' || ownership.owner !== this.identity.fingerprint || ownership.offer) throw new Error('Restore requires stopped, safely held ownership');
+      if (ownership.snapshotId !== server.snapshotId) throw new Error('Snapshot revision mismatch; reconcile metadata before restoring');
+      await assertModInstallComplete(server.serverDir);
+      if (!(await this.listSnapshots()).some((row) => row.id === snapshotId)) throw new Error('Choose a retained revision from this server’s history');
+      const serverDir = path.join(this.root, 'managed', 'servers', randomUUID());
+      await materializeSnapshot(server.storeDir, snapshotId, serverDir);
+      await assertModInstallComplete(serverDir);
+      // Restored data is a NEW revision descending from a verified safety copy, not an authority rewind.
+      const safety = await createSnapshot(server.serverDir, server.storeDir, server.snapshotId);
+      const restored = await createSnapshot(serverDir, server.storeDir, safety.id);
+      const current = await ledger.status();
+      if (JSON.stringify(current) !== JSON.stringify(ownership)) throw new Error('Ownership changed while preparing restore; nothing activated');
+      this.assertStopped();
+      await assertModInstallComplete(server.serverDir);
+      let authorityAttempted = false;
+      try {
+        authorityAttempted = true;
+        await ledger.updateSnapshot(safety.id);
+        server.snapshotId = safety.id;
+        await this.persist();
+        await ledger.updateSnapshot(restored.id);
+        this.saved.server = { ...server, serverDir, snapshotId: restored.id };
+        await this.persist();
+        this.modVerificationCache.clear();
+        this.log('Restored world into a separate folder. Previous world and safety revision retained: ' + safety.id);
+      } catch (error) {
+        if (authorityAttempted) await ledger.markUncertain();
+        throw error;
+      }
     });
   }
 
@@ -299,6 +525,7 @@ export class PeerHostApplication {
       if (state.owner !== this.identity.fingerprint || state.state !== 'uncertain' || state.offer) {
         throw new Error('Cannot recover transferred or pending-offer authority. Reconcile with the peer.');
       }
+      await assertModInstallComplete(server.serverDir);
       const snapshot = await createSnapshot(server.serverDir, server.storeDir, state.snapshotId);
       server.snapshotId = snapshot.id;
       await this.persist();
@@ -345,6 +572,40 @@ export class PeerHostApplication {
 
   // ---------------------------------------------------------------- mods
 
+  async searchMods(input: { query: string; offset: number }) {
+    const server = this.saved.server;
+    if (!server) throw new Error('No server imported');
+    const index = await readModIndex(server.serverDir);
+    const target = await modTarget(server.serverDir, index);
+    assertModTarget(target);
+    const page = await (this.options.modrinth ?? new ModrinthClient()).search(input.query, input.offset, target);
+    const mods = [...await indexedMods(server.serverDir, 'server', index), ...await indexedMods(server.serverDir, 'client', index)];
+    const installed = new Set(mods.flatMap((mod) => mod.source ? [mod.source.projectId] : []));
+    return { ...page, hits: page.hits.map((hit) => ({ ...hit, installed: installed.has(hit.projectId) })) };
+  }
+
+  async saveModTarget(input: { loader: string; gameVersion: string }): Promise<void> {
+    this.assertStopped();
+    if (!input || !isModLoader(input.loader)) throw new Error('Invalid mod loader');
+    if (!isGameVersion(input.gameVersion)) throw new Error('Invalid Minecraft version');
+    const target = { loader: input.loader, gameVersion: input.gameVersion };
+    await this.operation('saveModTarget', async () => {
+      const server = await this.requireEditableServer();
+      const index = await readModIndex(server.serverDir);
+      await writeModIndex(server.serverDir, { ...index, target });
+    });
+  }
+
+  async installMod(input: InstallModInput) {
+    this.assertStopped();
+    return this.operation('installMod', async () => {
+      const server = await this.requireEditableServer();
+      const result = await installMod(server.serverDir, path.join(this.root, 'mod-downloads'), this.options.modrinth ?? new ModrinthClient(), input);
+      if (result.installed.length) this.log(`Installed ${result.installed.length} verified Modrinth mod(s), including required dependencies. They travel with the next snapshot.`);
+      return result;
+    });
+  }
+
   /** Mods change the world's files, so they follow the same rule as snapshots: stopped, and owned by this PC. */
   private async requireEditableServer(): Promise<SavedServer> {
     const server = this.saved.server;
@@ -353,6 +614,11 @@ export class PeerHostApplication {
     if (ownership.state !== 'owned' || ownership.owner !== this.identity.fingerprint) {
       throw new Error('Mods can only change while this PC safely holds ownership of the stopped server');
     }
+    // Fail closed for mod mutations, but never make optional metadata a lifecycle dependency.
+    await assertModInstallComplete(server.serverDir);
+    await readModIndex(server.serverDir);
+    await ordinaryDirectory(modsDirectory(server.serverDir, 'server'), false);
+    await ordinaryDirectory(modsDirectory(server.serverDir, 'client'), false);
     return server;
   }
 
@@ -371,7 +637,9 @@ export class PeerHostApplication {
     this.assertStopped();
     await this.operation('removeMod', async () => {
       const server = await this.requireEditableServer();
+      const index = await readModIndex(server.serverDir);
       await removeMod(server.serverDir, kind, name);
+      if (index.mods.some((mod) => mod.kind === kind && mod.name === name)) await writeModIndex(server.serverDir, { ...index, mods: index.mods.filter((mod) => mod.kind !== kind || mod.name !== name) });
       this.log(`Removed ${kind} mod ${name}. Earlier snapshots still contain it.`);
     });
   }
@@ -381,10 +649,50 @@ export class PeerHostApplication {
     return this.operation('exportClientPack', async () => {
       const server = this.saved.server;
       if (!server) throw new Error('No server imported');
+      await assertModInstallComplete(server.serverDir);
+      await readModIndex(server.serverDir);
       const result = await exportClientPack(server.serverDir, destination);
       this.log(`Exported ${result.mods} client mod(s) to ${destination}.`);
       return result;
     });
+  }
+
+  // ---------------------------------------------------------------- friends
+
+  async createInvite() {
+    return this.operation('createInvite', () => relayInvite(this.identity, this.requireRelay()));
+  }
+
+  /** A private invitation pins the relay, enrolls this identity, then saves its endpoint locally. */
+  async joinWithInvite({ code, name }: { code: string; name: string }): Promise<{ relayName: string }> {
+    this.assertStopped();
+    const invite = decodeInvite(code);
+    const memberName = friendName(name);
+    if (invite.relayFingerprint === this.identity.fingerprint) throw new Error('Cannot join your own relay');
+    return this.operation('joinWithInvite', async () => {
+      if (this.saved.relay && this.saved.relay.fingerprint !== invite.relayFingerprint) {
+        throw new Error('This PC already uses another relay. Clear it explicitly in Settings before joining a different relay.');
+      }
+      const joined = await joinRelayInvite(this.identity, code, memberName);
+      const peer = validatePeer({ name: joined.relayName, fingerprint: invite.relayFingerprint, host: invite.host, port: invite.port });
+      const previousPeers = this.saved.peers;
+      const previousRelay = this.saved.relay;
+      this.saved.peers = [...previousPeers.filter(p => p.fingerprint !== peer.fingerprint), peer];
+      this.saved.relay = { fingerprint: peer.fingerprint, parkOnStop: true };
+      try { await this.persist(); }
+      catch (error) {
+        this.saved.peers = previousPeers;
+        this.saved.relay = previousRelay;
+        throw new Error('The relay enrolled this PC, but its local settings could not be saved. Retry the same invite on this PC.', { cause: error });
+      }
+      this.log(`Joined ${joined.relayName} as ${memberName}. Nothing was downloaded or started.`);
+      return joined;
+    });
+  }
+
+  async listFriends() {
+    // Only the relay can report custody for its lineage; a local world may be unrelated.
+    return relayFriends(this.identity, this.requireRelay());
   }
 
   // ---------------------------------------------------------------- settings and peers
@@ -401,6 +709,7 @@ export class PeerHostApplication {
     const peer = validatePeer(input);
     if (peer.fingerprint === this.identity.fingerprint) throw new Error('Cannot trust your own identity as a peer');
     await this.operation('addPeer', async () => {
+      await this.closeGameGateway();
       this.saved.peers = this.saved.peers.filter((existing) => existing.fingerprint !== peer.fingerprint);
       this.saved.peers.push(peer);
       await this.persist();
@@ -423,6 +732,7 @@ export class PeerHostApplication {
     }
     if (relay?.fingerprint === this.identity.fingerprint) throw new Error('This PC cannot be its own relay');
     await this.operation('saveRelay', async () => {
+      await this.closeGameGateway();
       this.saved.relay = relay;
       await this.persist();
       this.log(relay ? `Relay set to ${this.relayPeer()!.name}${relay.parkOnStop ? '; the server is parked there after each clean stop' : ''}.` : 'Relay cleared.');
@@ -510,6 +820,7 @@ export class PeerHostApplication {
       this.log(`Retrying the pending handoff of ${offer.snapshotId} to ${target}. This PC stays fenced until it answers.`);
     } else {
       if (state.state !== 'owned' || state.owner !== this.identity.fingerprint) throw new Error('Handoff requires safely held ownership');
+      await assertModInstallComplete(server.serverDir);
       // Fencing is only worth it if the relay can actually take the server right now.
       if (relay) await this.reachRelay(peer, 'The server stays on this PC; nothing was changed.');
       const snapshot = await createSnapshot(server.serverDir, server.storeDir, server.snapshotId);
@@ -686,6 +997,7 @@ export class PeerHostApplication {
 
   async close(): Promise<void> {
     if (this.busy) throw new Error('An operation is in progress; wait before closing');
+    await this.closeGameGateway();
     if (this.process?.pid) await this.stopServer();
     if (this.listener) { await this.listener.close(); this.listener = undefined; }
   }

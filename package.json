@@ -19,6 +19,11 @@
     "check:relay": "npm run build && node tools/desktop-relay-check.mjs",
     "relay": "npm run build && node dist/src/relay/cli.js",
     "check:mods": "npm run build && node tools/desktop-mods-check.mjs",
+    "check:browser-friends": "npm run build && node tools/desktop-browser-friends-check.mjs",
+    "check:mod-recovery": "npm run build && node tools/desktop-mod-recovery-check.mjs",
+    "check:onboarding": "npm run build && node tools/desktop-onboarding-check.mjs",
+    "check:server-create": "npm run build && node tools/desktop-server-create-check.mjs",
+    "check:minecraft": "npm run build && node tools/real-minecraft-check.mjs",
     "install:linux": "bash tools/install-linux-launcher.sh"
   },
   "devDependencies": {

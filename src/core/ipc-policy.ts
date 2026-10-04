@@ -2,15 +2,20 @@ import { validateSettings } from './settings.js';
 import { isValidEndpointHost } from './endpoints.js';
 import { validTimeout, MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS } from './saved-state.js';
 import { isModKind, isModName } from './mods.js';
-const NO_PAYLOAD=new Set(['getState','importServer','createSnapshot','startServer','stopServer','startPeerListener','cleanUp','parkAtRelay','claimFromRelay','checkRelay','exportClientPack']);
-const METHODS=new Set([...NO_PAYLOAD,'saveProfile','sendCommand','saveSettings','addPeer','sendSnapshot','handoff','recoverStopped','saveRelay','addMods','removeMod']);
+import { isGameVersion, isModLoader, isProjectKey } from './modrinth.js';
+import { validateOnboarding } from './onboarding.js';
+const NO_PAYLOAD=new Set(['getState','importServer','createSnapshot','startServer','stopServer','startPeerListener','cleanUp','parkAtRelay','claimFromRelay','checkRelay','exportClientPack','createInvite','listFriends','listSnapshots','listServerVersions','discoverJava','pickJava','checkGameGateway']);
+const METHODS=new Set([...NO_PAYLOAD,'saveProfile','sendCommand','saveSettings','addPeer','sendSnapshot','handoff','recoverStopped','saveRelay','addMods','removeMod','searchMods','installMod','saveModTarget','openModPage','joinWithInvite','saveOnboarding','restoreSnapshot','createServer','configureSimpleProfile','saveGameGateway','openSetupLink']);
 function boundedString(v:unknown,max:number):v is string{return typeof v==='string'&&v.length<=max&&!v.includes('\0');}
 function fingerprint(v:unknown):v is string{return typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);}
 export interface TrustedIpcContext {senderId:number;expectedSenderId:number;isMainFrame:boolean}
 export function validateCall(method:unknown,payload:unknown,senderUrl:string,expectedUrl:string,context?:TrustedIpcContext):Record<string,any>{
   if(senderUrl!==expectedUrl||!context||!Number.isSafeInteger(context.senderId)||context.senderId<1||context.senderId!==context.expectedSenderId||context.isMainFrame!==true)throw new Error('Untrusted IPC sender');
   if(typeof method!=='string'||!METHODS.has(method))throw new Error('Unknown IPC method');
-  if(NO_PAYLOAD.has(method))return {};
+  if(NO_PAYLOAD.has(method)){
+    if(payload!==undefined)throw new Error('Invalid payload: this operation accepts no arguments');
+    return {};
+  }
   if(method==='saveRelay'){
     if(payload===null)return {relay:null};
     const r=payload as Record<string,unknown>;
@@ -20,6 +25,26 @@ export function validateCall(method:unknown,payload:unknown,senderUrl:string,exp
   if(!payload||typeof payload!=='object'||Array.isArray(payload))throw new Error('Invalid payload');
   const p=payload as Record<string,unknown>;
   switch(method){
+    case 'createServer':
+      if(Object.keys(p).sort().join(',')!=='eulaAccepted,gameVersion,javaExecutable,loader,memoryMiB,name'||
+        !boundedString(p.name,80)||!p.name.trim()||/[\x00-\x1f]/.test(p.name)||
+        (p.loader!=='vanilla'&&p.loader!=='fabric')||!isGameVersion(p.gameVersion)||
+        !boundedString(p.javaExecutable,4096)||!p.javaExecutable.trim()||/[\r\n]/.test(p.javaExecutable)||
+        !Number.isInteger(p.memoryMiB)||Number(p.memoryMiB)<512||Number(p.memoryMiB)>65536||typeof p.eulaAccepted!=='boolean')throw new Error('Invalid new server configuration');
+      return {...p};
+    case 'configureSimpleProfile':
+      if(Object.keys(p).sort().join(',')!=='javaExecutable,memoryMiB'||!boundedString(p.javaExecutable,4096)||!p.javaExecutable.trim()||/[\r\n]/.test(p.javaExecutable)||!Number.isInteger(p.memoryMiB)||Number(p.memoryMiB)<512||Number(p.memoryMiB)>65536)throw new Error('Invalid simple launch profile');
+      return {...p};
+    case 'saveGameGateway':
+      if(Object.keys(p).sort().join(',')!=='enabled,localPort'||typeof p.enabled!=='boolean'||!Number.isInteger(p.localPort)||Number(p.localPort)<1||Number(p.localPort)>65535)throw new Error('Invalid game gateway configuration');
+      return {enabled:p.enabled,localPort:p.localPort};
+    case 'openSetupLink':
+      if(Object.keys(p).join(',')!=='page'||!['eula','java','fabric','relay'].includes(p.page as string))throw new Error('Invalid setup link');
+      return {page:p.page};
+    case 'saveOnboarding':return validateOnboarding(p);
+    case 'restoreSnapshot':
+      if(Object.keys(p).join(',')!=='snapshotId'||!fingerprint(p.snapshotId))throw new Error('Invalid snapshot revision');
+      return {snapshotId:p.snapshotId};
     case 'saveSettings':return validateSettings(p) as unknown as Record<string,any>;
     case 'saveProfile':
       if(!boundedString(p.executable,4096)||!p.executable.trim())throw new Error('Invalid executable');
@@ -35,6 +60,22 @@ export function validateCall(method:unknown,payload:unknown,senderUrl:string,exp
       return {name:p.name,fingerprint:p.fingerprint,host:p.host,port:p.port};
     case 'sendSnapshot':case 'handoff':
       if(!fingerprint(p.fingerprint))throw new Error('Invalid peer fingerprint');return {fingerprint:p.fingerprint};
+    case 'searchMods':
+      if(Object.keys(p).sort().join(',')!=='offset,query'||!boundedString(p.query,200)||!Number.isSafeInteger(p.offset)||Number(p.offset)<0||Number(p.offset)>10000)throw new Error('Invalid mod query or offset');
+      return {query:p.query,offset:p.offset};
+    case 'installMod':
+      if(!isProjectKey(p.projectId)||Object.keys(p).some(k=>!['projectId','targets'].includes(k)))throw new Error('Invalid mod project');
+      if('targets' in p&&(!Array.isArray(p.targets)||p.targets.length<1||p.targets.length>2||!p.targets.every(isModKind)||new Set(p.targets).size!==p.targets.length))throw new Error('Invalid mod targets');
+      return {projectId:p.projectId,...('targets' in p?{targets:[...(p.targets as string[])]}:{})};
+    case 'saveModTarget':
+      if(Object.keys(p).sort().join(',')!=='gameVersion,loader'||!isModLoader(p.loader)||!isGameVersion(p.gameVersion))throw new Error('Invalid mod loader or Minecraft version');
+      return {loader:p.loader,gameVersion:p.gameVersion};
+    case 'openModPage':
+      if(Object.keys(p).join(',')!=='slug'||!isProjectKey(p.slug)||p.slug==='..')throw new Error('Invalid mod slug');
+      return {slug:p.slug};
+    case 'joinWithInvite':
+      if(Object.keys(p).sort().join(',')!=='code,name'||!boundedString(p.code,1500)||!p.code.trim()||!boundedString(p.name,60)||!p.name.trim()||/[\r\n]/.test(p.name))throw new Error('Invalid invite code or friend name');
+      return {code:p.code,name:p.name};
     case 'addMods':
       if(Object.keys(p).join(',')!=='kind'||!isModKind(p.kind))throw new Error('Invalid mod kind');
       return {kind:p.kind};

@@ -33,10 +33,18 @@ const HANDSHAKE_TIMEOUT_MS = 5000;
 const FRAME_TIMEOUT_MS = 5000;
 const MAX_FRAME_BYTES = 1048576;
 const verifiedSockets = new WeakSet<TLSSocket>();
+const inviteSockets = new WeakSet<TLSSocket>();
+
+/** Narrow bootstrap capability: never usable by ordinary framing or snapshot transfers. */
+function requireInviteSocket(socket: TLSSocket): void {
+  if (!inviteSockets.has(socket) && !verifiedSockets.has(socket)) throw new Error('Socket has not been invite-gate verified');
+}
 
 function requireVerified(socket: TLSSocket): void {
   if (!verifiedSockets.has(socket)) throw new Error("Socket has not been peer-pin verified");
 }
+
+export function isVerifiedPeerSocket(socket: TLSSocket): boolean { return verifiedSockets.has(socket); }
 
 function pinBytes(fingerprint: string): Buffer {
   if (typeof fingerprint !== "string" || !/^[0-9a-f]{64}$/.test(fingerprint)) {
@@ -49,7 +57,11 @@ export async function listenPeer(
   identity: PeerIdentity,
   trustedFingerprints: string[],
   onConnection: (socket: TLSSocket, fingerprint: string) => void,
-  { host = "127.0.0.1", port = 0 }: { host?: string; port?: number } = {},
+  { host = "127.0.0.1", port = 0, authorizeCertificate }: {
+    host?: string; port?: number;
+    /** Checked anew per connection. 'invite' permits only invite framing, not ordinary transfers. */
+    authorizeCertificate?: (fingerprint: string) => Promise<'trusted' | 'invite' | false>;
+  } = {},
 ): Promise<{ host: string; port: number; close: () => Promise<void> }> {
   const trustedPins = trustedFingerprints.map(pinBytes);
   const sockets = new Set<Socket>();
@@ -72,17 +84,21 @@ export async function listenPeer(
     track(socket);
     if (stopping) return;
     socket.on("error", () => {});
-    // No application callback sees a socket before the presented certificate is pinned.
+    // Certificate possession is authenticated by TLS; capability is decided before the callback.
     const raw = socket.getPeerCertificate().raw;
     if (!raw) { socket.destroy(); return; }
     const hash = createHash("sha256").update(raw).digest();
     const fingerprint = hash.toString("hex");
-    if (!trustedPins.some((pin) => timingSafeEqual(pin, hash))) { socket.destroy(); return; }
-    socket.disableRenegotiation();
-    verifiedSockets.add(socket);
-    socket.write(ACCEPTED);
-    try { onConnection(socket, fingerprint); }
-    catch (error) { socket.destroy(error instanceof Error ? error : new Error(String(error))); }
+    void (async () => {
+      const access = authorizeCertificate ? await authorizeCertificate(fingerprint)
+        : trustedPins.some((pin) => timingSafeEqual(pin, hash)) ? 'trusted' : false;
+      if (!access || stopping || socket.destroyed) { socket.destroy(); return; }
+      socket.disableRenegotiation();
+      if (access === 'trusted') verifiedSockets.add(socket);
+      else inviteSockets.add(socket);
+      socket.write(ACCEPTED);
+      onConnection(socket, fingerprint);
+    })().catch(() => socket.destroy());
   });
   server.on("connection", track);
   server.on("tlsClientError", (_error, socket) => socket.destroy());
@@ -180,6 +196,16 @@ function serialize<T>(queues: WeakMap<TLSSocket, Promise<void>>, socket: TLSSock
 
 export async function writeFrame(socket: TLSSocket, value: unknown): Promise<void> {
   requireVerified(socket);
+  return writeCheckedFrame(socket, value);
+}
+
+export async function writeInviteFrame(socket: TLSSocket, value: unknown): Promise<void> {
+  requireInviteSocket(socket);
+  if (Buffer.byteLength(JSON.stringify(value)) > 4096) throw new RangeError('Invite frame exceeds the bootstrap byte limit');
+  return writeCheckedFrame(socket, value);
+}
+
+function writeCheckedFrame(socket: TLSSocket, value: unknown): Promise<void> {
   const body = Buffer.from(JSON.stringify(value), "utf8");
   if (body.length > MAX_FRAME_BYTES) throw new Error("Frame exceeds the one-MiB byte limit");
   const packet = Buffer.allocUnsafe(4 + body.length);
@@ -222,6 +248,16 @@ const readQueues = new WeakMap<TLSSocket, Promise<void>>();
 
 export async function readFrame(socket: TLSSocket, maxBytes = 1048576, timeoutMs = FRAME_TIMEOUT_MS): Promise<any> {
   requireVerified(socket);
+  return readCheckedFrame(socket, maxBytes, timeoutMs);
+}
+
+export async function readInviteFrame(socket: TLSSocket, maxBytes = 4096, timeoutMs = FRAME_TIMEOUT_MS): Promise<any> {
+  requireInviteSocket(socket);
+  if (maxBytes > 4096) throw new RangeError('Invite frame exceeds the bootstrap byte limit');
+  return readCheckedFrame(socket, maxBytes, timeoutMs);
+}
+
+function readCheckedFrame(socket: TLSSocket, maxBytes: number, timeoutMs: number): Promise<any> {
   if (!Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_FRAME_BYTES) {
     throw new RangeError("maxBytes must be an integer between 1 and 1048576");
   }

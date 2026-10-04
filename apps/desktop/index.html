@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'self' data: https://cdn.modrinth.com; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>PeerHost — Operate</title>
   <link rel="stylesheet" href="style.css">
   <script src="renderer.js" defer></script>
@@ -14,22 +14,22 @@
     <aside class="sidebar" aria-label="Application navigation">
       <a class="brand" href="#workspace" aria-label="PeerHost home"><span class="brand-mark" aria-hidden="true">p<span>h</span></span><span>PeerHost<small>LOCAL FIRST / ALPHA</small></span></a>
       <nav class="nav-links" aria-label="Workspace">
-        <a class="nav-link is-active" href="#workspace" aria-current="page"><span class="nav-glyph" aria-hidden="true">⌘</span> Operate</a>
-        <a class="nav-link" href="#console-section"><span class="nav-glyph" aria-hidden="true">›_</span> Console</a>
-        <button class="nav-link" id="nav-peers" type="button"><span class="nav-glyph" aria-hidden="true">⇄</span> Peers</button>
+        <a class="nav-link is-active" href="#workspace" aria-current="page"><span class="nav-glyph" aria-hidden="true">⌘</span> My server</a>
+        <a class="nav-link" id="nav-console" href="#console-section"><span class="nav-glyph" aria-hidden="true">›_</span> Console</a>
+        <button class="nav-link" id="nav-peers" type="button"><span class="nav-glyph" aria-hidden="true">⇄</span> Friends</button>
         <button class="nav-link" id="nav-settings" type="button"><span class="nav-glyph" aria-hidden="true">⚙</span> Settings</button>
+        <button class="nav-link" id="nav-setup" type="button"><span class="nav-glyph" aria-hidden="true">＋</span> Setup guide</button>
       </nav>
       <div class="sidebar-footer">
         <span class="device-label"><span class="status-dot" aria-hidden="true"></span> THIS PC</span>
-        <p>Close to tray.<br>Stop hosting before quitting the app.</p>
+        <p>Closing the window keeps PeerHost running in the tray. Stop your server before quitting.</p>
         <span id="app-version" class="version">Connecting to app…</span>
       </div>
     </aside>
 
     <main class="workspace" id="workspace" tabindex="-1">
       <header class="workspace-header">
-        <div><p class="eyebrow">WORKSPACE / THIS PC</p><h1>Operate</h1></div>
-        <span class="mode-label">Direct hosting · This PC</span>
+        <div><p class="eyebrow">THIS PC</p><h1>My server</h1></div>
       </header>
 
       <div id="error-banner" class="notice notice-error" role="alert" hidden>
@@ -38,37 +38,65 @@
       <p id="activity-message" class="activity" role="status" aria-live="polite">Reading app state…</p>
 
       <section class="server-section" aria-labelledby="server-heading">
-        <div class="section-heading"><h2 id="server-heading">Server</h2><button id="import-server" type="button" class="button button-small" disabled>Import existing<span aria-hidden="true"> ↗</span></button></div>
+        <div class="section-heading"><h2 id="server-heading">Server</h2><button id="import-server" type="button" class="button button-small" disabled>Import a server…</button></div>
         <div class="server-card">
-          <div class="server-identity"><div><p class="eyebrow">JAVA SERVER</p><h3 id="server-name">No server imported</h3></div><span id="server-status" class="badge">Not configured</span></div>
-          <div id="server-empty" class="server-empty"><p>Bring your existing server.</p><span>Choose a Java server folder, then review its launch command. Fabric, Forge, NeoForge, and vanilla use the profile you supply.</span></div>
-          <dl id="server-info" class="server-facts" hidden>
-            <div><dt>Managed server</dt><dd id="server-directory" class="mono"></dd></div>
-            <div><dt>Snapshot store</dt><dd id="store-directory" class="mono"></dd></div>
-            <div><dt>Snapshot</dt><dd id="snapshot-id" class="mono"></dd></div>
-            <div><dt>Ownership</dt><dd id="ownership-state"></dd></div>
-          </dl>
-          <div class="server-toolbar" aria-label="Server actions">
-            <button id="start-server" type="button" class="button button-primary" disabled><span aria-hidden="true">▷</span> Start hosting</button>
-            <button id="stop-server" type="button" class="button button-stop" disabled><span aria-hidden="true">□</span> Stop</button>
-            <button id="create-snapshot" type="button" class="button" disabled><span aria-hidden="true">＋</span> Create snapshot</button>
-            <button id="recover-ownership" type="button" class="button" hidden disabled>Confirm stopped &amp; recover</button>
-            <button id="clean-up" type="button" class="button" disabled title="Delete old server copies and revisions">Clean up storage</button>
+          <div class="server-identity"><div><p class="eyebrow">JAVA SERVER</p><h3 id="server-name">No server yet</h3></div><span id="server-status" class="badge">Not configured</span></div>
+          <div id="server-empty" class="server-empty"><p>Your world starts here.</p><span>PeerHost runs a Minecraft Java server on this PC so you and your friends can play together. It takes about two minutes.</span><button id="create-server-empty" type="button" class="button button-primary create-server-empty" disabled>create a server</button><button id="import-server-empty" type="button" class="text-button" disabled>I already have a server folder</button>
+            <ol id="getting-started" class="getting-started" aria-label="Getting started">
+              <li data-check="server"><strong>Create or import a server</strong><span>Vanilla or Fabric is downloaded for you.</span></li>
+              <li data-check="start"><strong>Start it and join from Minecraft</strong><span>Multiplayer → Add Server → <code>localhost</code></span></li>
+              <li data-check="friends"><strong>Invite friends</strong><span>Optional · take turns hosting the same world.</span></li>
+              <li data-check="relay"><strong>Add an always-on PC</strong><span>Optional · keeps the world reachable when you're offline.</span></li>
+            </ol>
           </div>
-          <p id="server-action-hint" class="action-hint">Import a server to enable hosting and snapshots.</p>
+          <details id="server-details" class="server-details"><summary>Technical details</summary><dl id="server-info" class="server-facts" hidden>
+            <div><dt>Managed server</dt><dd id="server-directory" class="mono"></dd></div>
+            <div><dt>Backup store</dt><dd id="store-directory" class="mono"></dd></div>
+            <div><dt>Latest backup</dt><dd id="snapshot-id" class="mono"></dd></div>
+            <div><dt>Who can host</dt><dd id="ownership-state"></dd></div>
+          </dl></details>
+          <div id="join-help" class="join-help" role="note" hidden></div>
+          <div id="server-toolbar" class="server-toolbar" aria-label="Server actions">
+            <button id="start-server" type="button" class="button button-primary" disabled><span aria-hidden="true">▷</span> Start server</button>
+            <button id="stop-server" type="button" class="button button-stop" disabled><span aria-hidden="true">□</span> Stop server</button>
+            <button id="create-snapshot" type="button" class="button" disabled><span aria-hidden="true">＋</span> Save backup</button>
+            <button id="recover-ownership" type="button" class="button" hidden disabled>Confirm stopped &amp; recover</button>
+            <button id="clean-up" type="button" class="button" disabled title="Delete old server copies and backups that are no longer needed">Free up space</button>
+          </div>
+          <p id="server-action-hint" class="action-hint" hidden></p>
+          <div id="player-gateway" class="player-gateway" hidden><div class="compact-heading"><h3>Always-on PC address</h3><button id="open-gateway-setup" type="button" class="text-button">Set up / check</button></div><p id="player-gateway-status" class="field-help" role="status">Reading tunnel state…</p><p id="player-address" class="field-help"></p></div>
           <div id="relay-card" class="relay-card" hidden>
-            <div class="compact-heading"><h3>Relay <span id="relay-name" class="section-caption"></span></h3><span id="relay-holder" class="subtle-label">NOT CHECKED</span></div>
-            <p id="relay-help" class="field-help">The relay is an always-on PC that stores the server between hosts, so the next PC can pick it up even when this one is off.</p>
+            <div class="compact-heading"><h3>Always-on PC <span id="relay-name" class="section-caption"></span></h3><span id="relay-holder" class="subtle-label">NOT CHECKED</span></div>
+            <p id="relay-help" class="field-help">Your always-on PC stores the world between hosts, so a friend can pick it up even when this PC is off.</p>
             <div class="relay-actions">
-              <button id="park-relay" type="button" class="button button-small" disabled>Park on relay</button>
-              <button id="claim-relay" type="button" class="button button-small" disabled>Claim from relay</button>
-              <button id="check-relay" type="button" class="text-button" disabled>Check relay</button>
+              <button id="park-relay" type="button" class="button button-small" disabled>Hand off to always-on PC</button>
+              <button id="claim-relay" type="button" class="button button-small" disabled>Take over hosting</button>
+              <button id="check-relay" type="button" class="text-button" disabled>Check status</button>
             </div>
           </div>
         </div>
 
+        <section id="snapshot-history" class="snapshot-history" aria-labelledby="snapshot-history-title" hidden><div class="compact-heading"><h3 id="snapshot-history-title">Backups</h3><button id="refresh-snapshots" type="button" class="text-button">Refresh</button></div><p class="field-help">Saved copies of your world, kept locally on this PC — not a remote backup. Restoring never deletes anything: your current world is kept and backed up first.</p><p id="snapshot-history-status" class="field-help" role="status"></p><ul id="snapshot-list" class="snapshot-list" aria-label="Backups"></ul></section>
         <details id="mods-details" class="profile-details">
           <summary>Mods<span id="mods-summary" class="summary-meta">Server &amp; client</span></summary>
+          <section id="mod-browser" class="mod-browser" aria-labelledby="mod-browser-heading">
+            <div class="compact-heading"><h3 id="mod-browser-heading">Browse Modrinth</h3><span class="subtle-label">COMPATIBLE MODS</span></div>
+            <p class="field-help">Popular mods first. Search and installs use your saved loader and Minecraft version. Installing asks for native confirmation, including required dependencies.</p>
+            <form id="mod-target-form" class="mod-target-form" novalidate>
+              <div><label for="mod-loader">Mod loader</label><select id="mod-loader" disabled><option value="">Choose loader</option><option value="fabric">Fabric</option><option value="quilt">Quilt</option><option value="forge">Forge</option><option value="neoforge">NeoForge</option></select></div>
+              <div><label for="mod-game-version">Minecraft version</label><input id="mod-game-version" type="text" maxlength="32" placeholder="e.g. 1.21.1" autocomplete="off" spellcheck="false" disabled></div>
+              <button id="save-mod-target" type="submit" class="button button-small" disabled>Save compatibility</button>
+            </form>
+            <p id="mod-target-feedback" class="field-help" role="status">Import a modded server to browse compatible mods.</p>
+            <form id="mod-search-form" class="mod-search-form" role="search">
+              <label class="sr-only" for="mod-query">Search Modrinth mods</label><input id="mod-query" type="search" maxlength="200" placeholder="Search mods, e.g. Lithium" autocomplete="off" disabled>
+              <button id="search-mods" type="submit" class="button button-small" disabled>Search</button>
+            </form>
+            <p id="mod-search-status" class="field-help" role="status" aria-live="polite">Save compatibility to browse mods.</p>
+            <ul id="mod-results" class="mod-results" aria-label="Compatible Modrinth mods" aria-busy="false"></ul>
+            <div class="mod-pagination"><button id="mod-previous" type="button" class="button button-small" disabled>Previous</button><span id="mod-page" class="field-help">No results loaded</span><button id="mod-next" type="button" class="button button-small" disabled>Next</button></div>
+          </section>
+          <h3 class="installed-mods-heading">Installed files <span class="section-caption">Advanced: import local .jar files below</span></h3>
           <div class="mods-panel">
             <div class="mods-column">
               <div class="compact-heading"><h3>Server mods <span class="section-caption">mods/</span></h3><button id="add-server-mods" type="button" class="button button-small" disabled>Add .jar…</button></div>
@@ -86,7 +114,7 @@
         </details>
 
         <details id="profile-details" class="profile-details">
-          <summary>Launch profile<span class="summary-meta">Java path &amp; arguments</span></summary>
+          <summary>Advanced launch settings<span class="summary-meta">Java path &amp; arguments</span></summary>
           <form id="profile-form" class="profile-form" novalidate>
             <label for="java-executable">Java executable</label>
             <input id="java-executable" type="text" placeholder="C:\Program Files\Java\…\bin\java.exe" autocomplete="off" spellcheck="false" disabled aria-describedby="java-help">
@@ -114,10 +142,26 @@
     </main>
 
     <aside id="inspector" class="inspector" aria-label="Peers and settings">
-      <div class="inspector-tabs" role="tablist" aria-label="Inspector"><button id="peers-tab" type="button" role="tab" aria-selected="true" aria-controls="peers-panel" tabindex="0">Peers</button><button id="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-panel" tabindex="-1">Settings</button></div>
+      <div class="inspector-tabs" role="tablist" aria-label="Inspector"><button id="peers-tab" type="button" role="tab" aria-selected="true" aria-controls="peers-panel" tabindex="0">Friends</button><button id="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-panel" tabindex="-1">Settings</button></div>
       <section id="peers-panel" role="tabpanel" aria-labelledby="peers-tab" tabindex="0" class="inspector-panel">
-        <div class="panel-heading"><h2>Peer-to-peer</h2><span class="subtle-label">MANUAL TRUST</span></div>
-        <p class="panel-intro">Send a stopped server’s snapshot to a trusted peer.</p>
+        <div class="panel-heading"><h2>Friends</h2><span class="subtle-label">OPTIONAL</span></div>
+        <p class="panel-intro">Friends in your group can take turns hosting the same world. Groups live on an always-on PC — set one up in the Setup guide, or join a friend’s with their invitation code.</p>
+        <div id="friends-home"></div>
+        <section id="friends-controls" class="friends-section" aria-labelledby="add-friend-heading">
+          <div class="compact-heading"><h3 id="add-friend-heading">Invite a friend</h3><button id="create-invite" type="button" class="button button-small" disabled>Create invitation</button></div>
+          <p id="invite-help" class="field-help">Join a group first, then create an invitation code to send privately.</p>
+          <div id="invite-result" hidden><label for="invite-code">Invitation code</label><textarea id="invite-code" class="invite-code" readonly rows="3" spellcheck="false" aria-describedby="invite-expiry invite-warning"></textarea><div class="compact-heading"><span id="invite-expiry" class="field-help"></span><button id="copy-invite" type="button" class="text-button" disabled>Copy invitation</button></div><p id="invite-warning" class="warning-copy">Anyone with this code can join your relay once. Send it only to the friend you trust.</p></div>
+          <details id="join-friend-details" class="join-friend-details" open><summary>I have an invitation code</summary><form id="join-friend-form" class="join-friend-form" novalidate>
+            <label for="friend-name">Your name</label><input id="friend-name" type="text" maxlength="60" placeholder="A name your friends recognize" autocomplete="off" disabled>
+            <label for="friend-code">Paste invitation code</label><textarea id="friend-code" rows="3" maxlength="2000" placeholder="PEERHOST-…" autocomplete="off" spellcheck="false" disabled></textarea>
+            <p class="field-help">Only accept codes from people you trust. Joining never starts a server.</p><button id="join-friend" type="submit" class="button button-small" disabled>Join group</button>
+          </form></details>
+          <p id="friend-feedback" class="field-help" role="status" aria-live="polite">Not in a group yet.</p>
+          <div class="compact-heading friend-list-heading"><h3>Group members</h3><button id="refresh-friends" type="button" class="text-button" disabled>Refresh members</button></div>
+          <p id="friend-holder" class="field-help" role="status">Current holder: not checked</p><ul id="friend-list" class="friend-list" aria-label="Relay members"></ul>
+        </section>
+        <details id="advanced-peers" class="advanced-peers"><summary>Advanced: direct PC-to-PC transfers</summary>
+        <p class="field-help">For experienced users. Pair two PCs by exchanging fingerprints, then send the world directly. Most people should use friends and an always-on PC instead.</p>
         <div class="identity-block"><div class="compact-heading"><label for="device-fingerprint">Your device fingerprint</label><button id="copy-fingerprint" type="button" class="text-button" disabled>Copy</button></div><textarea id="device-fingerprint" class="fingerprint mono" readonly rows="3" spellcheck="false" aria-describedby="fingerprint-help"></textarea><p id="fingerprint-help" class="field-help">Share this fingerprint through a separate, trusted channel. Both peers must trust each other.</p></div>
         <div class="listener-block"><div class="compact-heading"><h3>Receive snapshots</h3><span id="listener-status" class="subtle-label">NOT LISTENING</span></div><code id="listener-endpoint" class="listener-endpoint">No listener endpoint</code><p id="listener-help" class="field-help">Start the listener to see the actual endpoint. An endpoint is not proof of public reachability.</p><div class="listener-actions"><button id="start-listener" type="button" class="button button-small" disabled>Start listener</button><button id="copy-peer-details" type="button" class="text-button" disabled>Copy share details</button></div></div>
         <div class="compact-heading peer-list-heading"><h3>Trusted peers</h3><span id="peer-count" class="subtle-label">NONE ADDED</span></div>
@@ -129,12 +173,13 @@
           <div class="endpoint-fields"><div><label for="peer-host">Listener host</label><input id="peer-host" type="text" placeholder="127.0.0.1" maxlength="253" spellcheck="false" autocomplete="off" disabled></div><div><label for="peer-port">Port</label><input id="peer-port" type="number" placeholder="Port" min="1" max="65535" step="1" disabled></div></div>
           <p id="peer-trust-help" class="warning-copy">Verify all 64 fingerprint characters before trusting. A wrong pin can trust the wrong device.</p><button id="add-peer" type="submit" class="button button-small" disabled>Save trusted peer</button>
         </form></details>
-        <p class="alpha-note">First alpha: manual fingerprint exchange. Simple invitations come later; there is no automatic discovery or NAT traversal here.</p>
+        </details>
+        <p class="alpha-note">PeerHost never changes your router or firewall.</p>
       </section>
       <section id="settings-panel" role="tabpanel" aria-labelledby="settings-tab" tabindex="0" class="inspector-panel" hidden>
-        <div class="panel-heading"><h2>Hosting settings</h2></div><p class="panel-intro">Direct hosting runs on this Windows PC. No gateway is required.</p>
+        <div class="panel-heading"><h2>Settings</h2></div><p class="panel-intro">Everything here is optional. Your server works without changing anything.</p>
         <form id="settings-form" class="settings-form" novalidate>
-          <div class="settings-section"><div class="compact-heading"><h3>Persistent address</h3><span id="gateway-status" class="badge badge-neutral">Unconnected</span></div><label class="switch-row" for="persistent-address"><span>Use a mini-PC gateway<small>Optional · off by default</small></span><input id="persistent-address" class="switch" type="checkbox" disabled></label><label for="gateway-address">Gateway address</label><input id="gateway-address" type="text" placeholder="gateway.example:25565" maxlength="253" autocomplete="off" spellcheck="false" disabled aria-describedby="gateway-help"><p id="gateway-help" class="field-help">Enter the mini-PC gateway’s hostname:port only if you opt in.</p><p class="warning-copy">Saving this preference does not establish a gateway connection. Incoming public availability is not proven.</p></div>
+          <div class="settings-section"><div class="compact-heading"><h3>Displayed player address</h3><span id="gateway-status" class="badge badge-neutral">Unconnected</span></div><label class="switch-row" for="persistent-address"><span>Show a stable player address<small>Display preference only · off by default</small></span><input id="persistent-address" class="switch" type="checkbox" disabled></label><label for="gateway-address">Gateway address</label><input id="gateway-address" type="text" placeholder="gateway.example:25565" maxlength="253" autocomplete="off" spellcheck="false" disabled aria-describedby="gateway-help"><p id="gateway-help" class="field-help">Enter the reachable third PC’s player hostname:port. Enable actual tunnels separately in Setup → Always-on PC.</p><p class="warning-copy">Saving this preference does not establish a gateway connection. Incoming public availability is not proven.</p></div>
           <div class="settings-section"><div class="compact-heading"><h3>Relay</h3><span class="subtle-label">OPTIONAL</span></div>
             <label for="relay-peer">Always-on relay</label>
             <select id="relay-peer" disabled aria-describedby="relay-settings-help"><option value="">None: hand off directly between PCs</option></select>
@@ -145,9 +190,64 @@
           <div class="form-footer"><span id="settings-feedback" class="field-help" role="status">Preferences loaded from this PC.</span><button id="save-settings" type="submit" class="button button-small" disabled>Save settings</button></div>
         </form>
       </section>
-      <footer class="inspector-footer">Local by default. Trust is explicit.</footer>
+      <footer class="inspector-footer">Runs on your PCs. Nothing is shared unless you choose to.</footer>
     </aside>
   </div>
+  <dialog id="setup-dialog" class="setup-dialog" aria-labelledby="setup-title">
+    <header class="setup-header"><div><p class="eyebrow">SETUP GUIDE</p><h2 id="setup-title">Welcome to PeerHost</h2></div><button id="setup-save-close" type="button" class="icon-button" aria-label="Close setup guide (progress is saved)" title="Close · your progress is saved">✕</button></header>
+    <nav class="setup-steps" aria-label="Setup stages"><button type="button" data-setup-step="server"><span class="step-dot" aria-hidden="true"></span>Your server</button><button type="button" data-setup-step="runtime"><span class="step-dot" aria-hidden="true"></span>Java &amp; memory</button><button type="button" data-setup-step="friends"><span class="step-dot" aria-hidden="true"></span>Friends<small>optional</small></button><button type="button" data-setup-step="gateway"><span class="step-dot" aria-hidden="true"></span>Always-on PC<small>optional</small></button><button type="button" data-setup-step="ready"><span class="step-dot" aria-hidden="true"></span>Done</button></nav>
+    <p id="setup-error" class="notice notice-error" role="alert" hidden></p><button id="setup-close-unsaved" type="button" class="text-button" hidden>Close without saving progress</button>
+    <div class="setup-body">
+      <section id="setup-server" data-setup-panel="server">
+        <p id="setup-intro" class="setup-lead">PeerHost runs a Minecraft Java server on your PC, so you and your friends can play together — and take turns hosting the same world. Let’s get your server ready. It takes about two minutes.</p>
+        <p id="setup-existing" class="setup-done-note" hidden></p>
+        <div id="setup-choices" class="setup-choices" role="group" aria-label="How do you want to start?">
+          <button id="setup-choose-create" type="button" class="choice-card"><strong>Create a new world</strong><span>Download a fresh Vanilla or Fabric server. Recommended for first-timers.</span></button>
+          <button id="setup-import" type="button" class="choice-card"><strong>Use a server I already have</strong><span>Pick an existing server folder. PeerHost works on a copy; the original isn’t changed.</span></button>
+          <button id="setup-choose-join" type="button" class="choice-card"><strong>Join a friend’s world</strong><span>Got an invitation code? Join their group and take turns hosting.</span></button>
+        </div>
+        <form id="setup-create-form" class="setup-create-form" novalidate hidden>
+          <label for="setup-name">Server name</label><input id="setup-name" type="text" maxlength="80" autocomplete="off">
+          <div class="setup-fields">
+            <div><label for="setup-loader">Game type</label><select id="setup-loader"><option value="vanilla">Vanilla · the normal game</option><option value="fabric">Fabric · lets you add mods</option></select><p class="field-help">Not sure? Choose Vanilla.</p></div>
+            <div><label for="setup-version">Minecraft version</label><select id="setup-version"><option value="">Loading versions…</option></select><label class="inline-check small-check"><input id="setup-all-versions" type="checkbox"> Show older versions</label><p class="field-help">Use the version your players have in their Minecraft launcher.</p></div>
+          </div>
+          <div class="setup-fields">
+            <div><label for="setup-memory">Memory (RAM)</label><select id="setup-memory"></select><p class="field-help">2–4 GB suits most small groups. Leave enough for your own game.</p></div>
+            <div><label for="setup-java">Java</label><select id="setup-java"><option value="">Looking for Java…</option></select>
+              <div class="setup-inline-actions"><button id="setup-discover-java" type="button" class="text-button">Search again</button><button id="setup-pick-java" type="button" class="text-button">Choose another…</button><button type="button" data-setup-link="java" class="text-button">How to install Java ↗</button></div>
+              <p id="setup-java-help" class="field-help">Minecraft servers need Java. PeerHost uses the one already on this PC.</p></div>
+          </div>
+          <label class="check-row eula-row"><input id="setup-eula" type="checkbox"><span>I agree to the Minecraft End User License Agreement<small>Required by Mojang to run any server. <button type="button" data-setup-link="eula" class="text-button inline-link">Read the EULA ↗</button></small></span></label>
+          <div class="setup-create-actions"><button id="setup-create" type="submit" class="button button-primary button-large">Create my server</button><span class="field-help">Downloads the official server files and checks them. Nothing starts until you press Start.</span></div>
+          <button type="button" data-setup-link="fabric" class="text-button" hidden>About Fabric ↗</button>
+        </form>
+      </section>
+      <section id="setup-runtime" data-setup-panel="runtime" hidden><h3>Java &amp; memory</h3><p class="setup-lead">These control how your server runs on this PC. The defaults are fine for most people.</p>
+        <form id="setup-runtime-form" novalidate>
+          <div class="setup-fields">
+            <div><label for="setup-runtime-java">Java</label><select id="setup-runtime-java"><option value="">Select Java</option></select><div class="setup-inline-actions"><button id="setup-runtime-pick" type="button" class="text-button">Choose another…</button><button type="button" data-setup-link="java" class="text-button">How to install Java ↗</button></div></div>
+            <div><label for="setup-runtime-memory">Memory (RAM)</label><select id="setup-runtime-memory"></select></div>
+          </div>
+          <button id="setup-profile-save" type="submit" class="button">Save changes</button>
+        </form>
+        <p id="setup-runtime-feedback" class="field-help" role="status"></p>
+        <details class="setup-more"><summary>Using a modpack or custom start command?</summary><p>Modpack start files and arguments are kept as they are. For anything unusual, edit the full command yourself.</p><button id="setup-advanced" type="button" class="text-button">Open advanced launch settings</button></details>
+      </section>
+      <section id="setup-friends" data-setup-panel="friends" hidden><h3>Friends <span class="optional-tag">optional</span></h3><p class="setup-lead">Friends in a group can take turns hosting the same world: whoever is online starts it, and the world moves safely between your PCs. A group lives on an always-on PC (next step).</p><ul class="setup-points"><li><strong>Got an invitation code?</strong> Paste it below to join.</li><li><strong>Starting a group?</strong> Set up the always-on PC first, then invite friends from here or the Friends tab.</li><li><strong>Just playing on your own Wi-Fi?</strong> Skip this — friends can join your server directly.</li></ul><div id="setup-friends-slot"></div></section>
+      <section id="setup-gateway" data-setup-panel="gateway" hidden><h3>Always-on PC <span class="optional-tag">optional</span></h3><p class="setup-lead">A spare computer that stays on — an old laptop, mini PC or home server — can store your world between hosts and give everyone one address to join, even when you’re offline.</p>
+        <ul class="setup-points"><li><strong>One address for everyone</strong>, no matter who’s hosting.</li><li><strong>The world waits safely</strong> on that PC between play sessions.</li><li><strong>Skip this</strong> if you just want to play now. You can come back any time.</li></ul>
+        <details id="setup-relay-details" class="setup-more"><summary>Step-by-step: set up the always-on PC (about 10 minutes, uses a terminal)</summary><ol class="setup-instructions"><li><strong>On the always-on PC:</strong> install Node.js 22 or newer and PeerHost’s relay tool. Find that PC’s address on your network (or Tailscale) and use it in place of RELAY_ADDRESS below. Don’t use 0.0.0.0 as the address you share.</li><li><strong>Start it</strong> in a terminal:<pre id="setup-relay-command">peerhost-relay init --root ./peerhost-relay
+peerhost-relay serve --root ./peerhost-relay --host 0.0.0.0 --port 47625 --advertise RELAY_ADDRESS --game-host 0.0.0.0 --game-port 25565</pre>Not using the shared player address? Leave out both <code>--game</code> options.</li><li><strong>Create the first invitation</strong> in a second terminal, while it runs:<pre>peerhost-relay invite --root ./peerhost-relay --advertise RELAY_ADDRESS --advertise-port 47625</pre></li><li><strong>On each gaming PC:</strong> go to Friends → I have an invitation code. Check that the fingerprint shown matches the always-on PC before accepting.</li><li><strong>First host:</strong> stop your server, choose Hand off to always-on PC, then Take over hosting once. Turn on the player address below on every PC that hosts.</li><li><strong>Network:</strong> allow TCP 47625 (PeerHost) and 25565 (players) on the always-on PC if needed. PeerHost never changes your router or firewall.</li><li><strong>Players</strong> join RELAY_ADDRESS:25565 and reconnect when the host changes.</li></ol><button type="button" data-setup-link="relay" class="text-button">Full always-on PC guide ↗</button></details>
+        <div class="setup-this-pc"><h4>On this PC</h4>
+          <div class="setup-inline-actions"><button id="setup-storage-check" type="button" class="button button-small">Check always-on PC connection</button></div><p id="setup-storage-status" class="field-help" role="status">Join the always-on PC’s group in Friends first.</p>
+          <form id="setup-gateway-form" novalidate><label class="switch-row" for="setup-gateway-enabled"><span>Let players join through the always-on PC<small>Off by default · only works while this PC is hosting</small></span><input id="setup-gateway-enabled" type="checkbox" class="switch"></label><div class="setup-port-row"><div><label for="setup-gateway-port">Minecraft port on this PC</label><input id="setup-gateway-port" type="number" min="1" max="65535" step="1" value="25565"><p class="field-help">Leave as 25565 unless you changed it.</p></div><button id="setup-gateway-save" type="submit" class="button button-small">Save</button><button id="setup-gateway-check" type="button" class="button button-small">Test player address</button></div></form>
+          <p id="setup-gateway-status" class="field-help" role="status">Not checked yet.</p></div>
+      </section>
+      <section id="setup-ready" data-setup-panel="ready" hidden><h3 id="setup-ready-title">You’re all set</h3><ul id="setup-ready-list" class="setup-summary"></ul><div class="setup-howto"><h4>How to play</h4><ol><li>Close this guide and press <strong>Start server</strong>.</li><li>Open Minecraft Java Edition → <strong>Multiplayer</strong> → <strong>Add Server</strong>.</li><li>Use the address <code>localhost</code> on this PC. Friends use the addresses shown under your server.</li></ol></div><p id="setup-ready-copy" class="field-help">You can reopen this guide any time from the sidebar.</p></section>
+    </div>
+    <footer class="setup-footer"><button id="setup-back" type="button" class="button">Back</button><p id="setup-status" class="setup-status" role="status" aria-live="polite"></p><button id="setup-later" type="button" class="text-button">Set up later</button><button id="setup-skip" type="button" class="button" hidden>Skip</button><button id="setup-next" type="button" class="button button-primary">Next</button></footer>
+  </dialog>
   <dialog id="send-dialog" class="send-dialog" aria-labelledby="send-dialog-title" aria-describedby="send-dialog-warning">
     <button id="close-send" type="button" class="dialog-close text-button" aria-label="Cancel snapshot send">Close</button>
     <p class="eyebrow">PEER SNAPSHOT</p><h2 id="send-dialog-title">Send this snapshot?</h2><p id="send-dialog-recipient"></p><code id="send-dialog-fingerprint" class="mono dialog-fingerprint"></code><p id="send-dialog-snapshot" class="field-help mono"></p><p id="send-dialog-warning" class="warning-copy">This shares server files, which may contain private configuration or player data. Verify the recipient’s fingerprint. Sending is not proof of a completed hosting handoff.</p><div class="dialog-actions"><button id="cancel-send" type="button" class="button">Cancel</button><button id="confirm-send" type="button" class="button button-primary" disabled>Send snapshot</button></div>
