@@ -1,198 +1,360 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark" data-accent="teal" data-density="comfortable" data-depth="soft" data-motion="full">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'self' data: https://cdn.modrinth.com; object-src 'none'; base-uri 'none'; form-action 'none'">
-  <title>PeerHost — Operate</title>
+  <title>PeerHost</title>
   <link rel="stylesheet" href="style.css">
   <script src="renderer.js" defer></script>
 </head>
-<body>
-  <a class="skip-link" href="#workspace">Skip to server controls</a>
+<body class="is-splashing">
+  <!-- Icon sprite and shared logo paint. Sized to zero (not display:none) so gradients stay referenceable. -->
+  <svg class="sprite" aria-hidden="true" focusable="false">
+    <defs>
+      <linearGradient id="logo-fill" x1="0" y1="0" x2="1" y2="1"><stop offset="0" class="logo-stop-1"/><stop offset="1" class="logo-stop-2"/></linearGradient>
+      <radialGradient id="logo-sheen" cx=".28" cy=".18" r=".62"><stop offset="0" stop-color="#fff" stop-opacity=".38"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient>
+      <symbol id="logo" viewBox="0 0 64 64"><rect x="2" y="2" width="60" height="60" rx="15" fill="url(#logo-fill)"/><rect x="2" y="2" width="60" height="60" rx="15" fill="url(#logo-sheen)"/><path d="M22 47V17h8a11 11 0 0 1 0 22h-8" fill="none" stroke="#fafffd" stroke-width="7.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="45.5" cy="45.5" r="5" fill="#ffd666"/></symbol>
+      <symbol id="i-server" viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="7" rx="2"/><rect x="3.5" y="13" width="17" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01M11 7.5h6M11 16.5h6"/></symbol>
+      <symbol id="i-console" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7.5 9.5l3 2.5-3 2.5M12.5 15h4"/></symbol>
+      <symbol id="i-friends" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><circle cx="17" cy="9.5" r="2.4"/><path d="M15.8 14.2c2.4-.3 4.3 1.2 4.7 4.3"/></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 6h10M18.5 6H20M4 12h4M12.5 12H20M4 18h11.5M20 18h0"/><circle cx="16.2" cy="6" r="2.2"/><circle cx="10.2" cy="12" r="2.2"/><circle cx="17.8" cy="18" r="2.2"/></symbol>
+      <symbol id="i-guide" viewBox="0 0 24 24"><path d="M12 3.5l2.3 5.2 5.2 2.3-5.2 2.3L12 18.5l-2.3-5.2L4.5 11l5.2-2.3z"/><path d="M18.5 16.5l.9 2 2 .9-2 .9-.9 2-.9-2-2-.9 2-.9z"/></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.8v12.4a.8.8 0 0 0 1.2.7l9.8-6.2a.8.8 0 0 0 0-1.4L9.2 5.1A.8.8 0 0 0 8 5.8z" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2.2" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="i-backup" viewBox="0 0 24 24"><path d="M12 3.5l8.5 4.6L12 12.7 3.5 8.1 12 3.5z"/><path d="M3.5 12.2l8.5 4.6 8.5-4.6M3.5 16.2l8.5 4.6 8.5-4.6"/></symbol>
+      <symbol id="i-import" viewBox="0 0 24 24"><path d="M12 4v10.5M7.8 10.6L12 14.8l4.2-4.2"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></symbol>
+      <symbol id="i-broom" viewBox="0 0 24 24"><path d="M14.5 3.5l-4 8M6.5 12h8l1.5 8.5H5z"/><path d="M8.5 16.5v4M11 16.5v4M13.5 16.5v4"/></symbol>
+      <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.2l7 3v5.2c0 4.3-2.9 7.7-7 9.4-4.1-1.7-7-5.1-7-9.4V6.2l7-3z"/><path d="M9.2 12l2 2 3.8-3.9"/></symbol>
+      <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3.5v8"/><path d="M6.6 7.4a7.6 7.6 0 1 0 10.8 0"/></symbol>
+      <symbol id="i-min" viewBox="0 0 24 24"><path d="M6 12h12"/></symbol>
+      <symbol id="i-fullscreen" viewBox="0 0 24 24"><path d="M4.5 9V4.5H9M19.5 9V4.5H15M4.5 15v4.5H9M19.5 15v4.5H15"/></symbol>
+      <symbol id="i-borderless" viewBox="0 0 24 24"><path d="M9 4.5V9H4.5M15 4.5V9h4.5M9 19.5V15H4.5M15 19.5V15h4.5"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+      <symbol id="i-palette" viewBox="0 0 24 24"><path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.3 0 1.9-.9 1.9-1.8 0-1.3-1-1.6-1-2.6 0-.9.7-1.6 1.7-1.6h2.1a3.8 3.8 0 0 0 3.8-3.8C20.5 6.6 16.7 3.5 12 3.5z"/><circle cx="7.8" cy="11" r="1.2"/><circle cx="10.5" cy="7.4" r="1.2"/><circle cx="15" cy="7.6" r="1.2"/></symbol>
+      <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.4 3.4 5.2 3.4 8.5s-1 6.1-3.4 8.5c-2.4-2.4-3.4-5.2-3.4-8.5s1-6.1 3.4-8.5z"/></symbol>
+      <symbol id="i-window" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M3.5 9h17M7 6.8h.01M9.6 6.8h.01"/></symbol>
+    </defs>
+  </svg>
+
+  <div id="splash" class="splash" role="status" aria-live="polite" aria-label="PeerHost is starting">
+    <div class="splash-stage">
+      <div class="splash-disc" aria-hidden="true">
+        <svg class="splash-orbit" viewBox="0 0 100 100"><circle cx="50" cy="50" r="46"/></svg>
+        <svg class="logo splash-logo" viewBox="0 0 64 64"><rect x="2" y="2" width="60" height="60" rx="15" fill="url(#logo-fill)"/><rect x="2" y="2" width="60" height="60" rx="15" fill="url(#logo-sheen)"/><path class="logo-glyph" d="M22 47V17h8a11 11 0 0 1 0 22h-8" fill="none" stroke="#fafffd" stroke-width="7.2" stroke-linecap="round" stroke-linejoin="round" pathLength="100"/><circle class="logo-node" cx="45.5" cy="45.5" r="5" fill="#ffd666"/></svg>
+      </div>
+      <p class="splash-word">Peer<span>Host</span></p>
+      <p class="splash-tag">Minecraft servers you and your friends share</p>
+      <div class="splash-track" aria-hidden="true"><span></span></div>
+      <p id="splash-status" class="splash-status">Starting secure local services…</p>
+    </div>
+  </div>
+
+  <a class="skip-link" href="#workspace">Skip to page content</a>
   <div class="app-shell">
     <aside class="sidebar" aria-label="Application navigation">
-      <a class="brand" href="#workspace" aria-label="PeerHost home"><span class="brand-mark" aria-hidden="true">p<span>h</span></span><span>PeerHost<small>LOCAL FIRST / ALPHA</small></span></a>
-      <nav class="nav-links" aria-label="Workspace">
-        <a class="nav-link is-active" href="#workspace" aria-current="page"><span class="nav-glyph" aria-hidden="true">⌘</span> My server</a>
-        <a class="nav-link" id="nav-console" href="#console-section"><span class="nav-glyph" aria-hidden="true">›_</span> Console</a>
-        <button class="nav-link" id="nav-peers" type="button"><span class="nav-glyph" aria-hidden="true">⇄</span> Friends</button>
-        <button class="nav-link" id="nav-settings" type="button"><span class="nav-glyph" aria-hidden="true">⚙</span> Settings</button>
-        <button class="nav-link" id="nav-setup" type="button"><span class="nav-glyph" aria-hidden="true">＋</span> Setup guide</button>
-      </nav>
+      <div class="sidebar-brand"><svg class="logo brand-logo" aria-hidden="true"><use href="#logo"/></svg><span class="brand-name">PeerHost</span><span class="chip">ALPHA</span></div>
+      <p class="nav-heading" id="nav-heading">Pages</p>
+      <div class="nav-tabs" role="tablist" aria-orientation="vertical" aria-labelledby="nav-heading">
+        <button id="operate-tab" class="nav-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="operate-panel" tabindex="0"><span class="nav-icon"><svg class="icon" aria-hidden="true"><use href="#i-server"/></svg></span><span class="nav-copy"><span class="nav-text">My server</span><span class="nav-sub">Start, backups &amp; mods</span></span><span id="nav-server-led" class="led" aria-hidden="true"></span></button>
+        <button id="console-tab" class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="console-panel" tabindex="-1" hidden><span class="nav-icon"><svg class="icon" aria-hidden="true"><use href="#i-console"/></svg></span><span class="nav-copy"><span class="nav-text">Console</span><span class="nav-sub">Live server output</span></span></button>
+        <button id="peers-tab" class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="peers-panel" tabindex="-1"><span class="nav-icon"><svg class="icon" aria-hidden="true"><use href="#i-friends"/></svg></span><span class="nav-copy"><span class="nav-text">Friends</span><span class="nav-sub">Share hosting</span></span><span id="nav-friend-count" class="nav-count" hidden></span></button>
+        <button id="settings-tab" class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-panel" tabindex="-1"><span class="nav-icon"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg></span><span class="nav-copy"><span class="nav-text">Settings</span><span class="nav-sub">Look, network &amp; app</span></span></button>
+      </div>
+      <button class="guide-button" id="nav-setup" type="button"><span class="nav-icon"><svg class="icon" aria-hidden="true"><use href="#i-guide"/></svg></span><span class="nav-copy"><span class="nav-text">Setup guide</span><span class="nav-sub">Step by step</span></span></button>
       <div class="sidebar-footer">
-        <span class="device-label"><span class="status-dot" aria-hidden="true"></span> THIS PC</span>
-        <p>Closing the window keeps PeerHost running in the tray. Stop your server before quitting.</p>
-        <span id="app-version" class="version">Connecting to app…</span>
+        <div class="device-card">
+          <span class="device-label"><span id="device-led" class="led" aria-hidden="true"></span>THIS PC</span>
+          <p class="device-note">✕ keeps PeerHost running in the tray. Stop your server before quitting.</p>
+          <span id="app-version" class="version">Connecting to app…</span>
+        </div>
+        <button id="quit-app" type="button" class="button button-small button-quiet quit-button"><svg class="icon" aria-hidden="true"><use href="#i-power"/></svg>Quit safely</button>
       </div>
     </aside>
 
     <main class="workspace" id="workspace" tabindex="-1">
-      <header class="workspace-header">
-        <div><p class="eyebrow">THIS PC</p><h1>My server</h1></div>
-      </header>
-
+      <!-- No title strip: a borderless drag row on the page carries the live status and the window buttons. -->
+      <div class="topbar">
+        <p id="activity-message" class="activity" role="status" aria-live="polite">Reading app state…</p>
+        <div class="window-controls" role="group" aria-label="Window controls">
+          <button id="window-minimize" type="button" class="window-button" aria-label="Minimize" title="Minimize"><svg class="icon" aria-hidden="true"><use href="#i-min"/></svg></button>
+          <button id="window-mode" type="button" class="window-button" data-mode="borderless" aria-label="Enter fullscreen" title="Enter fullscreen (F11)"><svg class="icon icon-to-fullscreen" aria-hidden="true"><use href="#i-fullscreen"/></svg><svg class="icon icon-to-borderless" aria-hidden="true"><use href="#i-borderless"/></svg></button>
+          <button id="window-close" type="button" class="window-button window-close" aria-label="Close to tray" title="Close to tray"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+        </div>
+      </div>
       <div id="error-banner" class="notice notice-error" role="alert" hidden>
         <span id="error-text"></span><button id="dismiss-error" type="button" class="text-button" aria-label="Dismiss error">Dismiss</button>
       </div>
-      <p id="activity-message" class="activity" role="status" aria-live="polite">Reading app state…</p>
 
-      <section class="server-section" aria-labelledby="server-heading">
-        <div class="section-heading"><h2 id="server-heading">Server</h2><button id="import-server" type="button" class="button button-small" disabled>Import a server…</button></div>
-        <div class="server-card">
-          <div class="server-identity"><div><p class="eyebrow">JAVA SERVER</p><h3 id="server-name">No server yet</h3></div><span id="server-status" class="badge">Not configured</span></div>
-          <div id="server-empty" class="server-empty"><p>Your world starts here.</p><span>PeerHost runs a Minecraft Java server on this PC so you and your friends can play together. It takes about two minutes.</span><button id="create-server-empty" type="button" class="button button-primary create-server-empty" disabled>create a server</button><button id="import-server-empty" type="button" class="text-button" disabled>I already have a server folder</button>
-            <ol id="getting-started" class="getting-started" aria-label="Getting started">
-              <li data-check="server"><strong>Create or import a server</strong><span>Vanilla or Fabric is downloaded for you.</span></li>
-              <li data-check="start"><strong>Start it and join from Minecraft</strong><span>Multiplayer → Add Server → <code>localhost</code></span></li>
-              <li data-check="friends"><strong>Invite friends</strong><span>Optional · take turns hosting the same world.</span></li>
-              <li data-check="relay"><strong>Add an always-on PC</strong><span>Optional · keeps the world reachable when you're offline.</span></li>
-            </ol>
-          </div>
-          <details id="server-details" class="server-details"><summary>Technical details</summary><dl id="server-info" class="server-facts" hidden>
-            <div><dt>Managed server</dt><dd id="server-directory" class="mono"></dd></div>
-            <div><dt>Backup store</dt><dd id="store-directory" class="mono"></dd></div>
-            <div><dt>Latest backup</dt><dd id="snapshot-id" class="mono"></dd></div>
-            <div><dt>Who can host</dt><dd id="ownership-state"></dd></div>
-          </dl></details>
-          <div id="join-help" class="join-help" role="note" hidden></div>
-          <div id="server-toolbar" class="server-toolbar" aria-label="Server actions">
-            <button id="start-server" type="button" class="button button-primary" disabled><span aria-hidden="true">▷</span> Start server</button>
-            <button id="stop-server" type="button" class="button button-stop" disabled><span aria-hidden="true">□</span> Stop server</button>
-            <button id="create-snapshot" type="button" class="button" disabled><span aria-hidden="true">＋</span> Save backup</button>
-            <button id="recover-ownership" type="button" class="button" hidden disabled>Confirm stopped &amp; recover</button>
-            <button id="clean-up" type="button" class="button" disabled title="Delete old server copies and backups that are no longer needed">Free up space</button>
-          </div>
-          <p id="server-action-hint" class="action-hint" hidden></p>
-          <div id="player-gateway" class="player-gateway" hidden><div class="compact-heading"><h3>Always-on PC address</h3><button id="open-gateway-setup" type="button" class="text-button">Set up / check</button></div><p id="player-gateway-status" class="field-help" role="status">Reading tunnel state…</p><p id="player-address" class="field-help"></p></div>
-          <div id="relay-card" class="relay-card" hidden>
-            <div class="compact-heading"><h3>Always-on PC <span id="relay-name" class="section-caption"></span></h3><span id="relay-holder" class="subtle-label">NOT CHECKED</span></div>
-            <p id="relay-help" class="field-help">Your always-on PC stores the world between hosts, so a friend can pick it up even when this PC is off.</p>
-            <div class="relay-actions">
-              <button id="park-relay" type="button" class="button button-small" disabled>Hand off to always-on PC</button>
-              <button id="claim-relay" type="button" class="button button-small" disabled>Take over hosting</button>
-              <button id="check-relay" type="button" class="text-button" disabled>Check status</button>
+      <!-- ===== My server ===== -->
+      <section id="operate-panel" class="page" role="tabpanel" aria-labelledby="operate-tab">
+        <div class="page-inner">
+          <section class="marquee" aria-labelledby="workspace-title">
+            <div class="marquee-body">
+              <div class="marquee-title">
+                <p class="eyebrow">THIS PC</p>
+                <h1 id="workspace-title">My server</h1>
+                <p class="mode-label">Run Minecraft Java on this PC and take turns hosting with friends.</p>
+              </div>
+              <dl class="marquee-gauges">
+                <div class="gauge"><dt>Server</dt><dd><span id="marquee-server-led" class="led" aria-hidden="true"></span><span id="marquee-server">Not set up</span></dd></div>
+                <div class="gauge"><dt>Hosting</dt><dd><span id="marquee-host-led" class="led" aria-hidden="true"></span><span id="marquee-host">—</span></dd></div>
+                <div class="gauge"><dt>Friends</dt><dd><span id="marquee-group-led" class="led" aria-hidden="true"></span><span id="marquee-group">No group</span></dd></div>
+                <div class="gauge"><dt>Backups</dt><dd><span id="marquee-backup-led" class="led" aria-hidden="true"></span><span id="marquee-backup">None yet</span></dd></div>
+              </dl>
             </div>
-          </div>
-        </div>
-
-        <section id="snapshot-history" class="snapshot-history" aria-labelledby="snapshot-history-title" hidden><div class="compact-heading"><h3 id="snapshot-history-title">Backups</h3><button id="refresh-snapshots" type="button" class="text-button">Refresh</button></div><p class="field-help">Saved copies of your world, kept locally on this PC — not a remote backup. Restoring never deletes anything: your current world is kept and backed up first.</p><p id="snapshot-history-status" class="field-help" role="status"></p><ul id="snapshot-list" class="snapshot-list" aria-label="Backups"></ul></section>
-        <details id="mods-details" class="profile-details">
-          <summary>Mods<span id="mods-summary" class="summary-meta">Server &amp; client</span></summary>
-          <section id="mod-browser" class="mod-browser" aria-labelledby="mod-browser-heading">
-            <div class="compact-heading"><h3 id="mod-browser-heading">Browse Modrinth</h3><span class="subtle-label">COMPATIBLE MODS</span></div>
-            <p class="field-help">Popular mods first. Search and installs use your saved loader and Minecraft version. Installing asks for native confirmation, including required dependencies.</p>
-            <form id="mod-target-form" class="mod-target-form" novalidate>
-              <div><label for="mod-loader">Mod loader</label><select id="mod-loader" disabled><option value="">Choose loader</option><option value="fabric">Fabric</option><option value="quilt">Quilt</option><option value="forge">Forge</option><option value="neoforge">NeoForge</option></select></div>
-              <div><label for="mod-game-version">Minecraft version</label><input id="mod-game-version" type="text" maxlength="32" placeholder="e.g. 1.21.1" autocomplete="off" spellcheck="false" disabled></div>
-              <button id="save-mod-target" type="submit" class="button button-small" disabled>Save compatibility</button>
-            </form>
-            <p id="mod-target-feedback" class="field-help" role="status">Import a modded server to browse compatible mods.</p>
-            <form id="mod-search-form" class="mod-search-form" role="search">
-              <label class="sr-only" for="mod-query">Search Modrinth mods</label><input id="mod-query" type="search" maxlength="200" placeholder="Search mods, e.g. Lithium" autocomplete="off" disabled>
-              <button id="search-mods" type="submit" class="button button-small" disabled>Search</button>
-            </form>
-            <p id="mod-search-status" class="field-help" role="status" aria-live="polite">Save compatibility to browse mods.</p>
-            <ul id="mod-results" class="mod-results" aria-label="Compatible Modrinth mods" aria-busy="false"></ul>
-            <div class="mod-pagination"><button id="mod-previous" type="button" class="button button-small" disabled>Previous</button><span id="mod-page" class="field-help">No results loaded</span><button id="mod-next" type="button" class="button button-small" disabled>Next</button></div>
+            <div class="ticker" aria-hidden="true"><div id="ticker-track" class="ticker-track"></div></div>
           </section>
-          <h3 class="installed-mods-heading">Installed files <span class="section-caption">Advanced: import local .jar files below</span></h3>
-          <div class="mods-panel">
-            <div class="mods-column">
-              <div class="compact-heading"><h3>Server mods <span class="section-caption">mods/</span></h3><button id="add-server-mods" type="button" class="button button-small" disabled>Add .jar…</button></div>
-              <p class="field-help">Loaded by the server on its next start. Players usually need the same mods too.</p>
-              <ul id="server-mods" class="mod-list" aria-label="Server mods"></ul>
-            </div>
-            <div class="mods-column">
-              <div class="compact-heading"><h3>Client pack <span class="section-caption">players only</span></h3><button id="add-client-mods" type="button" class="button button-small" disabled>Add .jar…</button></div>
-              <p class="field-help">Never loaded by the server. Export a zip for players: shaders, minimaps, and the client side of your modpack.</p>
-              <ul id="client-mods" class="mod-list" aria-label="Client mods"></ul>
-              <button id="export-client-pack" type="button" class="button button-small" disabled>Export client pack (.zip)…</button>
-            </div>
-          </div>
-          <p class="warning-copy mods-warning">Mods run code on every PC that loads them. Only add files you trust.</p>
-        </details>
 
-        <details id="profile-details" class="profile-details">
-          <summary>Advanced launch settings<span class="summary-meta">Java path &amp; arguments</span></summary>
-          <form id="profile-form" class="profile-form" novalidate>
-            <label for="java-executable">Java executable</label>
-            <input id="java-executable" type="text" placeholder="C:\Program Files\Java\…\bin\java.exe" autocomplete="off" spellcheck="false" disabled aria-describedby="java-help">
-            <p id="java-help" class="field-help">Use the Java version your modpack requires. No shell command expansion.</p>
-            <label for="java-args">Arguments <span class="label-hint">JSON array of strings</span></label>
-            <textarea id="java-args" class="mono" rows="3" placeholder='["-Xmx4G", "-jar", "server.jar", "nogui"]' spellcheck="false" disabled aria-describedby="args-help profile-warning"></textarea>
-            <p id="args-help" class="field-help">Each argument is one quoted entry. Preserve Forge / NeoForge argument files such as “@win_args.txt”. Paths are relative to the managed server folder.</p>
-            <div class="timeout-fields"><div><label for="start-timeout">Start timeout <span class="label-hint">seconds</span></label><input id="start-timeout" type="number" min="5" max="3600" step="1" disabled aria-describedby="timeout-help"></div><div><label for="stop-timeout">Stop timeout <span class="label-hint">seconds</span></label><input id="stop-timeout" type="number" min="5" max="3600" step="1" disabled aria-describedby="timeout-help"></div></div>
-            <p id="timeout-help" class="field-help">How long to wait for “Done (” at startup and for a clean save on stop. Large modpacks often need 5–10 minutes to start.</p>
-            <p id="profile-warning" class="warning-copy">Server JARs, mods, and launch executables run code on this PC. Only start files you trust.</p>
-            <div class="form-footer"><span id="profile-feedback" class="field-help" role="status">Import a server to configure its launch profile.</span><button id="save-profile" type="submit" class="button button-small" disabled>Save profile</button></div>
-          </form>
-        </details>
+          <section class="server-section" aria-labelledby="server-heading">
+            <div class="server-card card">
+              <div class="server-identity">
+                <div class="server-title"><p class="eyebrow" id="server-heading">JAVA SERVER</p><h2 id="server-name">No server yet</h2></div>
+                <div class="server-identity-actions"><span id="server-status" class="badge">Not configured</span><button id="import-server" type="button" class="button button-small" disabled><svg class="icon" aria-hidden="true"><use href="#i-import"/></svg>Import a server…</button></div>
+              </div>
+              <div id="server-empty" class="server-empty"><p>Your world starts here.</p><span>PeerHost runs a Minecraft Java server on this PC so you and your friends can play together. It takes about two minutes.</span><button id="create-server-empty" type="button" class="button button-primary create-server-empty" disabled>create a server</button><button id="import-server-empty" type="button" class="text-button" disabled>I already have a server folder</button>
+                <ol id="getting-started" class="getting-started" aria-label="Getting started">
+                  <li data-check="server"><strong>Create or import a server</strong><span>Vanilla or Fabric is downloaded for you.</span></li>
+                  <li data-check="start"><strong>Start it and join from Minecraft</strong><span>Multiplayer → Add Server → <code>localhost</code></span></li>
+                  <li data-check="friends"><strong>Invite friends</strong><span>Optional · take turns hosting the same world.</span></li>
+                  <li data-check="relay"><strong>Add an always-on PC</strong><span>Optional · keeps the world reachable when you're offline.</span></li>
+                </ol>
+              </div>
+              <div id="join-help" class="join-help well" role="note" hidden></div>
+              <div id="server-toolbar" class="server-toolbar" aria-label="Server actions">
+                <button id="start-server" type="button" class="button button-primary" disabled><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg>Start server</button>
+                <button id="stop-server" type="button" class="button button-stop" disabled><svg class="icon" aria-hidden="true"><use href="#i-stop"/></svg>Stop server</button>
+                <button id="create-snapshot" type="button" class="button" disabled><svg class="icon" aria-hidden="true"><use href="#i-backup"/></svg>Save backup</button>
+                <button id="recover-ownership" type="button" class="button" hidden disabled><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>Confirm stopped &amp; recover</button>
+                <button id="clean-up" type="button" class="button button-quiet" disabled title="Delete old server copies and backups that are no longer needed"><svg class="icon" aria-hidden="true"><use href="#i-broom"/></svg>Free up space</button>
+              </div>
+              <p id="server-action-hint" class="action-hint" hidden></p>
+              <div id="console-peek" class="console-peek well" hidden><span class="console-peek-prompt" aria-hidden="true">›_</span><p id="console-peek-line" class="console-peek-line mono">No process output yet.</p><button id="open-console" type="button" class="text-button">Open console</button></div>
+              <div id="player-gateway" class="player-gateway well" hidden><div class="compact-heading"><h3>Always-on PC address</h3><button id="open-gateway-setup" type="button" class="text-button">Set up / check</button></div><p id="player-gateway-status" class="field-help" role="status">Reading tunnel state…</p><p id="player-address" class="field-help"></p></div>
+              <div id="relay-card" class="relay-card well" hidden>
+                <div class="compact-heading"><h3>Always-on PC <span id="relay-name" class="section-caption"></span></h3><span id="relay-holder" class="subtle-label">NOT CHECKED</span></div>
+                <p id="relay-help" class="field-help">Your always-on PC stores the world between hosts, so a friend can pick it up even when this PC is off.</p>
+                <div class="relay-actions">
+                  <button id="park-relay" type="button" class="button button-small" disabled>Hand off to always-on PC</button>
+                  <button id="claim-relay" type="button" class="button button-small" disabled>Take over hosting</button>
+                  <button id="check-relay" type="button" class="text-button" disabled>Check status</button>
+                </div>
+              </div>
+              <details id="server-details" class="server-details"><summary><svg class="icon summary-chevron" aria-hidden="true"><use href="#i-chevron"/></svg><span class="summary-title">Technical details</span></summary><dl id="server-info" class="server-facts well" hidden>
+                <div><dt>Managed server</dt><dd id="server-directory" class="mono"></dd></div>
+                <div><dt>Backup store</dt><dd id="store-directory" class="mono"></dd></div>
+                <div><dt>Latest backup</dt><dd id="snapshot-id" class="mono"></dd></div>
+                <div><dt>Who can host</dt><dd id="ownership-state"></dd></div>
+              </dl></details>
+            </div>
+
+            <section id="snapshot-history" class="snapshot-history card" aria-labelledby="snapshot-history-title" hidden><div class="compact-heading"><h3 id="snapshot-history-title">Backups</h3><button id="refresh-snapshots" type="button" class="text-button">Refresh</button></div><p class="field-help">Saved copies of your world, kept locally on this PC — not a remote backup. Restoring never deletes anything: your current world is kept and backed up first.</p><p id="snapshot-history-status" class="field-help" role="status"></p><ul id="snapshot-list" class="snapshot-list" aria-label="Backups"></ul></section>
+
+            <details id="mods-details" class="profile-details card">
+              <summary><svg class="icon summary-chevron" aria-hidden="true"><use href="#i-chevron"/></svg><span class="summary-title">Mods</span><span id="mods-summary" class="summary-meta">Server &amp; client</span></summary>
+              <section id="mod-browser" class="mod-browser" aria-labelledby="mod-browser-heading">
+                <div class="compact-heading"><h3 id="mod-browser-heading">Browse Modrinth</h3><span class="subtle-label">COMPATIBLE MODS</span></div>
+                <p class="field-help">Popular mods first. Search and installs use your saved loader and Minecraft version. Installing asks for native confirmation, including required dependencies.</p>
+                <form id="mod-target-form" class="mod-target-form" novalidate>
+                  <div><label for="mod-loader">Mod loader</label><select id="mod-loader" disabled><option value="">Choose loader</option><option value="fabric">Fabric</option><option value="quilt">Quilt</option><option value="forge">Forge</option><option value="neoforge">NeoForge</option></select></div>
+                  <div><label for="mod-game-version">Minecraft version</label><input id="mod-game-version" type="text" maxlength="32" placeholder="e.g. 1.21.1" autocomplete="off" spellcheck="false" disabled></div>
+                  <button id="save-mod-target" type="submit" class="button button-small" disabled>Save compatibility</button>
+                </form>
+                <p id="mod-target-feedback" class="field-help" role="status">Import a modded server to browse compatible mods.</p>
+                <form id="mod-search-form" class="mod-search-form" role="search">
+                  <label class="sr-only" for="mod-query">Search Modrinth mods</label><input id="mod-query" type="search" maxlength="200" placeholder="Search mods, e.g. Lithium" autocomplete="off" disabled>
+                  <button id="search-mods" type="submit" class="button button-small" disabled>Search</button>
+                </form>
+                <p id="mod-search-status" class="field-help" role="status" aria-live="polite">Save compatibility to browse mods.</p>
+                <ul id="mod-results" class="mod-results" aria-label="Compatible Modrinth mods" aria-busy="false"></ul>
+                <div class="mod-pagination"><button id="mod-previous" type="button" class="button button-small" disabled>Previous</button><span id="mod-page" class="field-help">No results loaded</span><button id="mod-next" type="button" class="button button-small" disabled>Next</button></div>
+              </section>
+              <h3 class="installed-mods-heading">Installed files <span class="section-caption">Advanced: import local .jar files below</span></h3>
+              <div class="mods-panel">
+                <div class="mods-column well">
+                  <div class="compact-heading"><h3>Server mods <span class="section-caption">mods/</span></h3><button id="add-server-mods" type="button" class="button button-small" disabled>Add .jar…</button></div>
+                  <p class="field-help">Loaded by the server on its next start. Players usually need the same mods too.</p>
+                  <ul id="server-mods" class="mod-list" aria-label="Server mods"></ul>
+                </div>
+                <div class="mods-column well">
+                  <div class="compact-heading"><h3>Client pack <span class="section-caption">players only</span></h3><button id="add-client-mods" type="button" class="button button-small" disabled>Add .jar…</button></div>
+                  <p class="field-help">Never loaded by the server. Export a zip for players: shaders, minimaps, and the client side of your modpack.</p>
+                  <ul id="client-mods" class="mod-list" aria-label="Client mods"></ul>
+                  <button id="export-client-pack" type="button" class="button button-small" disabled>Export client pack (.zip)…</button>
+                </div>
+              </div>
+              <p class="warning-copy mods-warning">Mods run code on every PC that loads them. Only add files you trust.</p>
+            </details>
+
+            <details id="profile-details" class="profile-details card">
+              <summary><svg class="icon summary-chevron" aria-hidden="true"><use href="#i-chevron"/></svg><span class="summary-title">Advanced launch settings</span><span class="summary-meta">Java path &amp; arguments</span></summary>
+              <form id="profile-form" class="profile-form" novalidate>
+                <label for="java-executable">Java executable</label>
+                <input id="java-executable" type="text" placeholder="C:\Program Files\Java\…\bin\java.exe" autocomplete="off" spellcheck="false" disabled aria-describedby="java-help">
+                <p id="java-help" class="field-help">Use the Java version your modpack requires. No shell command expansion.</p>
+                <label for="java-args" class="label-split"><span>Arguments</span><span class="label-hint">JSON array of strings</span></label>
+                <textarea id="java-args" class="mono" rows="3" placeholder='["-Xmx4G", "-jar", "server.jar", "nogui"]' spellcheck="false" disabled aria-describedby="args-help profile-warning"></textarea>
+                <p id="args-help" class="field-help">Each argument is one quoted entry. Preserve Forge / NeoForge argument files such as “@win_args.txt”. Paths are relative to the managed server folder.</p>
+                <div class="timeout-fields"><div><label for="start-timeout" class="label-split"><span>Start timeout</span><span class="label-hint">seconds</span></label><input id="start-timeout" type="number" min="5" max="3600" step="1" disabled aria-describedby="timeout-help"></div><div><label for="stop-timeout" class="label-split"><span>Stop timeout</span><span class="label-hint">seconds</span></label><input id="stop-timeout" type="number" min="5" max="3600" step="1" disabled aria-describedby="timeout-help"></div></div>
+                <p id="timeout-help" class="field-help">How long to wait for “Done (” at startup and for a clean save on stop. Large modpacks often need 5–10 minutes to start.</p>
+                <p id="profile-warning" class="warning-copy">Server JARs, mods, and launch executables run code on this PC. Only start files you trust.</p>
+                <div class="form-footer"><span id="profile-feedback" class="field-help" role="status">Import a server to configure its launch profile.</span><button id="save-profile" type="submit" class="button button-small" disabled>Save profile</button></div>
+              </form>
+            </details>
+          </section>
+        </div>
       </section>
 
-      <section id="console-section" class="console-section" aria-labelledby="console-heading">
-        <div class="section-heading"><h2 id="console-heading">Console <span class="section-caption">Process output</span></h2><label class="inline-check"><input id="follow-logs" type="checkbox" checked> Follow output</label></div>
-        <div id="console-output" class="console-output" tabindex="0" aria-label="Server output" aria-describedby="console-help">
-          <div id="console-empty" class="console-empty"><span class="console-prompt" aria-hidden="true">›_</span><p>No process output yet.<span>Once hosting starts, server output appears here.</span></p></div>
-          <pre id="console-lines" class="console-lines"></pre>
+      <!-- ===== Console ===== -->
+      <section id="console-panel" class="page" role="tabpanel" aria-labelledby="console-tab" hidden>
+        <div class="page-inner page-inner-fill">
+          <section id="console-section" class="console-section" aria-labelledby="console-heading">
+            <header class="page-header">
+              <div><p class="eyebrow">SERVER PROCESS</p><h1 id="console-heading">Console</h1><p class="page-lead">Live output from your server. Commands go to the server process, not a shell.</p></div>
+              <div class="page-actions"><span id="console-state" class="badge">Not running</span><label class="inline-check"><input id="follow-logs" type="checkbox" checked> Follow output</label></div>
+            </header>
+            <div class="console-bezel">
+              <div id="console-output" class="console-output" tabindex="0" aria-label="Server output" aria-describedby="console-help">
+                <div id="console-empty" class="console-empty"><span class="console-prompt" aria-hidden="true">›_</span><p>No process output yet.<span>Start your server on My server and its output appears here.</span></p></div>
+                <pre id="console-lines" class="console-lines"></pre>
+              </div>
+              <form id="command-form" class="command-form"><span aria-hidden="true" class="command-prefix">›</span><label class="sr-only" for="server-command">Server console command</label><input id="server-command" type="text" placeholder="Command, e.g. list or say hello" autocomplete="off" spellcheck="false" disabled><button id="send-command" type="submit" class="button button-small" disabled>Send <span aria-hidden="true">↵</span></button></form>
+            </div>
+            <p id="console-help" class="field-help console-help">Commands are available while the server runs. Stop the server before saving a backup.</p>
+          </section>
         </div>
-        <form id="command-form" class="command-form"><span aria-hidden="true" class="command-prefix">›</span><label class="sr-only" for="server-command">Server console command</label><input id="server-command" type="text" placeholder="Command, e.g. list or say hello" autocomplete="off" spellcheck="false" disabled><button id="send-command" type="submit" class="button button-small" disabled>Send <span aria-hidden="true">↵</span></button></form>
-        <p id="console-help" class="field-help console-help">Commands go to the server process, not a shell. Stop hosting before creating a snapshot.</p>
+      </section>
+
+      <!-- ===== Friends ===== -->
+      <section id="peers-panel" class="page" role="tabpanel" aria-labelledby="peers-tab" hidden>
+        <div class="page-inner">
+          <header class="page-header">
+            <div><p class="eyebrow">OPTIONAL</p><h1>Friends</h1><p class="page-lead">Friends in your group take turns hosting the same world. Groups live on an always-on PC — set one up in the Setup guide, or join a friend’s with their invitation code.</p></div>
+          </header>
+          <div id="friends-home"></div>
+          <section id="friends-controls" class="friends-section" aria-labelledby="add-friend-heading">
+            <div class="friends-grid">
+              <div class="card card-tight friend-card">
+                <div class="compact-heading"><h3 id="add-friend-heading">Invite a friend</h3><button id="create-invite" type="button" class="button button-small button-primary" disabled>Create invitation</button></div>
+                <p id="invite-help" class="field-help">Join a group first, then create an invitation code to send privately.</p>
+                <div id="invite-result" hidden><label for="invite-code">Invitation code</label><textarea id="invite-code" class="invite-code mono" readonly rows="3" spellcheck="false" aria-describedby="invite-expiry invite-warning"></textarea><div class="compact-heading"><span id="invite-expiry" class="field-help"></span><button id="copy-invite" type="button" class="text-button" disabled>Copy invitation</button></div><p id="invite-warning" class="warning-copy">Anyone with this code can join your relay once. Send it only to the friend you trust.</p></div>
+              </div>
+              <details id="join-friend-details" class="join-friend-details card card-tight friend-card" open><summary><svg class="icon summary-chevron" aria-hidden="true"><use href="#i-chevron"/></svg><span class="summary-title">I have an invitation code</span></summary><form id="join-friend-form" class="join-friend-form" novalidate>
+                <label for="friend-name">Your name</label><input id="friend-name" type="text" maxlength="60" placeholder="A name your friends recognize" autocomplete="off" disabled>
+                <label for="friend-code">Paste invitation code</label><textarea id="friend-code" class="mono" rows="3" maxlength="2000" placeholder="PEERHOST-…" autocomplete="off" spellcheck="false" disabled></textarea>
+                <p class="field-help">Only accept codes from people you trust. Joining never starts a server.</p><button id="join-friend" type="submit" class="button button-small" disabled>Join group</button>
+              </form></details>
+            </div>
+            <div class="card card-tight members-card">
+              <div class="compact-heading friend-list-heading"><h3>Group members</h3><button id="refresh-friends" type="button" class="text-button" disabled>Refresh members</button></div>
+              <p id="friend-feedback" class="field-help" role="status" aria-live="polite">Not in a group yet.</p>
+              <p id="friend-holder" class="holder-line" role="status">Current holder: not checked</p><ul id="friend-list" class="friend-list" aria-label="Relay members"></ul>
+            </div>
+          </section>
+          <details id="advanced-peers" class="advanced-peers card"><summary><svg class="icon summary-chevron" aria-hidden="true"><use href="#i-chevron"/></svg><span class="summary-title">Advanced: direct PC-to-PC transfers</span><span class="summary-meta">Fingerprints</span></summary>
+            <div class="advanced-body">
+              <p class="field-help">For experienced users. Pair two PCs by exchanging fingerprints, then send the world directly. Most people should use friends and an always-on PC instead.</p>
+              <div class="peers-grid">
+                <div class="peers-col">
+                  <div class="identity-block well"><div class="compact-heading"><label for="device-fingerprint">Your device fingerprint</label><button id="copy-fingerprint" type="button" class="text-button" disabled>Copy</button></div><textarea id="device-fingerprint" class="fingerprint mono" readonly rows="2" spellcheck="false" aria-describedby="fingerprint-help"></textarea><p id="fingerprint-help" class="field-help">Share this fingerprint through a separate, trusted channel. Both peers must trust each other.</p></div>
+                  <div class="listener-block well"><div class="compact-heading"><h3>Receive snapshots</h3><span class="listener-state"><span id="listener-led" class="led" aria-hidden="true"></span><span id="listener-status" class="subtle-label">NOT LISTENING</span></span></div><code id="listener-endpoint" class="listener-endpoint">No listener endpoint</code><p id="listener-help" class="field-help">Start the listener to see the actual endpoint. An endpoint is not proof of public reachability.</p><div class="listener-actions"><button id="start-listener" type="button" class="button button-small" disabled>Start listener</button><button id="copy-peer-details" type="button" class="text-button" disabled>Copy share details</button></div></div>
+                </div>
+                <div class="peers-col">
+                  <div class="compact-heading peer-list-heading"><h3>Trusted peers</h3><span id="peer-count" class="subtle-label">NONE ADDED</span></div>
+                  <div id="peers-empty" class="peers-empty well"><p>No trusted peers yet.</p><span>Exchange fingerprints and listener endpoints first. Adding a peer does not establish a connection.</span></div>
+                  <ul id="peer-list" class="peer-list" aria-label="Trusted peers"></ul>
+                  <details id="add-peer-details" class="add-peer-details well"><summary><svg class="icon summary-chevron" aria-hidden="true"><use href="#i-chevron"/></svg><span class="summary-title">Trust a peer</span><span aria-hidden="true" class="summary-plus">＋</span></summary><form id="peer-form" class="peer-form" novalidate>
+                    <label for="peer-name">Peer name</label><input id="peer-name" type="text" placeholder="A name you recognize" maxlength="80" autocomplete="off" disabled>
+                    <label for="peer-fingerprint">Verified fingerprint</label><textarea id="peer-fingerprint" class="mono" rows="2" placeholder="64 lowercase hexadecimal characters" spellcheck="false" autocomplete="off" disabled aria-describedby="peer-trust-help"></textarea>
+                    <div class="endpoint-fields"><div><label for="peer-host">Listener host</label><input id="peer-host" type="text" placeholder="127.0.0.1" maxlength="253" spellcheck="false" autocomplete="off" disabled></div><div><label for="peer-port">Port</label><input id="peer-port" type="number" placeholder="Port" min="1" max="65535" step="1" disabled></div></div>
+                    <p id="peer-trust-help" class="warning-copy">Verify all 64 fingerprint characters before trusting. A wrong pin can trust the wrong device.</p><button id="add-peer" type="submit" class="button button-small" disabled>Save trusted peer</button>
+                  </form></details>
+                </div>
+              </div>
+            </div>
+          </details>
+          <p class="alpha-note">PeerHost never changes your router or firewall.</p>
+        </div>
+      </section>
+
+      <!-- ===== Settings ===== -->
+      <section id="settings-panel" class="page" role="tabpanel" aria-labelledby="settings-tab" hidden>
+        <div class="page-inner page-inner-narrow">
+          <header class="page-header">
+            <div><p class="eyebrow">OPTIONAL</p><h1>Settings</h1><p class="page-lead">Everything here is optional — your server works without changing anything. Appearance applies instantly; Network and App changes are kept with <b>Save settings</b>.</p></div>
+          </header>
+          <div class="category-tabs" role="tablist" aria-label="Settings categories">
+            <button id="settings-cat-appearance" type="button" role="tab" aria-selected="true" aria-controls="settings-appearance" tabindex="0" class="is-active"><svg class="icon" aria-hidden="true"><use href="#i-palette"/></svg>Appearance</button>
+            <button id="settings-cat-network" type="button" role="tab" aria-selected="false" aria-controls="settings-network" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg>Network</button>
+            <button id="settings-cat-app" type="button" role="tab" aria-selected="false" aria-controls="settings-app" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-window"/></svg>App</button>
+          </div>
+
+          <div id="settings-appearance" class="category" role="tabpanel" aria-labelledby="settings-cat-appearance">
+            <div class="card settings-card">
+              <div class="settings-card-head"><div><h2>Look &amp; feel</h2><p class="field-help">Remembered on this PC.</p></div><button id="reset-appearance" type="button" class="text-button">Reset to default</button></div>
+              <fieldset id="appearance-theme" class="setting-row"><legend class="setting-label">Theme<small>System follows Windows.</small></legend><div class="segmented">
+                <label class="segment"><input type="radio" name="theme" value="dark"><span>Dark</span></label>
+                <label class="segment"><input type="radio" name="theme" value="light"><span>Light</span></label>
+                <label class="segment"><input type="radio" name="theme" value="system"><span>System</span></label>
+              </div></fieldset>
+              <fieldset id="appearance-accent" class="setting-row"><legend class="setting-label">Accent colour<small>Buttons, highlights and the logo.</small></legend><div class="swatches">
+                <label class="swatch swatch-teal" title="Lagoon"><input type="radio" name="accent" value="teal" aria-label="Lagoon"><span></span></label>
+                <label class="swatch swatch-ocean" title="Ocean"><input type="radio" name="accent" value="ocean" aria-label="Ocean"><span></span></label>
+                <label class="swatch swatch-violet" title="Ink"><input type="radio" name="accent" value="violet" aria-label="Ink"><span></span></label>
+                <label class="swatch swatch-amber" title="Ember"><input type="radio" name="accent" value="amber" aria-label="Ember"><span></span></label>
+                <label class="swatch swatch-rose" title="Coral"><input type="radio" name="accent" value="rose" aria-label="Coral"><span></span></label>
+              </div></fieldset>
+              <fieldset id="appearance-depth" class="setting-row"><legend class="setting-label">Surface style<small>Soft is calm. Tactile adds bevels, glow and a CRT console.</small></legend><div class="segmented">
+                <label class="segment"><input type="radio" name="depth" value="soft"><span>Soft</span></label>
+                <label class="segment"><input type="radio" name="depth" value="tactile"><span>Tactile</span></label>
+              </div></fieldset>
+              <fieldset id="appearance-density" class="setting-row"><legend class="setting-label">Density<small>Compact fits more on small screens.</small></legend><div class="segmented">
+                <label class="segment"><input type="radio" name="density" value="comfortable"><span>Comfortable</span></label>
+                <label class="segment"><input type="radio" name="density" value="compact"><span>Compact</span></label>
+              </div></fieldset>
+              <fieldset id="appearance-motion" class="setting-row"><legend class="setting-label">Motion<small>Reduced stops the ticker and animations.</small></legend><div class="segmented">
+                <label class="segment"><input type="radio" name="motion" value="full"><span>Animated</span></label>
+                <label class="segment"><input type="radio" name="motion" value="reduced"><span>Reduced</span></label>
+              </div></fieldset>
+            </div>
+          </div>
+
+          <form id="settings-form" class="settings-form" novalidate>
+            <div id="settings-network" class="category" role="tabpanel" aria-labelledby="settings-cat-network" hidden>
+              <div class="card settings-card">
+                <div class="settings-card-head"><div><h2>Displayed player address</h2><p class="field-help">What friends type into Minecraft when you use an always-on PC.</p></div><span id="gateway-status" class="badge badge-neutral">Unconnected</span></div>
+                <label class="setting-row switch-row" for="persistent-address"><span class="setting-label">Show a stable player address<small>Display preference only · off by default</small></span><input id="persistent-address" class="switch" type="checkbox" disabled></label>
+                <div class="setting-block"><label for="gateway-address">Gateway address</label><input id="gateway-address" type="text" placeholder="gateway.example:25565" maxlength="253" autocomplete="off" spellcheck="false" disabled aria-describedby="gateway-help"><p id="gateway-help" class="field-help">Enter the reachable third PC’s player hostname:port. Enable actual tunnels separately in Setup → Always-on PC.</p><p class="warning-copy">Saving this preference does not establish a gateway connection. Incoming public availability is not proven.</p></div>
+              </div>
+              <div class="card settings-card">
+                <div class="settings-card-head"><div><h2>Relay</h2><p class="field-help">An always-on PC that stores the world between hosts.</p></div><span class="subtle-label">OPTIONAL</span></div>
+                <div class="setting-block"><label for="relay-peer">Always-on relay</label>
+                  <select id="relay-peer" disabled aria-describedby="relay-settings-help"><option value="">None: hand off directly between PCs</option></select>
+                  <p id="relay-settings-help" class="field-help">Pick a trusted peer that runs <code>peerhost-relay serve</code>. Add it under Friends → Advanced first.</p></div>
+                <label class="setting-row switch-row" for="park-on-stop"><span class="setting-label">Park on the relay after every clean stop<small>If the relay is unreachable, the server simply stays on this PC.</small></span><input id="park-on-stop" class="switch" type="checkbox" disabled></label>
+              </div>
+            </div>
+            <div id="settings-app" class="category" role="tabpanel" aria-labelledby="settings-cat-app" hidden>
+              <div class="card settings-card">
+                <div class="settings-card-head"><div><h2>Window &amp; startup</h2><p class="field-help">How PeerHost behaves on this PC.</p></div></div>
+                <fieldset id="appearance-close" class="setting-row"><legend class="setting-label">Close button (✕)<small>Applies instantly. Tray keeps your server running.</small></legend><div class="segmented">
+                  <label class="segment"><input type="radio" name="close" value="tray"><span>Hide to tray</span></label>
+                  <label class="segment"><input type="radio" name="close" value="quit"><span>Quit safely</span></label>
+                </div></fieldset>
+                <label class="setting-row switch-row" for="start-at-login"><span class="setting-label">Start at login<small>Saved preference only in this alpha; this does not configure Windows startup.</small></span><input id="start-at-login" class="switch" type="checkbox" disabled></label>
+                <div class="setting-row setting-row-static"><span class="setting-label">Fullscreen<small>Use the title-bar button or F11. Esc returns to a borderless window.</small></span><kbd class="kbd">F11</kbd></div>
+              </div>
+            </div>
+            <div id="settings-savebar" class="savebar" hidden>
+              <span id="settings-feedback" class="field-help" role="status">Preferences loaded from this PC.</span><button id="save-settings" type="submit" class="button button-small button-primary" disabled>Save settings</button>
+            </div>
+          </form>
+        </div>
       </section>
     </main>
-
-    <aside id="inspector" class="inspector" aria-label="Peers and settings">
-      <div class="inspector-tabs" role="tablist" aria-label="Inspector"><button id="peers-tab" type="button" role="tab" aria-selected="true" aria-controls="peers-panel" tabindex="0">Friends</button><button id="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-panel" tabindex="-1">Settings</button></div>
-      <section id="peers-panel" role="tabpanel" aria-labelledby="peers-tab" tabindex="0" class="inspector-panel">
-        <div class="panel-heading"><h2>Friends</h2><span class="subtle-label">OPTIONAL</span></div>
-        <p class="panel-intro">Friends in your group can take turns hosting the same world. Groups live on an always-on PC — set one up in the Setup guide, or join a friend’s with their invitation code.</p>
-        <div id="friends-home"></div>
-        <section id="friends-controls" class="friends-section" aria-labelledby="add-friend-heading">
-          <div class="compact-heading"><h3 id="add-friend-heading">Invite a friend</h3><button id="create-invite" type="button" class="button button-small" disabled>Create invitation</button></div>
-          <p id="invite-help" class="field-help">Join a group first, then create an invitation code to send privately.</p>
-          <div id="invite-result" hidden><label for="invite-code">Invitation code</label><textarea id="invite-code" class="invite-code" readonly rows="3" spellcheck="false" aria-describedby="invite-expiry invite-warning"></textarea><div class="compact-heading"><span id="invite-expiry" class="field-help"></span><button id="copy-invite" type="button" class="text-button" disabled>Copy invitation</button></div><p id="invite-warning" class="warning-copy">Anyone with this code can join your relay once. Send it only to the friend you trust.</p></div>
-          <details id="join-friend-details" class="join-friend-details" open><summary>I have an invitation code</summary><form id="join-friend-form" class="join-friend-form" novalidate>
-            <label for="friend-name">Your name</label><input id="friend-name" type="text" maxlength="60" placeholder="A name your friends recognize" autocomplete="off" disabled>
-            <label for="friend-code">Paste invitation code</label><textarea id="friend-code" rows="3" maxlength="2000" placeholder="PEERHOST-…" autocomplete="off" spellcheck="false" disabled></textarea>
-            <p class="field-help">Only accept codes from people you trust. Joining never starts a server.</p><button id="join-friend" type="submit" class="button button-small" disabled>Join group</button>
-          </form></details>
-          <p id="friend-feedback" class="field-help" role="status" aria-live="polite">Not in a group yet.</p>
-          <div class="compact-heading friend-list-heading"><h3>Group members</h3><button id="refresh-friends" type="button" class="text-button" disabled>Refresh members</button></div>
-          <p id="friend-holder" class="field-help" role="status">Current holder: not checked</p><ul id="friend-list" class="friend-list" aria-label="Relay members"></ul>
-        </section>
-        <details id="advanced-peers" class="advanced-peers"><summary>Advanced: direct PC-to-PC transfers</summary>
-        <p class="field-help">For experienced users. Pair two PCs by exchanging fingerprints, then send the world directly. Most people should use friends and an always-on PC instead.</p>
-        <div class="identity-block"><div class="compact-heading"><label for="device-fingerprint">Your device fingerprint</label><button id="copy-fingerprint" type="button" class="text-button" disabled>Copy</button></div><textarea id="device-fingerprint" class="fingerprint mono" readonly rows="3" spellcheck="false" aria-describedby="fingerprint-help"></textarea><p id="fingerprint-help" class="field-help">Share this fingerprint through a separate, trusted channel. Both peers must trust each other.</p></div>
-        <div class="listener-block"><div class="compact-heading"><h3>Receive snapshots</h3><span id="listener-status" class="subtle-label">NOT LISTENING</span></div><code id="listener-endpoint" class="listener-endpoint">No listener endpoint</code><p id="listener-help" class="field-help">Start the listener to see the actual endpoint. An endpoint is not proof of public reachability.</p><div class="listener-actions"><button id="start-listener" type="button" class="button button-small" disabled>Start listener</button><button id="copy-peer-details" type="button" class="text-button" disabled>Copy share details</button></div></div>
-        <div class="compact-heading peer-list-heading"><h3>Trusted peers</h3><span id="peer-count" class="subtle-label">NONE ADDED</span></div>
-        <div id="peers-empty" class="peers-empty"><p>No trusted peers yet.</p><span>Exchange fingerprints and listener endpoints first. Adding a peer does not establish a connection.</span></div>
-        <ul id="peer-list" class="peer-list" aria-label="Trusted peers"></ul>
-        <details id="add-peer-details" class="add-peer-details"><summary>Trust a peer<span aria-hidden="true">＋</span></summary><form id="peer-form" class="peer-form" novalidate>
-          <label for="peer-name">Peer name</label><input id="peer-name" type="text" placeholder="A name you recognize" maxlength="80" autocomplete="off" disabled>
-          <label for="peer-fingerprint">Verified fingerprint</label><textarea id="peer-fingerprint" class="mono" rows="3" placeholder="64 lowercase hexadecimal characters" spellcheck="false" autocomplete="off" disabled aria-describedby="peer-trust-help"></textarea>
-          <div class="endpoint-fields"><div><label for="peer-host">Listener host</label><input id="peer-host" type="text" placeholder="127.0.0.1" maxlength="253" spellcheck="false" autocomplete="off" disabled></div><div><label for="peer-port">Port</label><input id="peer-port" type="number" placeholder="Port" min="1" max="65535" step="1" disabled></div></div>
-          <p id="peer-trust-help" class="warning-copy">Verify all 64 fingerprint characters before trusting. A wrong pin can trust the wrong device.</p><button id="add-peer" type="submit" class="button button-small" disabled>Save trusted peer</button>
-        </form></details>
-        </details>
-        <p class="alpha-note">PeerHost never changes your router or firewall.</p>
-      </section>
-      <section id="settings-panel" role="tabpanel" aria-labelledby="settings-tab" tabindex="0" class="inspector-panel" hidden>
-        <div class="panel-heading"><h2>Settings</h2></div><p class="panel-intro">Everything here is optional. Your server works without changing anything.</p>
-        <form id="settings-form" class="settings-form" novalidate>
-          <div class="settings-section"><div class="compact-heading"><h3>Displayed player address</h3><span id="gateway-status" class="badge badge-neutral">Unconnected</span></div><label class="switch-row" for="persistent-address"><span>Show a stable player address<small>Display preference only · off by default</small></span><input id="persistent-address" class="switch" type="checkbox" disabled></label><label for="gateway-address">Gateway address</label><input id="gateway-address" type="text" placeholder="gateway.example:25565" maxlength="253" autocomplete="off" spellcheck="false" disabled aria-describedby="gateway-help"><p id="gateway-help" class="field-help">Enter the reachable third PC’s player hostname:port. Enable actual tunnels separately in Setup → Always-on PC.</p><p class="warning-copy">Saving this preference does not establish a gateway connection. Incoming public availability is not proven.</p></div>
-          <div class="settings-section"><div class="compact-heading"><h3>Relay</h3><span class="subtle-label">OPTIONAL</span></div>
-            <label for="relay-peer">Always-on relay</label>
-            <select id="relay-peer" disabled aria-describedby="relay-settings-help"><option value="">None: hand off directly between PCs</option></select>
-            <p id="relay-settings-help" class="field-help">Pick a trusted peer that runs <code>peerhost-relay serve</code>. Add it under Peers first.</p>
-            <label class="check-row"><input id="park-on-stop" type="checkbox" disabled><span>Park on the relay after every clean stop<small>If the relay is unreachable, the server simply stays on this PC.</small></span></label>
-          </div>
-          <div class="settings-section"><h3>Desktop behavior</h3><label class="check-row"><input id="start-at-login" type="checkbox" disabled><span>Start at login<small>Saved preference only in this alpha; this does not configure Windows startup.</small></span></label><p class="field-help">Closing the window keeps PeerHost in the tray. Use Stop before quitting if this PC is hosting.</p></div>
-          <div class="form-footer"><span id="settings-feedback" class="field-help" role="status">Preferences loaded from this PC.</span><button id="save-settings" type="submit" class="button button-small" disabled>Save settings</button></div>
-        </form>
-      </section>
-      <footer class="inspector-footer">Runs on your PCs. Nothing is shared unless you choose to.</footer>
-    </aside>
   </div>
+
   <dialog id="setup-dialog" class="setup-dialog" aria-labelledby="setup-title">
     <header class="setup-header"><div><p class="eyebrow">SETUP GUIDE</p><h2 id="setup-title">Welcome to PeerHost</h2></div><button id="setup-save-close" type="button" class="icon-button" aria-label="Close setup guide (progress is saved)" title="Close · your progress is saved">✕</button></header>
     <nav class="setup-steps" aria-label="Setup stages"><button type="button" data-setup-step="server"><span class="step-dot" aria-hidden="true"></span>Your server</button><button type="button" data-setup-step="runtime"><span class="step-dot" aria-hidden="true"></span>Java &amp; memory</button><button type="button" data-setup-step="friends"><span class="step-dot" aria-hidden="true"></span>Friends<small>optional</small></button><button type="button" data-setup-step="gateway"><span class="step-dot" aria-hidden="true"></span>Always-on PC<small>optional</small></button><button type="button" data-setup-step="ready"><span class="step-dot" aria-hidden="true"></span>Done</button></nav>
@@ -249,8 +411,8 @@ peerhost-relay serve --root ./peerhost-relay --host 0.0.0.0 --port 47625 --adver
     <footer class="setup-footer"><button id="setup-back" type="button" class="button">Back</button><p id="setup-status" class="setup-status" role="status" aria-live="polite"></p><button id="setup-later" type="button" class="text-button">Set up later</button><button id="setup-skip" type="button" class="button" hidden>Skip</button><button id="setup-next" type="button" class="button button-primary">Next</button></footer>
   </dialog>
   <dialog id="send-dialog" class="send-dialog" aria-labelledby="send-dialog-title" aria-describedby="send-dialog-warning">
-    <button id="close-send" type="button" class="dialog-close text-button" aria-label="Cancel snapshot send">Close</button>
-    <p class="eyebrow">PEER SNAPSHOT</p><h2 id="send-dialog-title">Send this snapshot?</h2><p id="send-dialog-recipient"></p><code id="send-dialog-fingerprint" class="mono dialog-fingerprint"></code><p id="send-dialog-snapshot" class="field-help mono"></p><p id="send-dialog-warning" class="warning-copy">This shares server files, which may contain private configuration or player data. Verify the recipient’s fingerprint. Sending is not proof of a completed hosting handoff.</p><div class="dialog-actions"><button id="cancel-send" type="button" class="button">Cancel</button><button id="confirm-send" type="button" class="button button-primary" disabled>Send snapshot</button></div>
+    <div class="dialog-head"><p class="eyebrow">PEER SNAPSHOT</p><button id="close-send" type="button" class="dialog-close icon-button" aria-label="Cancel snapshot send" title="Close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+    <h2 id="send-dialog-title">Send this snapshot?</h2><p id="send-dialog-recipient"></p><code id="send-dialog-fingerprint" class="mono dialog-fingerprint well"></code><p id="send-dialog-snapshot" class="field-help mono"></p><p id="send-dialog-warning" class="warning-copy">This shares server files, which may contain private configuration or player data. Verify the recipient’s fingerprint. Sending is not proof of a completed hosting handoff.</p><div class="dialog-actions"><button id="cancel-send" type="button" class="button">Cancel</button><button id="confirm-send" type="button" class="button button-primary" disabled>Send snapshot</button></div>
   </dialog>
 </body>
 </html>

@@ -16,6 +16,7 @@
   let selectedSend = null;
   let errorKind = null;
   let relayDirty = false;
+  let settingsCategory = 'appearance';
 
   const busyLabels = {
     importServer: 'Choosing / copying your server…', createSnapshot: 'Saving a backup…',
@@ -54,6 +55,62 @@
     if (text !== undefined) node.textContent = text;
     return node;
   };
+  const setLed = (id, kind) => { $(id).className = kind ? `led led-${kind}` : 'led'; };
+  const PROCESS_LABELS = { offline: 'Stopped', failed: 'Failed', running: 'Running', starting: 'Starting', stopping: 'Stopping' };
+  let renderedTicker = null;
+
+  // The marquee mirrors authoritative state at a glance; it never offers actions of its own.
+  function renderMarquee() {
+    const server = state?.server;
+    const ownership = server?.ownership;
+    const serverText = server ? PROCESS_LABELS[server.state] || 'Unknown' : 'Not set up';
+    setLed('marquee-server-led', server?.state === 'running' ? 'ok' : ['starting', 'stopping'].includes(server?.state) ? 'work' : server?.state === 'failed' ? 'bad' : '');
+    $('marquee-server').textContent = serverText;
+    setLed('nav-server-led', server?.state === 'running' ? 'ok' : ['starting', 'stopping'].includes(server?.state) ? 'work' : server?.state === 'failed' ? 'bad' : '');
+    const mine = ownership?.owner === state?.deviceId;
+    const atRelay = Boolean(state?.relay) && ownership?.owner === state.relay.fingerprint;
+    const hostText = !server ? '—' : !ownership || typeof ownership !== 'object' ? 'Unknown' : ownership.state === 'uncertain' ? 'Needs checking' : ownership.state === 'offered' ? 'Handing over' : mine ? 'This PC' : atRelay ? 'Always-on PC' : server.ownerName || 'Another PC';
+    setLed('marquee-host-led', !server ? '' : hostText === 'Unknown' ? 'bad' : ['Needs checking', 'Handing over'].includes(hostText) ? 'work' : mine ? 'ok' : 'info');
+    $('marquee-host').textContent = hostText;
+    setLed('marquee-group-led', state?.relay ? 'info' : '');
+    $('marquee-group').textContent = state?.relay ? state.relay.name : 'No group';
+    setLed('marquee-backup-led', server?.snapshotId ? 'ok' : '');
+    $('marquee-backup').textContent = server?.snapshotId ? 'Saved' : 'None yet';
+    setLed('device-led', bridgeReady ? 'ok' : 'bad');
+    setLed('listener-led', state?.peerEndpoint ? 'info' : '');
+    const port = server?.playerPort ?? 25565;
+    const address = state?.settings?.persistentAddress && state.settings.gatewayAddress ? state.settings.gatewayAddress : `localhost${port === 25565 ? '' : `:${port}`}`;
+    const mods = server?.mods ? server.mods.server.length + server.mods.client.length : 0;
+    const facts = [
+      ['Server', serverText], ['Hosting', hostText], ['Friends', state?.relay ? state.relay.name : 'No group'],
+      ['Latest backup', server?.snapshotId ? server.snapshotId.slice(0, 10) : 'None'], ['Mods', String(mods)],
+      ['Join at', address], ['PeerHost', 'Runs on your PCs · Nothing is shared unless you choose'],
+    ];
+    const signature = JSON.stringify(facts);
+    if (signature === renderedTicker) return;
+    renderedTicker = signature;
+    const items = [];
+    for (let copy = 0; copy < 4; copy++) { // Identical copies, even count: a -50% translate loops seamlessly.
+      for (const [label, value] of facts) {
+        const item = element('span', 'ticker-item', `${label} `);
+        item.append(element('b', '', value));
+        items.push(item);
+      }
+    }
+    $('ticker-track').replaceChildren(...items);
+  }
+  // Opens every page / settings category that contains a control, so focus and errors land on something visible.
+  let selectPage = () => {};
+  let selectCategory = () => {};
+  function revealElement(node) {
+    const tabs = [];
+    for (let n = node; n; n = n.parentElement) if (n.getAttribute?.('role') === 'tabpanel' && n.hidden) tabs.unshift(n.getAttribute('aria-labelledby'));
+    for (const id of tabs) {
+      if (id.startsWith('settings-cat-')) selectCategory(id.slice('settings-cat-'.length));
+      else selectPage(id.replace(/-tab$/, ''));
+    }
+    for (let n = node.parentElement; n; n = n.parentElement) if (n.tagName === 'DETAILS' && !n.open) n.open = true;
+  }
 
   function showError(message, kind = 'action') {
     errorKind = kind;
@@ -303,7 +360,7 @@
       $('setup-runtime-feedback').textContent = `Saved · ${formatMemory(memoryMiB)} of memory.`;
     });
   });
-  $('setup-advanced').addEventListener('click', async () => { await saveSetup(setupDraft.step, true); if (!$('setup-dialog').open) { $('profile-details').open = true; $('java-executable').focus(); } });
+  $('setup-advanced').addEventListener('click', async () => { await saveSetup(setupDraft.step, true); if (!$('setup-dialog').open) { revealElement($('java-executable')); $('java-executable').focus(); } });
   for (const id of ['setup-gateway-enabled', 'setup-gateway-port']) $(id).addEventListener('input', () => { setupGatewayDirty = true; setupGatewayCheck = null; });
   $('setup-gateway-form').addEventListener('submit', event => {
     event.preventDefault(); if ($('setup-gateway-save').disabled) return;
@@ -473,7 +530,13 @@
     $('server-action-hint').textContent = needsJava ? 'Choose Java before starting: open the Setup guide → Java & memory.' : hint; $('server-action-hint').hidden = !needsJava && !hint;
     $('server-toolbar').hidden = !server;
     for (const id of ['mods-details', 'profile-details', 'console-section', 'server-status']) $(id).hidden = !server;
-    $('nav-console').hidden = !server;
+    $('console-tab').hidden = !server;
+    if (!server && $('console-tab').getAttribute('aria-selected') === 'true') selectPage('operate');
+    const logs = state?.logs || [];
+    $('console-peek').hidden = !server || !logs.length;
+    $('console-peek-line').textContent = logs.length ? logs[logs.length - 1] : 'No process output yet.';
+    $('console-state').textContent = server?.state === 'running' ? 'Running' : server ? PROCESS_LABELS[server.state] || 'Unknown' : 'Not running';
+    $('console-state').className = server?.state === 'running' ? 'badge is-running' : ['starting', 'stopping'].includes(server?.state) ? 'badge is-working' : 'badge';
     $('server-command').disabled = blocked || server?.state !== 'running';
     $('send-command').disabled = $('server-command').disabled || !$('server-command').value.trim();
     const logText = (state?.logs || []).join('\n');
@@ -521,11 +584,14 @@
     const busy = pendingMethod || state?.busy;
     $('activity-message').textContent = !bridgeReady ? 'App connection unavailable · actions blocked.' : busy ? busyLabels[busy] || `Working: ${busy}` : 'Ready';
     $('activity-message').classList.toggle('is-busy', Boolean(busy));
+    $('activity-message').classList.toggle('is-offline', !bridgeReady);
     const sendStillCurrent = selectedSend && server?.snapshotId === selectedSend.snapshotId && state?.peers.some((peer) => peer.fingerprint === selectedSend.fingerprint) &&
       (!selectedSend.retry || pendingOffer()?.target === selectedSend.fingerprint);
     const allowed = selectedSend?.retry ? bridgeReady && !isBusy() && isStopped() : canSnapshot();
     $('confirm-send').disabled = !allowed || !sendStillCurrent;
     if (selectedSend) $('send-dialog-snapshot').textContent = `Snapshot: ${selectedSend.snapshotId}${sendStillCurrent ? '' : ' · State changed. Cancel and review again.'}`;
+    $('settings-savebar').hidden = settingsCategory === 'appearance' && !settingsDirty;
+    renderMarquee();
   }
 
   let renderedMods = null;
@@ -750,6 +816,8 @@
       held: `Hosting: ${friends?.holder}`,
     };
     $('friend-holder').textContent = !context ? 'Join a group to see its members.' : friendError ? `Members unavailable: ${friendError} Refresh to try again.` : friendsLoading ? 'Checking members…' : friends ? custodyLabels[friends.custody] || custodyLabels.unknown : 'Not checked yet';
+    $('nav-friend-count').hidden = !friends?.members?.length;
+    $('nav-friend-count').textContent = String(friends?.members?.length || 0);
     const signature = JSON.stringify(friends);
     if (signature !== renderedFriends) {
       renderedFriends = signature;
@@ -854,8 +922,14 @@
     if (signature !== renderedPeers) {
       renderedPeers = signature;
       const nodes = peers.map((peer) => {
-        const item = element('li', 'peer-item');
-        const heading = element('div', 'peer-item-heading');
+        const item = element('li', 'peer-item well');
+        const heading = element('div', 'peer-item-main');
+        const avatar = element('span', 'peer-avatar', (Array.from(peer.name.trim())[0] || '?').toUpperCase());
+        avatar.setAttribute('aria-hidden', 'true');
+        const text = element('div', 'peer-text');
+        text.append(element('span', 'peer-name', peer.name), element('code', 'peer-endpoint', formatEndpoint(peer.host, peer.port)));
+        heading.append(avatar, text);
+        const actions = element('div', 'peer-actions');
         const button = element('button', 'button button-small', 'Send snapshot');
         button.type = 'button';
         button.dataset.fingerprint = peer.fingerprint;
@@ -866,11 +940,11 @@
         handoff.dataset.fingerprint = peer.fingerprint;
         handoff.dataset.method = 'handoff';
         handoff.setAttribute('aria-label', `Hand off hosting to ${peer.name}`);
-        if (peer.fingerprint === state?.relay?.fingerprint) heading.append(element('span', 'peer-name', peer.name), element('span', 'subtle-label', 'RELAY · PARK / CLAIM ABOVE'));
-        else heading.append(element('span', 'peer-name', peer.name), button, handoff);
+        if (peer.fingerprint === state?.relay?.fingerprint) actions.append(element('span', 'subtle-label', 'RELAY · USE HAND OFF / TAKE OVER ON MY SERVER'));
+        else actions.append(button, handoff);
         const pin = element('details', 'peer-pin');
         pin.append(element('summary', '', 'Verified fingerprint'), element('code', 'peer-fingerprint', peer.fingerprint));
-        item.append(heading, element('code', 'peer-endpoint', formatEndpoint(peer.host, peer.port)), pin);
+        item.append(heading, actions, pin);
         return item;
       });
       $('peer-list').replaceChildren(...nodes);
@@ -913,6 +987,7 @@
   function invalid(id, message) {
     $(id).setAttribute('aria-invalid', 'true');
     showError(message);
+    revealElement($(id));
     $(id).focus();
   }
 
@@ -1014,24 +1089,41 @@
     if ($('follow-logs').checked) $('console-output').scrollTop = $('console-output').scrollHeight;
   });
 
-  function selectPanel(panel, focus = true) {
-    for (const name of ['peers', 'settings']) {
-      const selected = name === panel;
-      $(`${name}-panel`).hidden = !selected;
-      $(`${name}-tab`).setAttribute('aria-selected', String(selected));
-      $(`${name}-tab`).tabIndex = selected ? 0 : -1;
+  // Sidebar tabs own whole pages; Settings has its own category tabs. The selected tab alone is marked,
+  // and focus stays on whichever tab the user clicked (arrow keys move it, as in any tab list).
+  function tabGroup(names, tabId, panelId, onSelect) {
+    const select = (name, focus = false) => {
+      for (const other of names) {
+        const selected = other === name;
+        $(panelId(other)).hidden = !selected;
+        $(tabId(other)).setAttribute('aria-selected', String(selected));
+        $(tabId(other)).tabIndex = selected ? 0 : -1;
+        $(tabId(other)).classList.toggle('is-active', selected);
+      }
+      onSelect?.(name);
+      if (focus) $(tabId(name)).focus();
+    };
+    for (const name of names) {
+      $(tabId(name)).addEventListener('click', () => select(name));
+      $(tabId(name)).addEventListener('keydown', (event) => {
+        const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[event.key];
+        if (!step && !['Home', 'End'].includes(event.key)) return;
+        event.preventDefault();
+        const available = names.filter((n) => !$(tabId(n)).hidden);
+        const index = event.key === 'Home' ? 0 : event.key === 'End' ? available.length - 1 : (available.indexOf(name) + step + available.length) % available.length;
+        select(available[index], true);
+      });
     }
-    if (focus) $(`${panel}-tab`).focus();
+    return select;
   }
-  for (const name of ['peers', 'settings']) {
-    $(`${name}-tab`).addEventListener('click', () => selectPanel(name));
-    $(`nav-${name}`).addEventListener('click', () => selectPanel(name));
-    $(`${name}-tab`).addEventListener('keydown', (event) => {
-      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-      event.preventDefault();
-      selectPanel(event.key === 'Home' ? 'peers' : event.key === 'End' ? 'settings' : name === 'peers' ? 'settings' : 'peers');
-    });
-  }
+  selectPage = tabGroup(['operate', 'console', 'peers', 'settings'], (n) => `${n}-tab`, (n) => `${n}-panel`, (name) => {
+    if (name === 'console' && $('follow-logs').checked) $('console-output').scrollTop = $('console-output').scrollHeight;
+  });
+  selectCategory = tabGroup(['appearance', 'network', 'app'], (n) => `settings-cat-${n}`, (n) => `settings-${n}`, (name) => {
+    settingsCategory = name;
+    $('settings-savebar').hidden = name === 'appearance' && !settingsDirty;
+  });
+  $('open-console').addEventListener('click', () => selectPage('console'));
   $('start-listener').addEventListener('click', () => {
     if ($('start-listener').disabled) return;
     return runAction('startPeerListener');
@@ -1174,9 +1266,118 @@
     }, 1000);
   }
 
+  // Appearance is a renderer-only preference remembered on this PC. Storage can be unavailable; defaults then apply.
+  const APPEARANCE_KEY = 'peerhost.appearance';
+  const appearanceChoices = {
+    theme: ['dark', 'light', 'system'], accent: ['teal', 'ocean', 'violet', 'amber', 'rose'], depth: ['soft', 'tactile'],
+    density: ['comfortable', 'compact'], motion: ['full', 'reduced'], close: ['tray', 'quit'],
+  };
+  const appearanceDefaults = { theme: 'dark', accent: 'teal', depth: 'soft', density: 'comfortable', motion: 'full', close: 'tray' };
+  const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+  const appearance = { ...appearanceDefaults };
+  try {
+    const saved = JSON.parse(localStorage.getItem(APPEARANCE_KEY) || '{}');
+    for (const key of Object.keys(appearanceChoices)) if (appearanceChoices[key].includes(saved?.[key])) appearance[key] = saved[key];
+  } catch { /* Unreadable preference: keep defaults. */ }
+  function applyAppearance() {
+    const root = document.documentElement;
+    root.dataset.theme = appearance.theme === 'system' ? (systemDark.matches ? 'dark' : 'light') : appearance.theme;
+    root.dataset.accent = appearance.accent;
+    root.dataset.depth = appearance.depth;
+    root.dataset.density = appearance.density;
+    root.dataset.motion = appearance.motion;
+    for (const key of Object.keys(appearanceChoices)) {
+      const input = $(`appearance-${key}`).querySelector(`input[value="${appearance[key]}"]`);
+      if (input) input.checked = true;
+    }
+    const closeLabel = appearance.close === 'quit' ? 'Quit PeerHost safely' : 'Close to tray';
+    $('window-close').setAttribute('aria-label', closeLabel);
+    $('window-close').title = closeLabel;
+  }
+  function saveAppearance() {
+    try { localStorage.setItem(APPEARANCE_KEY, JSON.stringify(appearance)); } catch { /* Applies for this session only. */ }
+  }
+  for (const key of Object.keys(appearanceChoices)) {
+    $(`appearance-${key}`).addEventListener('change', (event) => {
+      const value = event.target.value;
+      if (event.target.name !== key || !appearanceChoices[key].includes(value)) return;
+      appearance[key] = value;
+      applyAppearance();
+      saveAppearance();
+    });
+  }
+  $('reset-appearance').addEventListener('click', () => {
+    Object.assign(appearance, appearanceDefaults);
+    applyAppearance();
+    saveAppearance();
+  });
+  systemDark.addEventListener('change', () => { if (appearance.theme === 'system') applyAppearance(); });
+  applyAppearance();
+
+  // Window chrome. Borderless offers only fullscreen; fullscreen offers only borderless.
+  const hasBridge = () => typeof window.peerhost?.call === 'function';
+  let fullScreen = false;
+  function renderWindowState(windowState) {
+    if (!windowState || typeof windowState.fullScreen !== 'boolean') return;
+    fullScreen = windowState.fullScreen;
+    const label = fullScreen ? 'Switch to borderless window' : 'Enter fullscreen';
+    $('window-mode').dataset.mode = fullScreen ? 'fullscreen' : 'borderless';
+    $('window-mode').setAttribute('aria-label', label);
+    $('window-mode').title = `${label} (F11)`;
+  }
+  async function windowCall(method) {
+    if (!hasBridge()) return showError('Window controls need the PeerHost desktop app.');
+    try {
+      renderWindowState(await window.peerhost.call(method));
+    } catch (error) {
+      showError(`Window control failed: ${errorMessage(error)}`);
+    }
+  }
+  $('window-minimize').addEventListener('click', () => windowCall('windowMinimize'));
+  $('window-mode').addEventListener('click', () => windowCall('windowToggleFullscreen'));
+  $('window-close').addEventListener('click', () => windowCall(appearance.close === 'quit' ? 'quitApp' : 'windowClose'));
+  $('quit-app').addEventListener('click', () => windowCall('quitApp'));
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => { if (hasBridge()) void windowCall('getWindowState'); }, 60);
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'F11') {
+      event.preventDefault();
+      void windowCall('windowToggleFullscreen');
+    } else if (event.key === 'Escape' && fullScreen && !event.defaultPrevented && !document.querySelector('dialog[open]') && !event.target.closest?.('input, textarea, select')) {
+      void windowCall('windowToggleFullscreen');
+    }
+  });
+
+  // Splash covers the first authoritative read (and lets the mark finish drawing); never longer than 6 s.
+  const splashStarted = performance.now();
+  let splashDismissed = false;
+  function dismissSplash() {
+    if (splashDismissed) return;
+    splashDismissed = true;
+    const reduced = document.documentElement.dataset.motion === 'reduced';
+    setTimeout(() => {
+      $('splash').classList.add('is-leaving');
+      document.body.classList.remove('is-splashing');
+      setTimeout(() => { $('splash').hidden = true; }, reduced ? 0 : 420);
+    }, reduced ? 0 : Math.max(0, 1300 - (performance.now() - splashStarted)));
+  }
+  setTimeout(dismissSplash, 6000);
+
   document.addEventListener('visibilitychange', () => {
     clearTimeout(pollTimer);
-    if (!document.hidden) void refresh().then(schedulePoll);
+    if (!document.hidden) {
+      void refresh().then(schedulePoll);
+      if (hasBridge()) void windowCall('getWindowState');
+    }
   });
-  void refresh().then(() => { schedulePoll(); void checkRelay(); });
+  void refresh().then((ok) => {
+    if (!ok) $('splash-status').textContent = 'Could not reach the app. Opening anyway…';
+    dismissSplash();
+    schedulePoll();
+    void checkRelay();
+  });
+  if (hasBridge()) void windowCall('getWindowState');
 })();

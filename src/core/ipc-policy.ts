@@ -4,7 +4,9 @@ import { validTimeout, MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS } from './saved-
 import { isModKind, isModName } from './mods.js';
 import { isGameVersion, isModLoader, isProjectKey } from './modrinth.js';
 import { validateOnboarding } from './onboarding.js';
-const NO_PAYLOAD=new Set(['getState','importServer','createSnapshot','startServer','stopServer','startPeerListener','cleanUp','parkAtRelay','claimFromRelay','checkRelay','exportClientPack','createInvite','listFriends','listSnapshots','listServerVersions','discoverJava','pickJava','checkGameGateway']);
+const NO_PAYLOAD=new Set(['getState','importServer','createSnapshot','startServer','stopServer','startPeerListener','cleanUp','parkAtRelay','claimFromRelay','checkRelay','exportClientPack','createInvite','listFriends','listSnapshots','listServerVersions','discoverJava','pickJava','checkGameGateway',
+  // Window chrome acts only on the trusted app window.
+  'getWindowState','windowMinimize','windowToggleFullscreen','windowClose','quitApp']);
 const METHODS=new Set([...NO_PAYLOAD,'saveProfile','sendCommand','saveSettings','addPeer','sendSnapshot','handoff','recoverStopped','saveRelay','addMods','removeMod','searchMods','installMod','saveModTarget','openModPage','joinWithInvite','saveOnboarding','restoreSnapshot','createServer','configureSimpleProfile','saveGameGateway','openSetupLink']);
 function boundedString(v:unknown,max:number):v is string{return typeof v==='string'&&v.length<=max&&!v.includes('\0');}
 function fingerprint(v:unknown):v is string{return typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);}

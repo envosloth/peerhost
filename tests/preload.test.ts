@@ -14,3 +14,12 @@ test('sandbox preload exposes only a frozen, allowlisted call bridge',async()=>{
   await assert.rejects(exposed.peerhost.call('exec',{command:'unsafe'}),/method/i);
   assert.equal(invoked.length,1);
 });
+test('preload forwards only the window chrome controls main implements',async()=>{
+  const source=await readFile(new URL('../apps/desktop/preload.cjs',import.meta.url),'utf8').catch(()=>'');
+  const exposed:Record<string,any>={};const invoked:any[]=[];
+  runInNewContext(source,{exports:{},require:()=>({contextBridge:{exposeInMainWorld:(key:string,api:any)=>{exposed[key]=api;}},ipcRenderer:{invoke:(...args:any[])=>{invoked.push(args);return Promise.resolve(null);}}})});
+  const chrome=['getWindowState','windowMinimize','windowToggleFullscreen','windowClose','quitApp'];
+  for(const method of chrome)await exposed.peerhost.call(method);
+  assert.deepEqual(invoked.map(a=>a[1]),chrome);
+  await assert.rejects(exposed.peerhost.call('windowSetBounds',{}),/method/i);
+});

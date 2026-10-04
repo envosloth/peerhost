@@ -42,3 +42,12 @@ test('desktop accepts only its exact local renderer and bounded known commands',
     assert.throws(()=>mod.validateCall('saveRelay',bad,renderer,renderer,trusted),/relay/i);
   for(const method of ['parkAtRelay','claimFromRelay','checkRelay'])assert.deepEqual(mod.validateCall(method,undefined,renderer,renderer,trusted),{});
 });
+test('window chrome controls take no payload and still require the trusted renderer',()=>{
+  for(const method of ['getWindowState','windowMinimize','windowToggleFullscreen','windowClose','quitApp']){
+    assert.deepEqual(mod.validateCall(method,undefined,renderer,renderer,trusted),{},method);
+    assert.throws(()=>mod.validateCall(method,{},renderer,renderer,trusted),/payload/i,method+' rejects arguments');
+    assert.throws(()=>mod.validateCall(method,undefined,'https://attacker.invalid',renderer,trusted),/sender/i);
+    assert.throws(()=>mod.validateCall(method,undefined,renderer,renderer,{...trusted,isMainFrame:false}),/sender/i);
+  }
+  assert.throws(()=>mod.validateCall('windowSetBounds',{x:0},renderer,renderer,trusted),/method/i);
+});

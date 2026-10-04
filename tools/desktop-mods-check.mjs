@@ -1,6 +1,6 @@
 // Visible mods check: real Electron UI and native-dialog paths. Only file pickers and confirmations are answered.
 import assert from 'node:assert/strict';
-import { dismissInitialSetup } from './desktop-test-setup.mjs';
+import { dismissInitialSetup, reveal } from './desktop-test-setup.mjs';
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -25,7 +25,7 @@ async function until(page, predicate, label, timeoutMs = 30000) {
   }
 }
 const idle = (page) => until(page, (s) => !s.busy, 'idle');
-async function click(page, selector) { await page.bringToFront(); await page.locator(selector).click(); }
+async function click(page, selector) { await page.bringToFront(); await reveal(page, selector); await page.locator(selector).click(); }
 async function jar(name) { const file = path.join(root, 'downloads', name); await writeZip(file, [{ name: 'fabric.mod.json', data: Buffer.from(`{"id":"${name}"}`) }]); return file; }
 
 let app;

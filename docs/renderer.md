@@ -4,10 +4,19 @@
 
 This is an **Operate** surface, not a marketing page or simulated dashboard:
 
-- Narrow PeerHost navigation; server identity, import / host / stop / snapshot controls, and process console in the center.
-- Right inspector with keyboard-accessible Peers and Settings tabs.
-- Warm graphite surfaces, restrained teal actions, local Segoe UI / Consolas typography. No external assets, fonts, packages, or build step.
-- Fixed desktop shell with independent workspace, inspector, and console scrolling. Target viewport: **1100 × 760**. Expanded launch profiles remain scrollable without moving the sidebar.
+- **Frameless window, no title strip:** the sidebar (with the brand at its top) reaches the top edge; a transparent, borderless drag row on the page carries the live activity line (`#activity-message`, with a ready / busy / offline dot) and minimize / fullscreen ⇄ borderless / close. The window test asserts there is no title band. Borderless offers only fullscreen; fullscreen offers only borderless. F11 toggles; Esc leaves fullscreen when no dialog or text field has focus.
+- **Splash** inside the one app window. It is never a second `BrowserWindow`, so QA's `firstWindow()` and `getAllWindows()[0]` stay the app window. It covers the first authoritative state read (at least 1.3 s, so the mark finishes drawing) and is never shown for more than 6 s. The first-run setup guide is modal and opens above it.
+- **Sidebar page tabs** (vertical ARIA tablist; arrow keys, Home and End move between them):
+  - **My server** (`#operate-panel`): a status marquee with four gauges and a ticker that mirrors state and offers no actions; the server card (getting started, how to join, lifecycle buttons, latest console line, always-on PC, technical details); backups; mods; advanced launch settings.
+  - **Console** (`#console-panel`): the tab is hidden until a server exists.
+  - **Friends** (`#peers-panel`): invite, join, group members, and the folded *Advanced: direct PC-to-PC transfers*.
+  - **Settings** (`#settings-panel`): category tabs **Appearance**, **Network** (displayed player address, relay) and **App** (close button, start at login).
+  - Only the selected tab is marked active, and focus stays on the tab that was clicked.
+  - **Setup guide** is a separate button that opens the dialog.
+- **Page visibility** lives on the page wrappers. Sections the state hides (`#console-section`, `#mods-details`, …) are inside them, so the two never fight over `hidden`. `revealElement` opens the page or category that holds a control before validation focuses it. QA scripts do the same through `reveal()` in `tools/desktop-test-setup.mjs`, by clicking the real tabs.
+- **Appearance** (theme dark / light / system, five accents, surface Soft or Tactile, density, motion, close behavior) lives in `localStorage` under `peerhost.appearance`. It applies instantly and falls back to defaults if storage is unavailable. It is separate from the backend settings form; *Save settings* appears only on the Network and App categories, or while edits are unsaved.
+- **Design:** clean and crisp. Depth comes from tonal steps (page → card → raised control), hairline borders and tight shadows; inputs and tracks sit in inset wells. There is deliberately no bloom: no glows, cloud gradients or backdrop blur. The standard dark mode is a deep ink (`#0f1116` page, `#161920` cards). Tactile adds crisp bevels and console scanlines. Affordance never relies on shadow alone: accent colour, borders and focus rings carry it, and text tokens meet WCAG AA in both themes. No external assets, fonts, packages, or build step. Icons are an inline SVG sprite. `tools/generate-icon.mjs` rasterizes the same mark to `icon.png` (window and tray) and `icon-256.png` (Linux launcher).
+- **Layout:** the minimum window is **1000 × 700**. `tests/desktop-window.test.mjs` audits overlap, clipped text and horizontal overflow on every page and settings category, in both themes, compact density and fullscreen.
 
 Runtime files are `apps/desktop/index.html`, `apps/desktop/style.css`, and `apps/desktop/renderer.js`. Main and preload are separate and are not implemented by these files.
 
@@ -28,6 +37,9 @@ The only privileged interface is `window.peerhost.call(method, payload)`, return
 | `startPeerListener` | None |
 | `addPeer` | `{ name, fingerprint, host, port }` |
 | `sendSnapshot` | `{ fingerprint }` |
+| `getWindowState` / `windowMinimize` / `windowToggleFullscreen` | None; returns `{ fullScreen, maximized }` |
+| `windowClose` | None; same as closing the window (hides to tray) |
+| `quitApp` | None; runs main's safe-quit path (busy / hosting checks and native confirmation) |
 
 `getState` returns `{ version, deviceId, settings, server, peers, logs, peerEndpoint, busy }` as specified by the app contract. `deviceId` is displayed and copied verbatim as the device fingerprint; main must supply its public peer identity, never a private key. Ownership is expected to be a ledger object with `state` and `owner`; hosting and snapshots require `state === 'owned'` and `owner === deviceId`. Missing, uncertain, foreign, offered, or transferred ownership fails closed.
 

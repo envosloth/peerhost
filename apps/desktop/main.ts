@@ -19,7 +19,9 @@ const root=profileArgument?path.resolve(profileArgument.slice('--profile-root='.
 app.setPath('userData',root);
 const html=fileURLToPath(new URL('../../../apps/desktop/index.html',import.meta.url));
 const rendererUrl=pathToFileURL(html).href;
-function show(){if(window&&!window.isDestroyed()){window.show();window.focus();}}
+function show(){if(window&&!window.isDestroyed()){if(window.isMinimized())window.restore();window.show();window.focus();}}
+// Borderless = the frameless window; fullscreen = the window owning the whole display, taskbar hidden.
+function windowState(){return {fullScreen:window.isFullScreen(),maximized:window.isMaximized()};}
 async function confirm(message:string,detail:string):Promise<boolean>{return (await dialog.showMessageBox(window,{type:'warning',message,detail,buttons:['Cancel','Continue'],defaultId:0,cancelId:0,noLink:true})).response===1;}
 async function quit(){
   if(quitting)return;quitting=true;
@@ -42,7 +44,9 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
     backend=new PeerHostApplication(root,identity,{confirmIncomingHandoff:async(source,snapshot)=>{
       show();return confirm('Accept hosting ownership from this peer?','Verified peer: '+source+'\nSnapshot: '+snapshot.id+'\nThis copies server files into a new local directory. Old files are retained. It will not start automatically; review the local launch profile and executable/mod trust first.');
     }});await backend.open();
-    window=new BrowserWindow({width:1240,height:860,minWidth:1000,minHeight:700,title:'PeerHost',backgroundColor:'#171b1a',show:true,webPreferences:{preload:fileURLToPath(new URL('./preload.cjs',import.meta.url)),nodeIntegration:false,contextIsolation:true,sandbox:true}});
+    const image=nativeImage.createFromPath(fileURLToPath(new URL('../../../apps/desktop/icon.png',import.meta.url)));
+    if(image.isEmpty())throw new Error('App icon could not be loaded');
+    window=new BrowserWindow({width:1240,height:860,minWidth:1000,minHeight:700,title:'PeerHost',icon:image,frame:false,fullscreenable:true,backgroundColor:'#0f1116',show:true,webPreferences:{preload:fileURLToPath(new URL('./preload.cjs',import.meta.url)),nodeIntegration:false,contextIsolation:true,sandbox:true}});
     window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
     window.webContents.on('will-navigate',event=>event.preventDefault());
     window.on('close',event=>{if(!quitAllowed){event.preventDefault();window.hide();}});
@@ -129,13 +133,16 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         case 'parkAtRelay':if(await confirm('Park the server on the relay?','A final snapshot is captured and stored on the always-on relay. This PC stops being the host until a PC claims the server back. Any PC that trusts the relay can claim it while this one is off.'))return backend.parkAtRelay();return;
         case 'claimFromRelay':if(await confirm('Claim the server from the relay?','The newest stored revision is copied into a new folder on this PC and this PC becomes the host. Old folders are kept. Nothing starts automatically; review the launch profile and executable/mod trust first.'))return backend.claimFromRelay();return;
         case 'cleanUp':if(await confirm('Delete old server copies and revisions?','This permanently deletes earlier managed server folders, interrupted transfers, and snapshot revisions older than the current one and its two parents. The current server folder and current revision are kept. Your original imported folder is never touched.'))return backend.cleanUp();return;
+        case 'getWindowState':return windowState();
+        case 'windowMinimize':window.minimize();return windowState();
+        case 'windowToggleFullscreen':window.setFullScreen(!window.isFullScreen());return windowState();
+        case 'windowClose':window.close();return;
+        case 'quitApp':void quit();return;
         case 'recoverStopped':if(await confirm('Confirm every previous server process is stopped?','An uncertain session is not proof of process exit. Check for orphaned Java/server processes before continuing. This only restores local uncertain ownership without a pending handoff; it cannot take ownership back from a peer.'))return backend.recoverStopped(true);return;
         default:throw new Error('This operation is not available in this build');
       }
     });
-    const image=nativeImage.createFromPath(fileURLToPath(new URL('../../../apps/desktop/icon.png',import.meta.url)));
-    if(image.isEmpty())throw new Error('Tray icon could not be loaded');
-    tray=new Tray(image);tray.setToolTip('PeerHost — local-first server hosting');
+    tray=new Tray(image.resize({width:32,height:32,quality:'best'}));tray.setToolTip('PeerHost — local-first server hosting');
     tray.setContextMenu(Menu.buildFromTemplate([{label:'Open PeerHost',click:show},{type:'separator'},{label:'Quit safely',click:()=>{void quit();}}]));
     tray.on('double-click',show);
     Menu.setApplicationMenu(Menu.buildFromTemplate(applicationMenuTemplate(app.isPackaged,{show,quit:()=>{void quit();}})));

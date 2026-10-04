@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- **New look.** A clean, crisp theme with a new deep-ink standard dark mode (no glows, haze or blur), soft tonal surfaces (or skeuomorphic "Tactile" ones, with crisp bevels and a CRT-style console), a new logo and app icon, and an animated splash screen.
+- **Separate pages.** My server, Console, Friends and Settings are now their own sidebar tabs instead of a right-hand inspector. Settings is split into Appearance, Network and App categories. A status marquee on My server shows the server, hosting, friends and backup state at a glance.
+- **Frameless window, no title strip.** The sidebar runs to the top edge and the window buttons sit on the page itself: minimize, a fullscreen ⇄ borderless toggle (F11; Esc leaves fullscreen) and ✕. **Quit safely** now lives in the sidebar, because the native menu bar is gone with the frame.
+
+### Added
+- **Windows icon** (`apps/desktop/icon.ico`, 16–256 px), generated from the same mark, for shortcuts and packaging.
+- **Appearance settings**, remembered on this PC: dark / light / system theme, five accent colours, Soft or Tactile surfaces, comfortable or compact density, reduced motion, and whether ✕ hides to the tray (default) or quits safely.
+
 ## 0.2.1-alpha
 
 **Still an alpha. Keep your own world backups.**

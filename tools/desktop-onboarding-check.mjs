@@ -2,6 +2,7 @@
 // The imported Node process fixture is explicitly NOT Java or Minecraft.
 // Run after npm run build; missing integration APIs are reported, never mocked.
 import assert from 'node:assert/strict';
+import { reveal } from './desktop-test-setup.mjs';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -36,7 +37,7 @@ async function launch() {
   await page.bringToFront(); await settled();
   await page.context().newCDPSession(page).then(cdp => cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true }));
 }
-async function click(id) { await page.bringToFront(); await page.locator('#' + id).click(); await settled(); }
+async function click(id) { await page.bringToFront(); await reveal(page, '#' + id); await page.locator('#' + id).click(); await settled(); }
 async function native(response, folder = null) {
   await app.evaluate(({ dialog }, { response, folder }) => {
     dialog.showMessageBox = async () => ({ response });
@@ -139,7 +140,7 @@ try {
   await new Promise(resolve => echo.listen(0, '127.0.0.1', resolve));
   await click('peers-tab'); await page.locator('#advanced-peers').evaluate(node => { node.open = true; }); await page.locator('#add-peer-details').evaluate(node => { node.open = true; });
   for (const [id, value] of Object.entries({ 'peer-name': 'Visible relay', 'peer-fingerprint': relay.identity.fingerprint, 'peer-host': relay.endpoint.host, 'peer-port': String(relay.endpoint.port) })) await page.locator('#'+id).fill(value);
-  await click('add-peer'); await click('settings-tab'); await page.locator('#relay-peer').selectOption(relay.identity.fingerprint); await page.locator('#park-on-stop').uncheck(); await click('save-settings');
+  await click('add-peer'); await click('settings-tab'); await reveal(page, '#relay-peer'); await page.locator('#relay-peer').selectOption(relay.identity.fingerprint); await page.locator('#park-on-stop').uncheck(); await click('save-settings');
   await click('peers-tab'); await click('park-relay'); await click('claim-relay');
   await page.locator('#profile-details').evaluate(node => { node.open = true; });
   await page.locator('#java-executable').fill(process.execPath); await page.locator('#java-args').fill(JSON.stringify([path.join(project, 'tools/fake-java-server.mjs'), '--lifetime-ms=120000'])); await click('save-profile');

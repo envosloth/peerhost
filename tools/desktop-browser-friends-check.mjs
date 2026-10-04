@@ -2,7 +2,7 @@
 // Run after npm run build. --static checks the renderer contract without opening a window.
 // --mods-only exercises only the live catalogue/install path, not friends or relay handoff.
 import assert from 'node:assert/strict';
-import { dismissInitialSetup } from './desktop-test-setup.mjs';
+import { dismissInitialSetup, reveal } from './desktop-test-setup.mjs';
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -34,7 +34,7 @@ if (process.argv.includes('--static')) {
   let clipboard;
   const getState = (page) => page.evaluate(() => window.peerhost.call('getState'));
   const wait = (page, expression, arg, timeout = 60000) => page.waitForFunction(expression, arg, { timeout });
-  async function click(page, selector) { await page.bringToFront(); await page.locator(selector).click(); }
+  async function click(page, selector) { await page.bringToFront(); await reveal(page, selector); await page.locator(selector).click(); }
   async function settled(page) { await wait(page, () => document.querySelector('#activity-message').textContent.startsWith('Ready')); }
   async function launch(name) {
     const app = await electron.launch({ executablePath, args: [...(process.platform === 'linux' ? ['--password-store=gnome-libsecret'] : []), path.join(project, 'dist/apps/desktop/main.js'), '--profile-root=' + path.join(root, name)], env });
@@ -47,6 +47,7 @@ if (process.argv.includes('--static')) {
     return { app, page };
   }
   async function join(page, code, name) {
+    await reveal(page, '#friend-code');
     await page.locator('#friend-code').fill(code);
     await page.locator('#friend-name').fill(name);
     await click(page, '#join-friend');
@@ -88,6 +89,7 @@ if (process.argv.includes('--static')) {
     await wait(a.page, () => document.querySelector('#server-name').textContent.includes('NOT Minecraft'));
     await settled(a.page);
     await a.page.locator('#mods-details > summary').click();
+    await reveal(a.page, '#mod-loader');
     await a.page.locator('#mod-loader').selectOption('fabric');
     await a.page.locator('#mod-game-version').fill('1.21.1');
     await click(a.page, '#save-mod-target');

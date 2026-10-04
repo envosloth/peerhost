@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { dismissInitialSetup } from './desktop-test-setup.mjs';
+import { dismissInitialSetup, reveal } from './desktop-test-setup.mjs';
 import { access, mkdir, mkdtemp, writeFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { _electron as electron } from 'playwright';
@@ -40,7 +40,7 @@ try{
   await page.bringToFront();await page.locator('#stop-server').click();await page.waitForFunction(()=>document.querySelector('#server-status')?.textContent==='Stopped');
   await page.waitForFunction(()=>document.querySelector('#ownership-state')?.textContent?.includes('owned'));
   console.log('STEP 5: Optional persistent address saves as unconnected, not a working gateway.');
-  await page.bringToFront();await page.locator('#settings-tab').click();await page.locator('#persistent-address').check();await page.locator('#gateway-address').fill('mini-pc.example:25565');await page.locator('#save-settings').click();
+  await page.bringToFront();await page.locator('#settings-tab').click();await reveal(page,'#persistent-address');await page.locator('#persistent-address').check();await page.locator('#gateway-address').fill('mini-pc.example:25565');await page.locator('#save-settings').click();
   await page.waitForFunction(()=>document.querySelector('#settings-feedback')?.textContent==='Preferences loaded from this PC.');
   state=await page.evaluate(()=>window.peerhost.call('getState'));assert.equal(state.settings.persistentAddress,true);assert.equal(await page.locator('#gateway-status').textContent(),'Unconnected');
   await page.locator('#persistent-address').uncheck();await page.locator('#save-settings').click();
@@ -52,7 +52,7 @@ try{
   console.log('STEP 7: Inject uncertain ownership ONLY in disposable QA ledger, then recover through the real visible/native-consent action.');
   assert.equal(await page.locator('#recover-ownership').count(),1,'uncertain ownership needs a real recovery control');
   state=await page.evaluate(()=>window.peerhost.call('getState'));await new OwnershipLedger(state.server.ledgerFile,state.deviceId).markUncertain();
-  await page.waitForFunction(()=>!document.querySelector('#recover-ownership').hidden);await page.bringToFront();await page.locator('#recover-ownership').click();
+  await page.waitForFunction(()=>!document.querySelector('#recover-ownership').hidden);await page.bringToFront();await reveal(page,'#recover-ownership');await page.locator('#recover-ownership').click();
   await page.waitForFunction(()=>document.querySelector('#ownership-state').textContent.includes('owned'));
   assert.deepEqual(errors,[]);await page.screenshot({path:path.join(root,'desktop-verified.png')});
   console.log('PASS: Actual Electron UI / IPC / encrypted identity / fixture lifecycle / optional setting / tray / explicit recovery checks.');

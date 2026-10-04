@@ -1,7 +1,7 @@
 // Visible relay check: a real headless relay process, two real desktop instances, and the original host closed
 // while the other PC claims the server. Only native consent dialogs are answered by QA. Fixture is NOT Minecraft.
 import assert from 'node:assert/strict';
-import { dismissInitialSetup } from './desktop-test-setup.mjs';
+import { dismissInitialSetup, reveal } from './desktop-test-setup.mjs';
 import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -50,17 +50,19 @@ async function until(page, predicate, label, timeoutMs = 30000) {
   }
 }
 const idle = (page) => until(page, (s) => !s.busy, 'idle');
-async function click(page, selector) { await page.bringToFront(); await page.locator(selector).click(); }
+async function click(page, selector) { await page.bringToFront(); await reveal(page, selector); await page.locator(selector).click(); }
 async function useRelay(page, fingerprint, host, port) {
   await page.bringToFront();
   await page.locator('#advanced-peers').evaluate((el) => { el.open = true; });
   await page.locator('#add-peer-details').evaluate((el) => { el.open = true; });
+  await reveal(page, '#peer-name');
   await page.locator('#peer-name').fill('Mini PC relay');
   await page.locator('#peer-fingerprint').fill(fingerprint);
   await page.locator('#peer-host').fill(host);
   await page.locator('#peer-port').fill(String(port));
   await click(page, '#add-peer'); await idle(page);
   await click(page, '#settings-tab');
+  await reveal(page, '#relay-peer');
   await page.locator('#relay-peer').selectOption(fingerprint);
   await click(page, '#save-settings');
   await page.waitForFunction(() => !document.querySelector('#relay-card').hidden);
@@ -70,6 +72,7 @@ async function useRelay(page, fingerprint, host, port) {
 async function profile(page) {
   await page.bringToFront();
   await page.locator('#profile-details').evaluate((el) => { el.open = true; });
+  await reveal(page, '#java-executable');
   await page.locator('#java-executable').fill(process.execPath);
   await page.locator('#java-args').fill(JSON.stringify([path.join(project, 'tools/fake-java-server.mjs')]));
   await click(page, '#save-profile');
@@ -124,7 +127,7 @@ try {
   await b.page.screenshot({ path: path.join(root, 'B-claimed.png') });
 
   console.log('STEP 5: B enables park-on-stop, hosts again, and a clean stop parks the server automatically. Then B closes.');
-  await click(b.page, '#settings-tab'); await b.page.locator('#park-on-stop').check(); await click(b.page, '#save-settings'); await idle(b.page);
+  await click(b.page, '#settings-tab'); await reveal(b.page, '#park-on-stop'); await b.page.locator('#park-on-stop').check(); await click(b.page, '#save-settings'); await idle(b.page);
   await until(b.page, (s) => s.relay?.parkOnStop === true, 'park-on-stop setting');
   await click(b.page, '#peers-tab');
   await click(b.page, '#start-server'); await b.page.waitForFunction(() => document.querySelector('#server-status').textContent === 'Hosting');

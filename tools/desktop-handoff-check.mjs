@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { dismissInitialSetup } from './desktop-test-setup.mjs';
+import { dismissInitialSetup, reveal } from './desktop-test-setup.mjs';
 import { mkdir,mkdtemp,writeFile,readFile } from 'node:fs/promises';
 import path from 'node:path';
 import {createServer} from 'node:net';
@@ -14,11 +14,11 @@ async function launch(name){return electron.launch({executablePath:packaged||ele
 let a,b,pa,pb;const errors=[];
 // page.waitForFunction treats an async predicate's Promise as truthy, so poll from Node instead.
 async function idle(page){const deadline=Date.now()+30000;while((await page.evaluate(()=>window.peerhost.call('getState'))).busy){if(Date.now()>deadline)throw new Error('Timed out waiting for idle');await new Promise(r=>setTimeout(r,100));}}
-async function action(page,selector){await page.bringToFront();await page.locator('#advanced-peers').evaluate(el=>el.open=true);await page.locator(selector).click();}
-async function trust(page,name,state){await page.bringToFront();await page.locator('#advanced-peers').evaluate(el=>el.open=true);await page.locator('#add-peer-details').evaluate(el=>el.open=true);await page.locator('#peer-name').fill(name);await page.locator('#peer-fingerprint').fill(state.deviceId);await page.locator('#peer-host').fill(state.peerEndpoint.host);await page.locator('#peer-port').fill(String(state.peerEndpoint.port));await action(page,'#add-peer');await idle(page);await page.waitForFunction(()=>document.querySelector('#peer-count').textContent==='1 SAVED');}
+async function action(page,selector){await page.bringToFront();await page.locator('#advanced-peers').evaluate(el=>el.open=true);await reveal(page,selector);await page.locator(selector).click();}
+async function trust(page,name,state){await page.bringToFront();await page.locator('#advanced-peers').evaluate(el=>el.open=true);await page.locator('#add-peer-details').evaluate(el=>el.open=true);await reveal(page,'#peer-name');await page.locator('#peer-name').fill(name);await page.locator('#peer-fingerprint').fill(state.deviceId);await page.locator('#peer-host').fill(state.peerEndpoint.host);await page.locator('#peer-port').fill(String(state.peerEndpoint.port));await action(page,'#add-peer');await idle(page);await page.waitForFunction(()=>document.querySelector('#peer-count').textContent==='1 SAVED');}
 async function closedPort(){const server=createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r));const {port}=server.address();await new Promise(r=>server.close(r));return port;}
 async function ownership(page,text){await page.waitForFunction(text=>document.querySelector('#ownership-state').textContent.includes(text),text);}
-async function profile(page){await page.bringToFront();await page.locator('#profile-details').evaluate(el=>el.open=true);await page.locator('#java-executable').fill(process.execPath);await page.locator('#java-args').fill(JSON.stringify([path.join(project,'tools/fake-java-server.mjs')]));assert.equal(await page.locator('#start-timeout').inputValue(),'600','modpack-friendly start timeout is the default');await action(page,'#save-profile');await page.waitForFunction(()=>!document.querySelector('#start-server').disabled);}
+async function profile(page){await page.bringToFront();await reveal(page,'#java-executable');await page.locator('#profile-details').evaluate(el=>el.open=true);await page.locator('#java-executable').fill(process.execPath);await page.locator('#java-args').fill(JSON.stringify([path.join(project,'tools/fake-java-server.mjs')]));assert.equal(await page.locator('#start-timeout').inputValue(),'600','modpack-friendly start timeout is the default');await action(page,'#save-profile');await page.waitForFunction(()=>!document.querySelector('#start-server').disabled);}
 try{
   console.log('STEP 1: Launch TWO visible Electron instances with isolated profiles.');a=await launch('a');b=await launch('b');pa=await a.firstWindow();pb=await b.firstWindow();
   for(const p of [pa,pb]){p.on('pageerror',e=>errors.push(String(e)));await p.waitForFunction(()=>document.querySelector('#app-version').textContent.includes('v0.2.1'));}
