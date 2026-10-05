@@ -36,7 +36,28 @@ What keeps this safe:
 
 The relay keeps the last ten parked revisions (`--keep`) and never prunes the one it holds.
 
-## Setup
+## Setup — one click (recommended)
+
+No Node.js, terminal or commands. Install Seed Hosting on the always-on PC too, then:
+
+1. **On the always-on PC:** Setup guide → **Always-on PC** → **This PC stays on**. Approve the confirmation. Seed
+   Hosting starts the relay and the shared player address inside the app and shows a pairing code such as
+   `7KQ4-M2XD-9PRT`. It restarts automatically whenever the app opens; keep the PC on with the app in the tray.
+2. **On each gaming PC:** Setup guide → **Always-on PC** → **I play on this PC**, type the code, **Connect**.
+
+The gaming PC finds the always-on PC on the local network (UDP broadcast on port 47625), joins it, enables
+park-on-stop and turns on the shared player address. Players join the always-on PC's address shown on its screen.
+
+How the code stays safe: both PCs stretch the code with scrypt into a lookup id, a single-use invitation token and a
+MAC key. The always-on PC answers a lookup only with a MAC over its certificate fingerprint, so the gaming PC pins a
+certificate proven by the code — not whoever answered first. Codes expire after 30 minutes, work once, and a wrong code
+connects to nothing. Seed Hosting still never changes routers or firewalls: if Windows asks to allow Seed Hosting on
+private networks, allow it. For PCs on different networks, put both on Tailscale; the always-on PC also shows its
+Tailscale address.
+
+## Setup — manual (headless relay)
+
+For a NAS or a box without a desktop:
 
 On the always-on PC (needs Node 22.5+ with `node:sqlite`; development used Node 26):
 

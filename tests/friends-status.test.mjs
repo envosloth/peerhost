@@ -29,8 +29,8 @@ test('wire and typed friends report unknown, parked, pending and held from relay
   const { root, relay, identity, peer } = await fixture(t);
   const members = [{ name: 'Sam', fingerprint: identity.fingerprint, you: true }];
   async function expectCustody(custody, holder) {
-    assert.deepEqual(await wireFriends(identity, peer), { type: 'relay-friends', members, custody, holder });
-    assert.deepEqual(await relayFriends(identity, peer), { members, custody, holder });
+    assert.deepEqual(await wireFriends(identity, peer), { type: 'relay-friends', members, canManage: false, owner: null, custody, holder });
+    assert.deepEqual(await relayFriends(identity, peer), { members, canManage: false, owner: null, custody, holder });
   }
   await expectCustody('unknown', null);
   const ledger = new OwnershipLedger(path.join(root, 'ownership.sqlite'), relay.identity.fingerprint);

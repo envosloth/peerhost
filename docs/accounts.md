@@ -1,0 +1,35 @@
+# Local accounts and username invitations
+
+Seed Hosting can use a shared account directory on an always-on PC. Usernames are unique **within that directory**, not globally. Friends must use the same configured directory and be able to reach both it and the group's relay. This can be a home LAN, a private network, or an administrator-configured public pinned-TLS connection. Public group access does not require Tailscale on the friend's PC. No world-storage subscription is required.
+
+On first use, the app offers a username/password account. Returning users stay signed in using OS-encrypted, device-bound sessions. Local hosting remains available with “Use offline for now”.
+
+In **Friends**, create a group on this PC or accept an invitation. A new group's creator becomes its owner. Owners enter a friend's username and press **Send invitation**; the recipient accepts in their app. No invitation-code copy/paste is needed in the ordinary account flow. Owner-only **Remove** controls confirm before revoking the member's access. Removing the current world holder is refused: hand off ownership first so the group's world is not orphaned. Existing groups without an owner require a deliberate local administrator appointment; ownership is never granted to the first network requester.
+
+The directory stores username reservations, salted password hashes, device-bound sessions and invitation metadata. It does not store Minecraft world files, run a Minecraft server, or serve as the group's world relay. Worlds remain on the participants' PCs.
+
+## Administrator setup
+
+Build once with `npm run build`. Run `dist/src/accounts/cli.js` using Node with `node:sqlite` support (verified with Node 26). Options: `--root <private-directory>`, `--host <bind-address>`, `--port <port>`, `--advertise <client-reachable-address>`, `--advertise-port <public-proxy-port>` and `--client-config <endpoint-json-path>`. Default binding is loopback, not public. For a home directory bind to the PC's LAN address and allow the account port only from the home subnet; do not forward it through the router.
+
+The CLI's endpoint file contains only a host, port and TLS certificate fingerprint. Clients pin that certificate before sending credentials. Keep the directory identity and database private and persistent; replacing the certificate is not a transparent migration. A host/port change with the same certificate preserves existing encrypted sessions; a different certificate is refused without sending the saved token.
+
+Desktop configuration order: explicit `SEEDHOST_ACCOUNT_SERVICE` JSON, `<profile>/account-service.json`, then bundled `apps/desktop/account-service.json` for ordinary app launches. An isolated `--profile-root` never borrows the production bundled endpoint. A malformed endpoint is refused rather than silently switching directories. The local endpoint file is ignored by Git and is not a universal public service default. Copies of this configured app use the same local directory; other builds require administrator configuration.
+
+A local directory needs its PC left on. A DHCP address change needs the service binding/client endpoint updated or an administrator-provided stable address. A public Minecraft player tunnel alone does not provide account lookup, group authorization or world handoff.
+
+## Public group access without changing Playit
+
+An administrator can use Tailscale Funnel **raw TCP forwarding**, not TLS termination: public port 10000 forwards to the account directory and public port 8443 to the group's relay. Advertise the Funnel DNS hostname and those public ports. Seed Hosting sends DNS SNI for ingress routing while retaining end-to-end TLS, raw-certificate pins, device-bound account sessions and recipient-bound group enrollment. Never replace the pinned certificate with the ingress certificate or bypass the pin check.
+
+Both hosts use the same updated, deliberately configured app. The owner signs in and enters the friend's username in Friends; the friend signs in and accepts. The existing Playit Minecraft hostname and agent remain separate and unchanged. Hosts take turns: stop and hand off, then the other member takes over hosting. The dedicated always-on PC stores parked world revisions on its own disk; neither the account directory nor Funnel stores the world. Leave that PC running. New LAN-only groups do not automatically become public simply because their account directory is public.
+
+Funnel's public DNS can take several minutes to appear. A successful CLI configuration or a request resolved through local MagicDNS is not proof of outside access. Verify against independently resolved public IPv4 and read back ingress configuration without disturbing unrelated listeners.
+
+Existing-group administration: `node dist/src/relay/cli.js owner --root <relay-directory> --fingerprint <trusted-device-fingerprint>`. This runs locally and cannot be invoked by a remote member.
+
+## Verification
+
+`node tools/desktop-accounts-check.mjs` exercises two actual isolated Electron profiles against a real loopback TLS directory: first-use signup, one-click new group creation, username invitation/acceptance, owner-only removal, native cancellation/approval, encrypted session restoration, styled password controls and responsive layout. No production accounts or worlds are changed. Account/group/relay security coverage is in `accounts.test.mjs`, `account-integration.test.mjs`, `username-invites.test.mjs`, `group-management.test.mjs` and the existing relay suites.
+
+`SEEDHOST_PUBLIC_GROUP_SMOKE=true SEEDHOST_PUBLIC_GROUP_HOST=<approved-funnel-hostname> node tools/public-group-check.mjs` explicitly opts into a live ingress check against the configured installation hostname. It temporarily forwards only existing 8443/10000 TCP mappings to isolated fixture services, forces independently resolved public IPv4 rather than MagicDNS, checks pin refusal, signup, invitation/acceptance, two-way file integrity, exclusive custody and revocation, and restores the complete previous ingress configuration in `finally`. It writes fixture evidence in scratch and does not create production accounts, move production worlds or run Minecraft. Do not present that file-transfer fixture as gameplay certification or verification of another person's PC.

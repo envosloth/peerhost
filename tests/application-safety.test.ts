@@ -9,9 +9,9 @@ async function setup(){await mkdir('.test-data',{recursive:true});const root=awa
 test('metadata revision mismatch cannot start a process or silently change ledger authority',async()=>{
   const {root,app,identity}=await setup();
   try{
-    await app.close();const file=path.join(root,'profile','state.json');const saved=JSON.parse(await readFile(file,'utf8'));const original=saved.server.snapshotId;saved.server.snapshotId='f'.repeat(64);await writeFile(file,JSON.stringify(saved));
+    await app.close();const file=path.join(root,'profile','state.json');const saved=JSON.parse(await readFile(file,'utf8'));const original=saved.servers[0].snapshotId;saved.servers[0].snapshotId='f'.repeat(64);await writeFile(file,JSON.stringify(saved));
     const reopened=new mod.SeedHostApplication(path.join(root,'profile'),identity);await reopened.open();
-    try{await assert.rejects(reopened.startServer(true),/revision|snapshot|mismatch/i);assert.equal((await new OwnershipLedger(saved.server.ledgerFile,identity.fingerprint).status()).snapshotId,original);assert.equal((await reopened.getState()).server.state,'offline');}finally{await reopened.close();}
+    try{await assert.rejects(reopened.startServer(true),/revision|snapshot|mismatch/i);assert.equal((await new OwnershipLedger(saved.servers[0].ledgerFile,identity.fingerprint).status()).snapshotId,original);assert.equal((await reopened.getState()).server.state,'offline');}finally{await reopened.close();}
   }finally{await app.close();await rm(root,{recursive:true,force:true});}
 });
 test('uncertain ownership requires explicit stopped-process recovery and a new verified snapshot',async()=>{

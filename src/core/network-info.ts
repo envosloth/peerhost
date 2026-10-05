@@ -19,6 +19,17 @@ export function privateLanAddresses(interfaces: Interfaces = networkInterfaces()
   return [...new Set(result)].slice(0, 4);
 }
 
+// Tailscale (CGNAT 100.64.0.0/10) addresses: reachable by the user's own devices on their tailnet.
+export function tailnetAddresses(interfaces: Interfaces = networkInterfaces() as Interfaces): string[] {
+  const result: string[] = [];
+  for (const entries of Object.values(interfaces)) for (const entry of entries ?? []) {
+    if (entry.internal || (entry.family !== 'IPv4' && entry.family !== 4)) continue;
+    const [a = -1, b = -1] = entry.address.split('.').map(Number);
+    if (a === 100 && b >= 64 && b <= 127) result.push(entry.address);
+  }
+  return [...new Set(result)].slice(0, 2);
+}
+
 export async function readServerPort(serverDir: string): Promise<number> {
   try {
     const handle = await open(path.join(serverDir, 'server.properties'), 'r');

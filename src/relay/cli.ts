@@ -3,15 +3,24 @@
 import { parseArgs } from 'node:util';
 import { RelayNode, loadOrCreateRelayIdentity, DEFAULT_RELAY_PORT } from '../core/relay.js';
 import { isValidEndpointHost } from '../core/endpoints.js';
+import { PublicAddress, playitClaim } from '../core/public-address.js';
+import { playitApi, probeMinecraft } from '../core/playit-network.js';
+import { readFile } from 'node:fs/promises';
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import path from 'node:path';
 
 const USAGE = `Usage:
   seedhost-relay init   --root <dir>
   seedhost-relay trust  --root <dir> --name <name> --fingerprint <64 hex>
   seedhost-relay untrust --root <dir> --fingerprint <64 hex>
+  seedhost-relay owner --root <dir> --fingerprint <existing member's 64 hex>
   seedhost-relay invite --root <dir> [--hours 24] [--advertise <reachable host>] [--advertise-port <port>]
   seedhost-relay member-invites --root <dir> --enabled <on|off>
   seedhost-relay serve  --root <dir> [--name <relay name>] [--host 127.0.0.1] [--port ${DEFAULT_RELAY_PORT}] [--advertise <reachable host>] [--keep 10] [--game-port <port>] [--game-host 127.0.0.1]
   seedhost-relay status --root <dir>
+
+serve --playit-secret <file> adopts an already-approved playit agent key for the members' one-click public
+address; add --playit-external yes when that agent already runs as its own service.
 
 serve binds 127.0.0.1 unless --host is given. To reach it from other PCs, pass your LAN or
 Tailscale address (for example --host 0.0.0.0) and allow the port in your firewall yourself.
@@ -33,6 +42,7 @@ try {
     host: { type: 'string' }, port: { type: 'string' }, keep: { type: 'string' },
     'game-host': { type: 'string' }, 'game-port': { type: 'string' },
     hours: { type: 'string' }, advertise: { type: 'string' }, 'advertise-port': { type: 'string' }, enabled: { type: 'string' },
+    'playit-secret': { type: 'string' }, 'playit-external': { type: 'string' },
   } }).values as Record<string, string | undefined>;
 } catch (error) { fail((error as Error).message); }
 if (!values.root) fail('--root is required');
@@ -67,6 +77,11 @@ switch (command) {
     if (!values.name || !values.fingerprint || !/^[a-f0-9]{64}$/.test(values.fingerprint)) fail('trust needs --name and a 64-character lowercase --fingerprint');
     await relay.trust(values.name, values.fingerprint);
     console.log(`TRUSTED=${values.name.trim()} ${values.fingerprint}`);
+    break;
+  case 'owner':
+    if (!values.fingerprint) fail('owner needs --fingerprint');
+    await relay.setOwner(values.fingerprint);
+    console.log('OWNER='+values.fingerprint);
     break;
   case 'untrust':
     if (!values.fingerprint) fail('untrust needs --fingerprint');
@@ -107,12 +122,29 @@ switch (command) {
     await relay.listen({ host, port, advertise });
     try { if (gamePort !== undefined) await relay.listenGame({ host: gameHost, port: gamePort }); }
     catch (error) { await relay.close(); throw error; }
-    console.log(`FINGERPRINT=${identity.fingerprint}`);
-    console.log(`LISTENING=${relay.endpoint!.host}:${relay.endpoint!.port}`);
-    if (relay.gameEndpoint) console.log(`GAME_LISTENING=${relay.gameEndpoint.host}:${relay.gameEndpoint.port}`);
+    if (relay.gameEndpoint) {
+      // Members can turn the public address on from their own Seed Hosting with one click.
+      // Headless box: the agent key is sealed with a key derived from this relay's private identity (no desktop keychain).
+      const seal = createHash('sha256').update('seedhost-public-address').update(identity.keyPem).digest();
+      const vault = {
+        encrypt: (text: string) => { const iv = randomBytes(12); const c = createCipheriv('aes-256-gcm', seal, iv); const data = Buffer.concat([c.update(text, 'utf8'), c.final()]); return Buffer.concat([iv, c.getAuthTag(), data]); },
+        decrypt: (data: Buffer) => { const d = createDecipheriv('aes-256-gcm', seal, data.subarray(0, 12)); d.setAuthTag(data.subarray(12, 28)); return d.update(data.subarray(28), undefined, 'utf8') + d.final('utf8'); },
+      };
+      const gameTarget = relay.gameEndpoint;
+      const secretFile = values['playit-secret'];
+      relay.publicAddress = new PublicAddress(root, { vault, api: playitApi, claim: playitClaim, probe: probeMinecraft, externalAgent: values['playit-external'] === 'yes',
+        target: () => ({ host: gameTarget.host === '0.0.0.0' ? '127.0.0.1' : gameTarget.host, port: gameTarget.port }),
+        adoptKey: secretFile ? async () => (await readFile(path.resolve(secretFile), 'utf8')).trim() : undefined });
+      await relay.publicAddress.restore();
+      console.log('PUBLIC_ADDRESS=available to members');
+    }
     const stop = () => { void relay.close().then(() => process.exit(0), (error) => { console.error(error); process.exit(1); }); };
     process.once('SIGTERM', stop);
     process.once('SIGINT', stop);
+    // Advertise readiness only after initialization and graceful-shutdown handlers are installed.
+    console.log(`FINGERPRINT=${identity.fingerprint}`);
+    console.log(`LISTENING=${relay.endpoint!.host}:${relay.endpoint!.port}`);
+    if (relay.gameEndpoint) console.log(`GAME_LISTENING=${relay.gameEndpoint.host}:${relay.gameEndpoint.port}`);
     break;
   }
   default:

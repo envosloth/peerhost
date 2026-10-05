@@ -1,0 +1,32 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import path from 'node:path';
+import { createIdentity } from '../dist/src/core/peer-transport.js';
+import { RelayNode } from '../dist/src/core/relay.js';
+import { AccountService, AccountClient } from '../dist/src/core/accounts.js';
+import * as relayClient from '../dist/src/core/relay-client.js';
+
+test('username invitation is delivered privately, accepted by its intended device only, and decline grants nothing',async t=>{
+ const root=await mkdtemp(path.join(process.env.TMPDIR,'username-'));
+ const [di,ri,ai,bi,ci]=await Promise.all(Array.from({length:5},()=>createIdentity()));
+ const directory=new AccountService(path.join(root,'directory'),di), relay=new RelayNode(path.join(root,'relay'),ri,{log:()=>{}});
+ t.after(async()=>{await directory.close();await relay.close();await rm(root,{recursive:true,force:true});});
+ await directory.listen();await relay.open();await relay.trust('Alice',ai.fingerprint);await relay.setOwner(ai.fingerprint);await relay.listen();
+ const ep={...directory.endpoint,fingerprint:di.fingerprint}, rp={...relay.endpoint,fingerprint:ri.fingerprint};
+ const alice=new AccountClient(ai,ep),bob=new AccountClient(bi,ep),charlie=new AccountClient(ci,ep);
+ const a=await alice.call('register',{username:'alice',password:'alice-fixture-secret-123'}),b=await bob.call('register',{username:'bob',password:'bob-fixture-secret-123'}),c=await charlie.call('register',{username:'charlie',password:'charlie-fixture-secret-123'});
+ const found=await alice.call('lookup',{token:a.token,username:'BOB'});
+ assert.deepEqual(found.devices,[bi.fingerprint]);
+ assert.equal(typeof relayClient.relayInviteFor,'function','targeted invitations must exist');
+ const invitation=await relayClient.relayInviteFor(ai,rp,bi.fingerprint);
+ const sent=await alice.call('send',{token:a.token,username:'bob',fingerprint:bi.fingerprint,code:invitation.code});
+ assert.equal((await charlie.call('inbox',{token:c.token})).requests.length,0);
+ const inbox=await bob.call('inbox',{token:b.token});assert.equal(inbox.requests[0].from,'alice');assert.equal(inbox.requests[0].id,sent.id);
+ await assert.rejects(charlie.call('request',{token:c.token,id:sent.id}),/not found/);
+ await assert.rejects(relayClient.joinRelayInvite(ci,invitation.code,'charlie'),/intended/);
+ await relayClient.joinRelayInvite(bi,invitation.code,'bob');
+ await bob.call('dismiss',{token:b.token,id:sent.id});
+ assert.equal((await bob.call('inbox',{token:b.token})).requests.length,0);
+ assert.equal((await relayClient.relayFriends(bi,rp)).members.length,2);
+});

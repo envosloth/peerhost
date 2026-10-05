@@ -29,7 +29,7 @@ test('core pinned join, hashed persistence, same-certificate retry, member invit
   await assert.rejects(joinRelayInvite(second,invite.code,'Second'),/used|expired|not valid/i);
   const member = await relayInvite(first,peer);
   await joinRelayInvite(second,member.code,'Second');
-  assert.deepEqual(await relayFriends(first,peer),{members:[{name:'First',fingerprint:first.fingerprint,you:true},{name:'Second',fingerprint:second.fingerprint,you:false}],custody:'unknown',holder:null});
+  assert.deepEqual(await relayFriends(first,peer),{members:[{name:'First',fingerprint:first.fingerprint,you:true},{name:'Second',fingerprint:second.fingerprint,you:false}],canManage:false,owner:null,custody:'unknown',holder:null});
   await relay.setMemberInvites(false);
   await assert.rejects(relayInvite(first,peer),/only the relay owner/i);
   await relay.setMemberInvites(true);

@@ -9,19 +9,21 @@ import { OwnershipLedger, canAcceptOffer, type TransferOffer } from './ownership
 import { receiveSnapshot, sendSnapshotToPeer } from './transfers.js';
 import { listenPeer, type PeerIdentity } from './peer-transport.js';
 import { addMods, exportClientPack, modsDirectory, ordinaryDirectory, removeMod, type ModKind } from './mods.js';
-import { ModrinthClient, assertModTarget, isGameVersion, isModLoader } from './modrinth.js';
+import { ModrinthClient, assertModTarget, isGameVersion, isModLoader, isProjectKey } from './modrinth.js';
 import { indexedMods, modTarget, readModIndex, writeModIndex, type ModVerificationCache } from './mod-index.js';
 import { installMod, assertModInstallComplete, type InstallModInput } from './mod-install.js';
-import { openRelayOperation, relayRequest, relayStatus, relayInvite, relayFriends, joinRelayInvite, type RelayStatus } from './relay-client.js';
+import { openRelayOperation, relayRequest, relayStatus, relayInvite, relayInviteFor, relayRemoveFriend, relayFriends, joinRelayInvite, type RelayStatus, relayPublic } from './relay-client.js';
 import { decodeInvite } from './invites.js';
 import { friendName } from './relay-friends-store.js';
 import { readOnboarding, saveOnboarding, validateOnboarding } from './onboarding.js';
 import { ServerSetupClient, probeJava, type CreateServerInput } from './server-setup.js';
+import { findAlwaysOnPC, normalizePairingCode, pairingInvite, type FoundAlwaysOn } from './always-on.js';
 import { readGameGateway, saveGameGatewayConfig, validateGameGateway } from './game-gateway-config.js';
 import { gatewayStatus, startHostGameGateway } from './game-gateway.js';
 import { privateLanAddresses, readServerPort } from './network-info.js';
+import { hostname } from 'node:os';
 import {
-  parseSavedState, validateLaunchProfile, validatePeer, validateRelayConfig,
+  parseSavedState, validateLaunchProfile, validatePeer, validateRelayConfig, newServerId, isServerId,
   type LaunchProfileInput, type RelayConfig, type SavedPeer, type SavedServer, type SavedState,
 } from './saved-state.js';
 
@@ -41,8 +43,10 @@ interface ApplicationOptions {
 /** Revisions kept by cleanup: the current one plus this many ancestors. */
 const CLEANUP_ANCESTORS = 2;
 
+const isStoppedState = (state: string | undefined) => state === undefined || state === 'offline' || state === 'failed';
+
 export class SeedHostApplication {
-  private saved: SavedState = { version: 1, settings: defaultSettings(), server: null, peers: [], relay: null };
+  private saved: SavedState = { version: 2, settings: defaultSettings(), servers: [], activeServerId: null, peers: [], relay: null };
   private gatewayTunnel?: { close: () => Promise<void> };
   private gatewayEpoch = 0;
   private gatewayState: {state: 'off' | 'connecting' | 'ready' | 'error'; detail: string} = { state: 'off', detail: 'No local host tunnel is active' };
@@ -69,7 +73,7 @@ export class SeedHostApplication {
       try { value = JSON.parse(text); } catch { throw new Error('Invalid saved application state: state.json is not valid JSON. The file was left unchanged.'); }
       this.saved = parseSavedState(value);
     }
-    if (this.saved.server) {
+    if (this.activeServer()) {
       const ledger = this.ledger();
       if ((await ledger.status()).state === 'hosting') {
         await ledger.markUncertain();
@@ -80,9 +84,10 @@ export class SeedHostApplication {
 
   async getState() {
     let server = null;
-    if (this.saved.server) {
+    const active = this.activeServer();
+    if (active) {
       const ownership = await this.ledger().status();
-      const serverDir = this.saved.server.serverDir;
+      const serverDir = active.serverDir;
       // Optional catalogue state must never block lifecycle/ownership state or graceful shutdown.
       let mods: { server: Awaited<ReturnType<typeof indexedMods>>; client: Awaited<ReturnType<typeof indexedMods>> } = { server: [], client: [] };
       let target: Awaited<ReturnType<typeof modTarget>> = { loader: null, gameVersion: null, detected: true };
@@ -100,7 +105,7 @@ export class SeedHostApplication {
       } catch (error) {
         modsError = `Mod information unavailable; repair the managed mod index/folders before changing mods. ${String((error as Error).message).slice(0, 240)}`;
       }
-      server = { ...this.saved.server, profile: { ...this.saved.server.profile, args: [...this.saved.server.profile.args] },
+      server = { ...active, profile: { ...active.profile, args: [...active.profile.args] },
         state: this.process?.state ?? 'offline', ownership, ownerName: this.nameOf(ownership.owner), mods, modsError, modInstallError, modTarget: target,
         playerPort: await readServerPort(serverDir) };
     }
@@ -112,14 +117,17 @@ export class SeedHostApplication {
       deviceId: this.identity.fingerprint,
       settings: { ...this.saved.settings },
       server,
+      servers: this.saved.servers.map((entry) => ({ id: entry.id, name: entry.name, active: entry.id === this.saved.activeServerId })),
       relay: relay ? { ...relay, name: this.relayPeer()?.name ?? 'Relay' } : null,
       peers: this.saved.peers.map((peer) => ({ ...peer })),
       logs: [...this.logs],
       peerEndpoint: this.listener ? { host: this.listener.host, port: this.listener.port } : null,
       busy: this.busy,
-      onboarding: await readOnboarding(this.root, Boolean(this.saved.server)),
+      onboarding: await readOnboarding(this.root, Boolean(this.activeServer())),
       gateway: { ...gateway, ...this.gatewayState, ...(gateway.error ? {state: 'error', detail: gateway.error} : {}) },
       lanAddresses: privateLanAddresses(),
+      // A friendly default name for this PC in pairings ("DESKTOP-VMCMIP5", "Angels-Laptop").
+      deviceName: (hostname().replace(/\.local$/i, '').replace(/[^\w .'-]/g, '').trim() || 'This PC').slice(0, 60),
     };
   }
 
@@ -132,14 +140,107 @@ export class SeedHostApplication {
   async saveOnboarding(input: unknown): Promise<void> {
     await this.operation('saveOnboarding', async () => {
       const progress = validateOnboarding(input);
-      if (progress.completed && (!this.saved.server?.profile.executable || !this.saved.server.profile.args.length)) throw new Error('Configure a server and its launch profile before completing setup');
+      const active = this.activeServer();
+      if (progress.completed && (!active || !active.profile.executable || !active.profile.args.length)) throw new Error('Configure a server and its launch profile before completing setup');
       await saveOnboarding(this.root, progress);
     });
   }
 
   private ledger(): OwnershipLedger {
-    if (!this.saved.server) throw new Error('No server imported');
-    return new OwnershipLedger(this.saved.server.ledgerFile, this.identity.fingerprint);
+    return new OwnershipLedger(this.requireActive().ledgerFile, this.identity.fingerprint);
+  }
+
+  /** The server the app currently shows and acts on. */
+  private activeServer(): SavedServer | null {
+    if (this.saved.activeServerId === null) return null;
+    return this.saved.servers.find((entry) => entry.id === this.saved.activeServerId) ?? null;
+  }
+
+  private requireActive(): SavedServer {
+    const server = this.activeServer();
+    if (!server) throw new Error('No server imported');
+    return server;
+  }
+
+  private addServer(entry: SavedServer): void {
+    this.saved.servers.push(entry);
+    this.saved.activeServerId = entry.id;
+  }
+
+  /** Swap the active entry in place; `null` removes it, which is how a rolled-back activation is undone. */
+  private replaceActive(entry: SavedServer | null): void {
+    const index = this.saved.servers.findIndex((candidate) => candidate.id === this.saved.activeServerId);
+    if (entry === null) {
+      if (index >= 0) this.saved.servers.splice(index, 1);
+      this.saved.activeServerId = this.saved.servers[0]?.id ?? null;
+      return;
+    }
+    if (index >= 0) this.saved.servers[index] = entry; else this.saved.servers.push(entry);
+    this.saved.activeServerId = entry.id;
+  }
+
+  /** Every revision any server on this PC still needs. The content store is shared, so pruning must consider all of them. */
+  private async retainedRevisions(): Promise<string[]> {
+    const keep: string[] = [];
+    for (const entry of this.saved.servers) {
+      keep.push(entry.snapshotId);
+      try {
+        const state = await new OwnershipLedger(entry.ledgerFile, this.identity.fingerprint).status();
+        keep.push(state.snapshotId);
+        if (state.offer) keep.push(state.offer.snapshotId);
+      } catch { /* an unreadable ledger keeps its recorded revision, nothing more is assumed */ }
+    }
+    return [...new Set(keep)];
+  }
+
+  /** Choose which server the app operates on. Custody that is still owed elsewhere is never hidden by switching. */
+  async selectServer(id: string): Promise<void> {
+    this.assertStopped();
+    if (!isServerId(id)) throw new Error('Invalid server id');
+    await this.operation('selectServer', async () => {
+      const target = this.saved.servers.find((entry) => entry.id === id);
+      if (!target) throw new Error('That server is no longer in the library. Refresh and try again.');
+      if (this.saved.activeServerId === id) return;
+      const current = this.activeServer();
+      if (current) {
+        const state = await this.ledger().status();
+        if (state.state === 'offered') throw new Error('A handoff of this server is pending. Finish or cancel it before switching servers.');
+      }
+      this.saved.activeServerId = id;
+      await this.persist();
+      this.log('Switched to ' + target.name + '. Its own launch profile and backups apply.');
+    });
+  }
+
+  /** Remove one server from this PC. Only this app's managed copies go; a server whose custody is not safely held here is refused. */
+  async deleteServer(id: string): Promise<void> {
+    this.assertStopped();
+    if (!isServerId(id)) throw new Error('Invalid server id');
+    await this.operation('deleteServer', async () => {
+      const entry = this.saved.servers.find((candidate) => candidate.id === id);
+      if (!entry) throw new Error('That server is no longer in the library. Refresh and try again.');
+      const index = this.saved.servers.indexOf(entry);
+      let status: Awaited<ReturnType<OwnershipLedger['status']>> | null = null;
+      try { status = await new OwnershipLedger(entry.ledgerFile, this.identity.fingerprint).status(); } catch { status = null; }
+      if (!status) throw new Error('This server’s ownership record cannot be read, so it cannot be deleted safely. Restore it from a backup first.');
+      if (status.state !== 'owned' || status.owner !== this.identity.fingerprint) {
+        throw new Error('Only a server whose ownership is safely held by this PC can be deleted. Recover it, or take it back from the other PC, first.');
+      }
+      // Drop the reference before the files: state never points at a half-deleted server.
+      this.saved.servers.splice(index, 1);
+      if (this.saved.activeServerId === id) this.saved.activeServerId = this.saved.servers[0]?.id ?? null;
+      await this.persist();
+      const leftover: string[] = [];
+      // The execution folder and the ownership record belong to this server alone.
+      try { await rm(entry.serverDir, { recursive: true, force: true }); } catch { leftover.push(entry.serverDir); }
+      try { await rm(entry.ledgerFile, { force: true }); } catch { leftover.push(entry.ledgerFile); }
+      // The object store is shared by every server here: only its now-unreferenced revisions go.
+      let pruned = null;
+      try { pruned = await pruneStore(entry.storeDir, { keep: await this.retainedRevisions(), ancestors: CLEANUP_ANCESTORS }); }
+      catch (error) { this.log('Deleted ' + entry.name + ', but its backups could not be pruned: ' + String((error as Error).message)); }
+      if (leftover.length) this.log('Removed ' + entry.name + ' from the app, but some files could not be deleted: ' + leftover.join(', '));
+      else this.log('Deleted ' + entry.name + ', its managed copy and its own backups' + (pruned ? ' (' + (pruned.bytesFreed / 1024 ** 2).toFixed(1) + ' MiB freed)' : '') + '. Other servers and your original folder were not touched.');
+    });
   }
 
   /** Human name for an ownership fingerprint, for status lines and errors. */
@@ -207,9 +308,8 @@ export class SeedHostApplication {
     if (!input || input.eulaAccepted !== true) throw new Error('Explicit Minecraft EULA acceptance is required before creating a server');
     input = { ...input }; // Capture consent before the lock's first asynchronous fence.
     await this.operation('createServer', async () => {
-      if (this.saved.server) throw new Error('A server is already imported; its lineage cannot be replaced');
       const staging = await mkdtemp(path.join(this.root, 'server-setup-'));
-      const prepared = await (this.options.serverSetup ?? new ServerSetupClient()).prepare(staging, input);
+      const prepared = await (this.options.serverSetup ?? new ServerSetupClient()).prepare(staging, input, { runtimeRoot: path.join(this.root, 'runtimes') });
       if (prepared.loader === 'fabric') {
         const index = await readModIndex(prepared.sourceDir);
         await writeModIndex(prepared.sourceDir, { ...index, target: { loader: 'fabric', gameVersion: prepared.gameVersion } });
@@ -217,10 +317,10 @@ export class SeedHostApplication {
       const result = await importServer(prepared.sourceDir, path.join(this.root, 'managed'));
       const ledgerFile = path.join(this.root, `ownership-${randomUUID()}.sqlite`);
       await new OwnershipLedger(ledgerFile, this.identity.fingerprint).initialize(result.snapshot.id);
-      this.saved.server = {
-        name: input.name, serverDir: result.serverDir, storeDir: result.storeDir, snapshotId: result.snapshot.id,
+      this.addServer({
+        id: newServerId(), name: input.name, serverDir: result.serverDir, storeDir: result.storeDir, snapshotId: result.snapshot.id,
         profile: validateLaunchProfile(prepared.profile), ledgerFile,
-      };
+      });
       try { await this.persist(); }
       catch (error) { await new OwnershipLedger(ledgerFile, this.identity.fingerprint).markUncertain(); throw error; }
       await rm(staging, { recursive: true, force: true });
@@ -232,16 +332,13 @@ export class SeedHostApplication {
     this.assertStopped();
     if (!confirmedStopped) throw new Error('Confirm the source server is stopped before importing');
     await this.operation('importServer', async () => {
-      if (this.saved.server) {
-        throw new Error('A server is already imported. Use a separate explicit profile for a different server; existing lineage and authority cannot be replaced.');
-      }
       const result = await importServer(source, path.join(this.root, 'managed'));
       const ledgerFile = path.join(this.root, `ownership-${randomUUID()}.sqlite`);
       await new OwnershipLedger(ledgerFile, this.identity.fingerprint).initialize(result.snapshot.id);
-      this.saved.server = {
-        name: path.basename(source), serverDir: result.serverDir, storeDir: result.storeDir, snapshotId: result.snapshot.id,
+      this.addServer({
+        id: newServerId(), name: path.basename(source), serverDir: result.serverDir, storeDir: result.storeDir, snapshotId: result.snapshot.id,
         profile: validateLaunchProfile({ executable: '', args: [] }, true), ledgerFile,
-      };
+      });
       await this.persist();
       this.log('Imported a separate managed copy. Original folder was not modified.');
     });
@@ -250,8 +347,8 @@ export class SeedHostApplication {
   async saveProfile(profile: LaunchProfileInput): Promise<void> {
     this.assertStopped();
     await this.operation('saveProfile', async () => {
-      if (!this.saved.server) throw new Error('No server imported');
-      this.saved.server.profile = validateLaunchProfile(profile);
+      if (!this.activeServer()) throw new Error('No server imported');
+      this.requireActive().profile = validateLaunchProfile(profile);
       await this.persist();
     });
   }
@@ -261,7 +358,7 @@ export class SeedHostApplication {
     if (!input || Object.keys(input).sort().join(',') !== 'javaExecutable,memoryMiB' || !Number.isInteger(input.memoryMiB) || input.memoryMiB < 512 || input.memoryMiB > 65536) throw new Error('Invalid simple launch profile');
     input = { ...input };
     await this.operation('configureSimpleProfile', async () => {
-      const server = this.saved.server;
+      const server = this.activeServer();
       if (!server) throw new Error('No server imported');
       await probeJava(input.javaExecutable);
       let args = [...server.profile.args];
@@ -354,7 +451,7 @@ export class SeedHostApplication {
   async startServerWithApproval(confirm: (approval: LaunchApproval) => Promise<boolean>): Promise<void> {
     this.assertStopped();
     await this.operation('startServer', async () => {
-      const server = this.saved.server;
+      const server = this.activeServer();
       if (!server?.profile.executable) throw new Error('Configure a launch profile first');
       await assertModInstallComplete(server.serverDir);
       const original = JSON.stringify(server);
@@ -366,7 +463,7 @@ export class SeedHostApplication {
       // Everything launched below comes from `approval` or from metadata proven identical to what was approved.
       const revalidate = () => {
         this.assertStopped();
-        if (this.saved.server !== server || JSON.stringify(server) !== original) {
+        if (this.activeServer() !== server || JSON.stringify(server) !== original) {
           throw new Error('Server lineage or launch profile changed during approval; approve again');
         }
       };
@@ -414,7 +511,7 @@ export class SeedHostApplication {
 
   async stopServer(): Promise<void> {
     await this.operation('stopServer', async () => {
-      const server = this.saved.server;
+      const server = this.activeServer();
       if (!server || !this.process?.pid) throw new Error('No owned process is running');
       await this.closeGameGateway();
       this.controlledProcess = this.process;
@@ -444,7 +541,7 @@ export class SeedHostApplication {
   async createSnapshot(): Promise<void> {
     this.assertStopped();
     await this.operation('createSnapshot', async () => {
-      const server = this.saved.server;
+      const server = this.activeServer();
       if (!server) throw new Error('No server imported');
       const owner = await this.ledger().status();
       if (owner.state !== 'owned' || owner.owner !== this.identity.fingerprint) throw new Error('Snapshot requires safely held ownership');
@@ -458,7 +555,7 @@ export class SeedHostApplication {
   }
 
   async listSnapshots(): Promise<Array<{ id: string; parentId: string | null; fileCount: number; bytes: number; current: boolean }>> {
-    const server = this.saved.server;
+    const server = this.activeServer();
     if (!server) return [];
     const rows: Array<{ id: string; parentId: string | null; fileCount: number; bytes: number; current: boolean }> = [];
     const seen = new Set<string>();
@@ -480,7 +577,7 @@ export class SeedHostApplication {
     this.assertStopped();
     if (typeof snapshotId !== 'string' || !/^[a-f0-9]{64}$/.test(snapshotId)) throw new Error('Invalid snapshot revision');
     await this.operation('restoreSnapshot', async () => {
-      const server = this.saved.server;
+      const server = this.activeServer();
       if (!server) throw new Error('No server imported');
       const ledger = this.ledger(), ownership = await ledger.status();
       if (ownership.state !== 'owned' || ownership.owner !== this.identity.fingerprint || ownership.offer) throw new Error('Restore requires stopped, safely held ownership');
@@ -504,7 +601,7 @@ export class SeedHostApplication {
         server.snapshotId = safety.id;
         await this.persist();
         await ledger.updateSnapshot(restored.id);
-        this.saved.server = { ...server, serverDir, snapshotId: restored.id };
+        this.replaceActive({ ...server, serverDir, snapshotId: restored.id });
         await this.persist();
         this.modVerificationCache.clear();
         this.log('Restored world into a separate folder. Previous world and safety revision retained: ' + safety.id);
@@ -519,7 +616,7 @@ export class SeedHostApplication {
     this.assertStopped();
     if (!confirmedStopped) throw new Error('Confirm all previous server processes are stopped');
     await this.operation('recoverStopped', async () => {
-      const server = this.saved.server;
+      const server = this.activeServer();
       if (!server) throw new Error('No server imported');
       const ledger = this.ledger(), state = await ledger.status();
       if (state.owner !== this.identity.fingerprint || state.state !== 'uncertain' || state.offer) {
@@ -542,7 +639,7 @@ export class SeedHostApplication {
   async cleanUp(): Promise<CleanUpResult> {
     this.assertStopped();
     return this.operation('cleanUp', async () => {
-      const server = this.saved.server;
+      const server = this.activeServer();
       if (!server) throw new Error('No server imported');
       const ownership = await this.ledger().status();
       if (ownership.state === 'hosting' || ownership.state === 'uncertain') {
@@ -550,10 +647,12 @@ export class SeedHostApplication {
       }
       let serverDirsRemoved = 0;
       const serversDir = path.join(this.root, 'managed', 'servers');
-      if (path.dirname(server.serverDir) === serversDir) {
+      // Folders still used by any library entry are never cleanup targets.
+      const inUse = new Set(this.saved.servers.map((entry) => entry.serverDir));
+      if ([...inUse].some((dir) => path.dirname(dir) === serversDir)) {
         for (const name of await readdir(serversDir)) {
           const entry = path.join(serversDir, name);
-          if (entry === server.serverDir) continue;
+          if (inUse.has(entry)) continue;
           const stat = await lstat(entry);
           if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`Unexpected entry in managed servers; refusing cleanup: ${name}`);
           await rm(entry, { recursive: true });
@@ -563,7 +662,7 @@ export class SeedHostApplication {
       for (const name of await readdir(server.storeDir)) {
         if (/^\.(?:staging|transfer)-/u.test(name)) await rm(path.join(server.storeDir, name), { recursive: true, force: true });
       }
-      const keep = [...new Set([server.snapshotId, ownership.snapshotId, ...(ownership.offer ? [ownership.offer.snapshotId] : [])])];
+      const keep = [...new Set([server.snapshotId, ownership.snapshotId, ...(ownership.offer ? [ownership.offer.snapshotId] : []), ...(await this.retainedRevisions())])];
       const pruned = await pruneStore(server.storeDir, { keep, ancestors: CLEANUP_ANCESTORS });
       this.log(`Cleanup removed ${serverDirsRemoved} old server folder(s), ${pruned.snapshotsRemoved} old revision(s) and ${pruned.objectsRemoved} unused object(s) (${(pruned.bytesFreed / 1024 ** 2).toFixed(1)} MiB of objects).`);
       return { serverDirsRemoved, ...pruned };
@@ -573,7 +672,7 @@ export class SeedHostApplication {
   // ---------------------------------------------------------------- mods
 
   async searchMods(input: { query: string; offset: number }) {
-    const server = this.saved.server;
+    const server = this.activeServer();
     if (!server) throw new Error('No server imported');
     const index = await readModIndex(server.serverDir);
     const target = await modTarget(server.serverDir, index);
@@ -582,6 +681,35 @@ export class SeedHostApplication {
     const mods = [...await indexedMods(server.serverDir, 'server', index), ...await indexedMods(server.serverDir, 'client', index)];
     const installed = new Set(mods.flatMap((mod) => mod.source ? [mod.source.projectId] : []));
     return { ...page, hits: page.hits.map((hit) => ({ ...hit, installed: installed.has(hit.projectId) })) };
+  }
+
+  /** Setup guide: browse Fabric mods for a world that does not exist yet. Read-only; nothing is downloaded. */
+  async searchSetupMods(input: { query: string; gameVersion: string; offset: number }) {
+    if (!input || !isGameVersion(input.gameVersion)) throw new Error('Choose a Minecraft version first');
+    return (this.options.modrinth ?? new ModrinthClient()).search(input.query, input.offset, { loader: 'fabric', gameVersion: input.gameVersion });
+  }
+
+  /** Setup guide: install the mods picked while creating a Fabric world, each with its required dependencies.
+   * One mod that cannot be installed does not stop the others; failures are reported by name. */
+  async setupFabricMods(input: { projectIds: string[] }): Promise<{ installed: string[]; failed: Array<{ projectId: string; reason: string }> }> {
+    this.assertStopped();
+    if (!input || !Array.isArray(input.projectIds) || input.projectIds.length > 50 || !input.projectIds.every(isProjectKey)) throw new Error('Invalid mod selection');
+    const projectIds = [...new Set(input.projectIds)];
+    return this.operation('setupFabricMods', async () => {
+      const server = await this.requireEditableServer();
+      const target = await modTarget(server.serverDir, await readModIndex(server.serverDir));
+      if (target.loader !== 'fabric') throw new Error('Mods can be added while creating a Fabric world');
+      const client = this.options.modrinth ?? new ModrinthClient();
+      const installed: string[] = [], failed: Array<{ projectId: string; reason: string }> = [];
+      for (const projectId of projectIds) {
+        try {
+          const result = await installMod(server.serverDir, path.join(this.root, 'mod-downloads'), client, { projectId });
+          installed.push(...result.installed.map((mod) => mod.title));
+        } catch (error) { failed.push({ projectId, reason: String((error as Error).message).slice(0, 240) }); }
+      }
+      if (installed.length) this.log(`Installed ${installed.length} verified Modrinth mod(s) for the new world, including required dependencies.`);
+      return { installed, failed };
+    });
   }
 
   async saveModTarget(input: { loader: string; gameVersion: string }): Promise<void> {
@@ -608,7 +736,7 @@ export class SeedHostApplication {
 
   /** Mods change the world's files, so they follow the same rule as snapshots: stopped, and owned by this PC. */
   private async requireEditableServer(): Promise<SavedServer> {
-    const server = this.saved.server;
+    const server = this.activeServer();
     if (!server) throw new Error('No server imported');
     const ownership = await this.ledger().status();
     if (ownership.state !== 'owned' || ownership.owner !== this.identity.fingerprint) {
@@ -647,7 +775,7 @@ export class SeedHostApplication {
   /** Read-only, so it is allowed while hosting and on any PC that has the files. */
   async exportClientPack(destination: string): Promise<{ mods: number; bytes: number }> {
     return this.operation('exportClientPack', async () => {
-      const server = this.saved.server;
+      const server = this.activeServer();
       if (!server) throw new Error('No server imported');
       await assertModInstallComplete(server.serverDir);
       await readModIndex(server.serverDir);
@@ -688,6 +816,49 @@ export class SeedHostApplication {
       this.log(`Joined ${joined.relayName} as ${memberName}. Nothing was downloaded or started.`);
       return joined;
     });
+  }
+
+  /** One-click pairing with an always-on PC: find it on this network from its short code, join it, and turn on
+   * the shared player address for this PC. The code is the only thing the user types. */
+  async pairAlwaysOn({ code, name }: { code: string; name: string }, find: (code: string) => Promise<FoundAlwaysOn> = findAlwaysOnPC): Promise<{ relayName: string; gatewayOn: boolean }> {
+    this.assertStopped();
+    normalizePairingCode(code);
+    const found = await find(code);
+    if (found.fingerprint === this.identity.fingerprint) throw new Error('That code belongs to this PC. Type it on your gaming PC instead.');
+    const invitation = await pairingInvite(code, found);
+    const joined = await this.joinWithInvite({ code: invitation, name });
+    let gatewayOn = false;
+    if (found.gamePort !== null) {
+      try {
+        const port = this.activeServer() ? await readServerPort(this.activeServer()!.serverDir) : 25565;
+        await this.saveGameGateway({ enabled: true, localPort: port });
+        gatewayOn = true;
+      } catch (error) { this.log('Paired, but the shared player address could not be turned on: ' + String((error as Error).message)); }
+    }
+    return { relayName: joined.relayName, gatewayOn };
+  }
+
+  /** The always-on PC's public address, controlled from this member PC. */
+  async publicAddress(op: 'public-status' | 'public-enable' | 'public-disable') {
+    const status = await relayPublic(this.identity, this.requireRelay(), op);
+    // The public address reaches whoever hosts only through each host's link to the always-on PC, so the one
+    // button turns that link on here as well (only while stopped; it starts with the server).
+    if (op !== 'public-disable' && status.state !== 'off' && status.state !== 'error' && status.state !== 'unsupported') {
+      const gateway = await readGameGateway(this.root);
+      if (!gateway.error && !gateway.enabled && !this.busy && isStoppedState(this.process?.state)) {
+        const server = this.activeServer();
+        await this.saveGameGateway({ enabled: true, localPort: server ? await readServerPort(server.serverDir) : 25565 }).catch((error) => this.log('Public address is on, but this PC’s link to the always-on PC could not be turned on: ' + String((error as Error).message)));
+      }
+    }
+    return status;
+  }
+
+  async createInviteFor(fingerprint: string) {
+    return this.operation('createInviteFor', () => relayInviteFor(this.identity, this.requireRelay(), fingerprint));
+  }
+
+  async removeFriend(fingerprint: string) {
+    return this.operation('removeFriend', () => relayRemoveFriend(this.identity, this.requireRelay(), fingerprint));
   }
 
   async listFriends() {
@@ -757,7 +928,7 @@ export class SeedHostApplication {
   async sendSnapshot(fingerprint: string): Promise<unknown> {
     this.assertStopped();
     return this.operation('sendSnapshot', async () => {
-      const peer = this.saved.peers.find((entry) => entry.fingerprint === fingerprint), server = this.saved.server;
+      const peer = this.saved.peers.find((entry) => entry.fingerprint === fingerprint), server = this.activeServer();
       if (!peer || !server) throw new Error('Missing peer or imported server');
       if (this.isRelay(peer)) throw new Error('The relay stores the server only through Park; a plain snapshot send is not accepted.');
       const ownership = await this.ledger().status();
@@ -806,7 +977,7 @@ export class SeedHostApplication {
   }
 
   private async transferOwnership(peer: SavedPeer): Promise<void> {
-    const server = this.saved.server;
+    const server = this.activeServer();
     if (!server) throw new Error('Missing peer or imported server');
     const relay = this.isRelay(peer);
     const target = relay ? 'the relay' : 'the recipient';
@@ -927,7 +1098,7 @@ export class SeedHostApplication {
     offer: TransferOffer | undefined, track: (activation: Promise<boolean>) => void, { approved = false } = {}): Promise<boolean> {
     this.log('Received verified snapshot ' + snapshot.id + ' from ' + (this.nameOf(authenticatedSource) ?? authenticatedSource) + '. Replication alone does not grant hosting ownership.');
     if (!offer) return false;
-    const previous = this.saved.server, original = JSON.stringify(this.saved.server);
+    const previous = this.activeServer(), original = JSON.stringify(this.activeServer());
     let originalAuthority: string | undefined;
     if (previous) {
       const ledger = this.ledger();
@@ -947,7 +1118,7 @@ export class SeedHostApplication {
       try {
         if (this.operationToken !== token || socket.destroyed || socket.readableEnded || socket.writableEnded) throw new Error('Incoming session or operation has ended');
         this.assertStopped();
-        if (this.saved.server !== expected || JSON.stringify(this.saved.server) !== metadata) throw new Error('Incoming server lineage changed during approval');
+        if (this.activeServer() !== expected || JSON.stringify(this.activeServer()) !== metadata) throw new Error('Incoming server lineage changed during approval');
       } catch (error) {
         this.log('Incoming handoff activation refused: ' + String(error));
         throw error;
@@ -966,10 +1137,10 @@ export class SeedHostApplication {
     revalidate();
     const ledgerFile = previous?.ledgerFile ?? path.join(this.root, `ownership-${randomUUID()}.sqlite`);
     const profile = previous ? { ...previous.profile, args: [...previous.profile.args] } : validateLaunchProfile({ executable: '', args: [] }, true);
-    const candidate: SavedServer = { name: previous?.name ?? 'Received server', serverDir, storeDir, snapshotId: snapshot.id, profile, ledgerFile };
+    const candidate: SavedServer = { id: previous?.id ?? newServerId(), name: previous?.name ?? 'Received server', serverDir, storeDir, snapshotId: snapshot.id, profile, ledgerFile };
     const activation = (async () => {
       let authorityAttempted = false;
-      this.saved.server = candidate;
+      this.replaceActive(candidate);
       const candidateMetadata = JSON.stringify(candidate);
       try {
         // Record the candidate before authority. Missing/mismatched ledgers fail closed on restart.
@@ -986,7 +1157,7 @@ export class SeedHostApplication {
         this.log('Accepted ownership of ' + snapshot.id + '. Previous server files retained. Configure a local launch profile and approve executable/mod trust before starting.');
         return true;
       } catch (error) {
-        if (!authorityAttempted) { this.saved.server = previous; await this.persist(); }
+        if (!authorityAttempted) { this.replaceActive(previous); await this.persist(); }
         else this.log('Ownership acceptance may have committed; candidate retained for explicit reconciliation.');
         throw error;
       }

@@ -9,6 +9,7 @@ import { pruneStore, syncDirectory } from './snapshots.js';
 import { RELAY_PROTOCOL_VERSION, type RelayCustody } from './relay-client.js';
 import { encodeInvite, type CreatedInvite } from './invites.js';
 import { RelayGameGateway, type GameRoute, type GameGatewayOptions } from './game-gateway.js';
+import type { PublicAddress } from './public-address.js';
 import { durableJSON, fingerprintOK, friendName, readRelayConfig, validAdvertise, withRelayLock,
   type FriendMember, type PendingInvite, type RelayConfig } from './relay-friends-store.js';
 
@@ -34,6 +35,8 @@ export class RelayNode {
   /** Park and claim run one at a time, in arrival order. Status reads never wait. */
   private queue: Promise<void> = Promise.resolve();
   private game?: RelayGameGateway;
+  /** Optional one-click public address for this relay's player gateway; any member can turn it on. */
+  publicAddress?: PublicAddress;
   private readonly keepRevisions: number;
   private readonly log: (line: string) => void;
   private readonly defaultName: string;
@@ -49,6 +52,7 @@ export class RelayNode {
   get endpoint(): { host: string; port: number } | undefined {
     return this.listener && { host: this.listener.host, port: this.listener.port };
   }
+  get owner(): string | undefined { return this.config.owner; }
   get trusted(): FriendMember[] { return this.config.trusted.map((host) => ({ ...host })); }
   get gameEndpoint(): { host: string; port: number } | undefined { return this.game?.endpoint; }
 
@@ -110,13 +114,39 @@ export class RelayNode {
     });
   }
 
+  /** Local administration only; the wire protocol has no appoint-owner operation. */
+  async setOwner(fingerprint: string): Promise<void> {
+    if (!fingerprintOK(fingerprint)) throw new Error('Invalid owner');
+    await this.mutate(async config => { this.requireMember(fingerprint, config); config.owner = fingerprint; });
+  }
+
+  async removeFriend(source: string, fingerprint: string): Promise<void> {
+    if (!fingerprintOK(fingerprint)) throw new Error('Invalid friend');
+    // Serialize with custody transfers, then recheck authority under the durable configuration lock.
+    const run = this.queue.then(() => this.mutate(async config => {
+      this.requireMember(source, config);
+      if (config.owner !== source) throw new Error('Only the group owner can remove a member');
+      if (fingerprint === config.owner) throw new Error('The group owner cannot be removed');
+      const custody = await this.custody();
+      if (custody?.owner === fingerprint || custody?.pendingTarget === fingerprint) throw new Error('Ask this friend to hand the world back before removing them');
+      if (!config.trusted.some(m => m.fingerprint === fingerprint)) return;
+      config.trusted = config.trusted.filter(m => m.fingerprint !== fingerprint);
+      await this.removeInvites(record => record.issuer === fingerprint || record.recipient === fingerprint);
+    }));
+    this.queue = run.catch(() => {});
+    await run;
+    await this.game?.validate();
+    this.log('Group member removed by the group owner.');
+  }
+
   async untrust(fingerprint: string): Promise<void> {
     if (!fingerprintOK(fingerprint)) throw new Error('Invalid fingerprint');
     await this.mutate(async (config) => {
       if (!config.trusted.some((host) => host.fingerprint === fingerprint)) throw new Error('Not a trusted relay friend');
       config.trusted = config.trusted.filter((host) => host.fingerprint !== fingerprint);
+      if (config.owner === fingerprint) delete config.owner;
       // Keep used-token tombstones: removing a friend must not revive a consumed token after a crash.
-      await this.removeInvites((record) => record.issuer === fingerprint);
+      await this.removeInvites((record) => record.issuer === fingerprint || record.recipient === fingerprint);
     });
     await this.game?.validate();
   }
@@ -135,20 +165,27 @@ export class RelayNode {
     await this.mutate(async (config) => { config.name = relayName; });
   }
 
-  async createInvite({ hours = 24, advertise }: { hours?: number; advertise?: { host: string; port: number } } = {}): Promise<CreatedInvite> {
-    return this.issueInvite(hours, advertise, null);
+  /** `token` lets a short pairing code stand in for the long invitation: both sides derive the same 16 bytes.
+   * `minutes` gives a short-lived code (5–1440); otherwise `hours` (1–720) applies. */
+  async createInvite({ hours = 24, minutes, advertise, token, recipient }: { hours?: number; minutes?: number; advertise?: { host: string; port: number }; token?: Buffer; recipient?: string } = {}): Promise<CreatedInvite> {
+    if (recipient !== undefined && !fingerprintOK(recipient)) throw new Error('Invalid invite recipient');
+    if (token !== undefined && (!Buffer.isBuffer(token) || token.length !== 16)) throw new Error('Invite token must be 16 bytes');
+    if (minutes !== undefined && (!Number.isInteger(minutes) || minutes < 5 || minutes > 1440)) throw new Error('Invite minutes must be between 5 and 1440');
+    if (minutes === undefined && (!Number.isFinite(hours) || hours < 1 || hours > 24 * 30)) throw new Error('Invite hours must be between 1 and 720');
+    return this.issueInvite(minutes !== undefined ? minutes / 60 : hours, advertise, null, token, recipient);
   }
 
-  private issueInvite(hours: number, advertise: { host: string; port: number } | undefined, issuer: string | null): Promise<CreatedInvite> {
-    if (!Number.isFinite(hours) || hours < 1 || hours > 24 * 30) return Promise.reject(new Error('Invite hours must be between 1 and 720'));
+  private issueInvite(hours: number, advertise: { host: string; port: number } | undefined, issuer: string | null, fixedToken?: Buffer, recipient?: string): Promise<CreatedInvite> {
+    if (!Number.isFinite(hours) || hours < 5 / 60 || hours > 24 * 30) return Promise.reject(new Error('Invite hours must be between 1 and 720'));
     return this.mutate(async (config) => {
       if (issuer !== null) {
         this.requireMember(issuer, config);
-        if (!config.memberInvites) throw new Error('Only the relay owner can create invites');
+        if (!config.memberInvites && config.owner !== issuer) throw new Error('Only the relay owner can create invites');
+        if (recipient !== undefined && (!fingerprintOK(recipient) || config.owner !== issuer)) throw new Error('Only the group owner can invite by username');
       }
       const endpoint = advertise ?? config.advertise ?? this.endpoint;
       if (!validAdvertise(endpoint)) throw new Error('Invite needs a reachable advertised relay address and port (not a wildcard bind address)');
-      const token = randomBytes(16);
+      const token = fixedToken ? Buffer.from(fixedToken) : randomBytes(16);
       const expiresAt = Math.floor(Date.now() / 1000 + hours * 3600) * 1000;
       const code = encodeInvite({ relayFingerprint: this.identity.fingerprint, ...endpoint, token, expiresAt: expiresAt / 1000, relayName: config.name ?? this.defaultName });
       if (advertise) config.advertise = { ...advertise };
@@ -158,7 +195,7 @@ export class RelayNode {
         if (record && record.expiresAt <= Date.now()) await rm(path.join(this.invites, file), { force: true });
       }
       if ((await readdir(this.invites)).filter((file) => /^[a-f0-9]{64}\.json$/.test(file)).length >= 100) throw new Error('Too many pending relay invites');
-      await durableJSON(path.join(this.invites, this.tokenHash(token) + '.json'), { version: 1, expiresAt, issuer } satisfies PendingInvite);
+      await durableJSON(path.join(this.invites, this.tokenHash(token) + '.json'), { version: 1, expiresAt, issuer, ...(recipient ? { recipient } : {}) } satisfies PendingInvite);
       return { code, expiresAt };
     });
   }
@@ -177,7 +214,7 @@ export class RelayNode {
     let record: PendingInvite;
     try { record = JSON.parse(await readFile(path.join(this.invites, file), 'utf8')) as PendingInvite; }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
-    if (record?.version !== 1 || !Number.isSafeInteger(record.expiresAt) || (record.issuer !== null && !fingerprintOK(record.issuer))) throw new Error('Invalid pending invite record');
+    if (record?.version !== 1 || !Number.isSafeInteger(record.expiresAt) || (record.issuer !== null && !fingerprintOK(record.issuer)) || (record.recipient !== undefined && !fingerprintOK(record.recipient))) throw new Error('Invalid pending invite record');
     return record;
   }
 
@@ -185,7 +222,7 @@ export class RelayNode {
     for (const file of (await readdir(this.invites)).filter((file) => /^[a-f0-9]{64}\.json$/.test(file))) {
       const record = await this.readInvite(file);
       if (record && record.expiresAt > Date.now() && (record.issuer === null ||
-          (this.config.memberInvites && this.config.trusted.some((entry) => entry.fingerprint === record.issuer)))) return true;
+          ((this.config.memberInvites || this.config.owner === record.issuer) && this.config.trusted.some((entry) => entry.fingerprint === record.issuer)))) return true;
     }
     return false;
   }
@@ -206,7 +243,8 @@ export class RelayNode {
       const record = await this.readInvite(hash + '.json');
       if (!record) throw new Error('Invite already used or not valid');
       if (record.expiresAt <= Date.now()) throw new Error('Invite has expired');
-      if (record.issuer !== null && (!config.memberInvites || !config.trusted.some((entry) => entry.fingerprint === record.issuer))) throw new Error('Invite has been revoked');
+      if (record.recipient && record.recipient !== source) throw new Error('Only the intended friend can accept this invitation');
+      if (record.issuer !== null && ((!config.memberInvites && config.owner !== record.issuer) || !config.trusted.some((entry) => entry.fingerprint === record.issuer))) throw new Error('Invite has been revoked');
       if (config.trusted.length >= 200 && !config.trusted.some((entry) => entry.fingerprint === source)) throw new Error('Relay friend limit reached');
       config.trusted = [...config.trusted.filter((host) => host.fingerprint !== source), { name: memberName, fingerprint: source }];
       config.redeemed = { ...config.redeemed, [hash]: { fingerprint: source, expiresAt: record.expiresAt } };
@@ -258,8 +296,8 @@ export class RelayNode {
     let retained = false;
     try {
       const request = await readInviteFrame(socket, 4096, REQUEST_TIMEOUT_MS) as Record<string, unknown>;
-      if (!request || request.type !== 'relay' || request.version !== RELAY_PROTOCOL_VERSION || !['status', 'park', 'claim', 'join', 'invite', 'friends', 'gateway-status', 'game-tunnel'].includes(request.op as string) ||
-          Object.keys(request).length !== (request.op === 'join' || request.op === 'game-tunnel' ? 5 : 3)) {
+      if (!request || request.type !== 'relay' || request.version !== RELAY_PROTOCOL_VERSION || !['status', 'park', 'claim', 'join', 'invite', 'friends', 'gateway-status', 'game-tunnel', 'public-status', 'public-enable', 'public-disable', 'remove-friend', 'invite-for'].includes(request.op as string) ||
+          Object.keys(request).length !== (request.op === 'join' || request.op === 'game-tunnel' ? 5 : request.op === 'remove-friend' || request.op === 'invite-for' ? 4 : 3)) {
         throw new Error('Unsupported relay request; both ends must run the same SeedHost alpha');
       }
       if (request.op === 'join') {
@@ -271,6 +309,15 @@ export class RelayNode {
       if (!isVerifiedPeerSocket(socket)) throw new Error('Invite required; untrusted request refused');
       await this.reload();
       this.requireMember(source);
+      if (request.op === 'public-status' || request.op === 'public-enable' || request.op === 'public-disable') {
+        const pa = this.publicAddress;
+        if (!pa) { await writeFrame(socket, { type: 'relay-public', state: 'unsupported', address: null, detail: 'This always-on PC can’t make a public address. Update Seed Hosting on it.', approveUrl: null }); return; }
+        if (request.op !== 'public-status' && !this.game) throw new Error('Turn on the player address on the always-on PC first');
+        const status = request.op === 'public-enable' ? await pa.enable() : request.op === 'public-disable' ? await pa.disable() : await pa.refresh();
+        if (request.op !== 'public-status') this.log(`Public address ${request.op === 'public-enable' ? 'turned on' : 'turned off'} by ${who}.`);
+        await writeFrame(socket, { type: 'relay-public', ...status });
+        return;
+      }
       if (request.op === 'gateway-status') {
         await writeFrame(socket, { type: 'relay-gateway-status', ...(this.game ? await this.game.status() : { enabled: false, host: null, port: null, ready: false, detail: 'Player gateway is off' }) });
         return;
@@ -281,14 +328,24 @@ export class RelayNode {
         retained = true;
         return;
       }
+      if (request.op === 'invite-for') {
+        const invite = await this.issueInvite(24, undefined, source, undefined, request.fingerprint as string);
+        await writeFrame(socket, { type: 'relay-invite', ...invite });
+        return;
+      }
       if (request.op === 'invite') {
         const invite = await this.issueInvite(24, undefined, source);
         await writeFrame(socket, { type: 'relay-invite', ...invite });
         return;
       }
+      if (request.op === 'remove-friend') {
+        await this.removeFriend(source, request.fingerprint as string);
+        await writeFrame(socket, { type: 'relay-removed', fingerprint: request.fingerprint });
+        return;
+      }
       if (request.op === 'friends') {
         const custody = await this.custody();
-        await writeFrame(socket, { type: 'relay-friends', members: this.config.trusted.map((member) => ({ ...member, you: member.fingerprint === source })),
+        await writeFrame(socket, { type: 'relay-friends', canManage: this.config.owner === source, owner: this.config.owner ?? null, members: this.config.trusted.map((member) => ({ ...member, you: member.fingerprint === source })),
           custody: !custody ? 'unknown' : custody.state === 'owned' ? 'parked' : custody.state === 'offered' ? 'pending' : 'held',
           holder: custody?.state === 'transferred' ? this.nameOf(custody.owner) : null });
         return;
@@ -382,6 +439,7 @@ export class RelayNode {
   }
 
   async close(): Promise<void> {
+    await this.publicAddress?.close();
     if (this.game) { await this.game.close(); this.game = undefined; }
     if (this.listener) { await this.listener.close(); this.listener = undefined; }
   }

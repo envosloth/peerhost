@@ -70,15 +70,20 @@ test('failed adoption retains preparation evidence and fences possibly committed
   await assert.rejects(f.app.startServer(true), /ownership/i);
 });
 
-test('application creation locks preparation and refuses replacement while retaining integrity failure evidence', async t => {
+test('application creation locks preparation and adds a second server without disturbing the first', async t => {
   const f = await fixture(t, { delay: 30 });
   const pending = f.app.createServer(f.input);
   await assert.rejects(f.app.importExisting(f.dir, true), /operation.*progress/);
   await assert.rejects(f.app.createServer(f.input), /operation.*progress/);
   await pending;
   const before = (await f.app.getState()).server;
-  await assert.rejects(f.app.createServer(f.input), /already imported/);
-  assert.equal((await f.app.getState()).server.snapshotId, before.snapshotId);
+  await f.app.createServer(f.input);
+  const library = await f.app.getState();
+  assert.equal(library.servers.length, 2);
+  assert.notEqual(library.server.id, before.id);
+  // The first server keeps its own lineage entry, folder and revision.
+  assert.deepEqual(library.servers.find(entry => entry.id === before.id), { id: before.id, name: before.name, active: false });
+  assert.ok((await readdir(before.serverDir)).includes('server.jar'), 'the first server keeps its own managed copy');
   const corrupt = await fixture(t, { tamper: true });
   await assert.rejects(corrupt.app.createServer(corrupt.input), /integrity/);
   assert.equal((await corrupt.app.getState()).server, null);

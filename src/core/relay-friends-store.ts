@@ -12,11 +12,13 @@ export interface RelayConfig {
   history: string[];
   name?: string;
   memberInvites?: boolean;
+  /** Appointed locally; never inferred from invitation order or the current world holder. */
+  owner?: string;
   advertise?: { host: string; port: number };
   /** Token digests only, for same-certificate retry after a lost join response. */
   redeemed?: Record<string, { fingerprint: string; expiresAt: number }>;
 }
-export interface PendingInvite { version: 1; expiresAt: number; issuer: string | null }
+export interface PendingInvite { version: 1; expiresAt: number; issuer: string | null; recipient?: string }
 export const fingerprintOK = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 export function friendName(value: unknown, max = 60): string {
   if (typeof value !== 'string' || !value.trim() || value.length > max || /\p{Cc}/u.test(value)) throw new Error(`Friend name must be 1–${max} characters with no controls`);
@@ -39,6 +41,7 @@ export async function readRelayConfig(root: string, defaultName: string): Promis
         new Set(value.trusted.map((member) => member.fingerprint)).size !== value.trusted.length ||
         value.history.some((id) => !fingerprintOK(id)) || (value.name !== undefined && !friendName(value.name, 100)) ||
         (value.memberInvites !== undefined && typeof value.memberInvites !== 'boolean') ||
+        (value.owner !== undefined && (!fingerprintOK(value.owner) || !value.trusted.some(m => m.fingerprint === value.owner))) ||
         (value.advertise !== undefined && !validAdvertise(value.advertise)) ||
         (value.redeemed !== undefined && (!value.redeemed || Array.isArray(value.redeemed) || typeof value.redeemed !== 'object' ||
           Object.entries(value.redeemed).some(([hash, entry]) => !fingerprintOK(hash) || !fingerprintOK(entry?.fingerprint) || !Number.isSafeInteger(entry.expiresAt))))) throw new Error();

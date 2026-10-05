@@ -20,13 +20,18 @@ for (const state of ['owned','offered','uncertain'] as const) {
       const before=await app.getState();
       const disk=await readFile(path.join(root,'profile','state.json'),'utf8');
       const files=await readdir(path.join(root,'profile'));
-      // A genuinely different source is also not an implicit profile replacement.
+      // Importing another server adds an entry; it is never an implicit replacement of this one.
       const other=path.join(root,'different');await mkdir(other);await writeFile(path.join(other,'eula.txt'),'eula=true\n');
-      for (const input of [source,other])await assert.rejects(app.importExisting(input,true),/already imported|separate.*profile/i);
-      assert.deepEqual((await app.getState()).server,before.server);
-      assert.equal(await readFile(path.join(root,'profile','state.json'),'utf8'),disk);
-      assert.deepEqual(await readdir(path.join(root,'profile')),files);
+      await app.importExisting(other,true);
+      const after=await app.getState();
+      assert.equal(after.servers.length,2);
+      assert.deepEqual(after.servers.find(entry=>entry.id===server.id),{id:server.id,name:server.name,active:false});
+      assert.deepEqual(JSON.parse(await readFile(path.join(root,'profile','state.json'),'utf8')).servers.find((entry:any)=>entry.id===server.id),JSON.parse(disk).servers[0]);
       assert.equal(await readFile(path.join(server.serverDir,'world.bin'),'utf8'),'original world');
+      const ledgerState=await new OwnershipLedger(server.ledgerFile,identity.fingerprint).status();
+      assert.equal(ledgerState.state,state);
+      assert.equal(ledgerState.snapshotId,before.server!.snapshotId);
+      assert.ok((await readdir(path.join(root,'profile'))).length>=files.length);
     }finally{await app.close();await rm(root,{recursive:true,force:true});}
   });
 }
@@ -83,8 +88,8 @@ for(const change of ['profile','snapshot'] as const)test('launch consent is reva
     pending=app.startServerWithApproval(async captured=>{waiting.resolve();await decision.promise;assert.equal(captured.snapshotId,original.snapshotId);assert.equal(captured.profile.args.length,2);return true;});
     await waiting.promise;
     // Deliberate in-memory invalidation models metadata changing outside the public operation API.
-    if(change==='profile')(app as any).saved.server.profile.args.push('not approved');
-    else (app as any).saved.server.snapshotId='f'.repeat(64);
+    if(change==='profile')(app as any).activeServer().profile.args.push('not approved');
+    else (app as any).activeServer().snapshotId='f'.repeat(64);
     decision.resolve(true);await assert.rejects(pending,/changed.*approval|approve again/i);
     const state=await app.getState();assert.equal(state.server!.ownership.state,'owned');assert.equal(state.server!.state,'offline');
     assert.ok(!state.logs.some(line=>line.startsWith('fixture ')));
@@ -195,7 +200,9 @@ test('transport timeout cannot release lock while candidate metadata persistence
     for(let i=0;i<500&&(b as any).busy;i++)await new Promise(r=>setTimeout(r,10));
     assert.equal((b as any).busy,null);
     assert.equal((await b.getState()).server,null);
-    assert.equal(JSON.parse(await readFile(path.join(root,'b','state.json'),'utf8')).server,null);
+    const empty=JSON.parse(await readFile(path.join(root,'b','state.json'),'utf8'));
+    assert.deepEqual(empty.servers,[]);
+    assert.equal(empty.activeServerId,null);
     assert.equal((await a.getState()).server!.ownership.state,'offered');
   }finally{
     t.mock.timers.reset();release.resolve();await pending;
@@ -288,14 +295,17 @@ test('real A to B handoff cannot be undone by reimporting A while B hosts', asyn
     const original=(await a.getState()).server!;
     const originalFiles=await readdir(path.join(root,'a'));
     const metadata=await readFile(path.join(root,'a','state.json'),'utf8');
-    await assert.rejects(a.importExisting(source,true),/already imported|separate.*profile/i);
-    const after=(await a.getState()).server!;
-    assert.equal(after.ledgerFile,original.ledgerFile);
-    assert.deepEqual(after.ownership,original.ownership);
-    assert.equal(after.serverDir,original.serverDir);
-    assert.equal(await readFile(path.join(root,'a','state.json'),'utf8'),metadata);
-    assert.deepEqual(await readdir(path.join(root,'a')),originalFiles);
+    // Importing the same folder again cannot launder the transferred lineage: it only adds a separate entry.
+    await a.importExisting(source,true);
+    const library=await a.getState();
+    assert.equal(library.servers.length,2);
+    assert.deepEqual(library.servers.find(entry=>entry.id===original.id),{id:original.id,name:original.name,active:false});
+    assert.notEqual(library.server!.id,original.id,'the new copy is the server in use, not a takeover of the old one');
+    assert.equal((await new OwnershipLedger(original.ledgerFile,ia.fingerprint).status()).state,'transferred');
+    assert.equal(await readFile(path.join(original.serverDir,'world.bin'),'utf8'),'original world');
     assert.equal((await b.getState()).server!.state,'running');
+    // B holds this world's authority; the entry it came from still refuses to host here.
+    await a.selectServer(original.id);
     await assert.rejects(a.startServer(true),/ownership/i);
   } finally { await a.close(); await b.close(); await rm(root,{recursive:true,force:true}); }
 });

@@ -67,6 +67,12 @@ test('saved state written by the first alpha loads with default timeouts', async
     await app.close();
     const file = path.join(root, 'profile', 'state.json');
     const saved = JSON.parse(await readFile(file, 'utf8'));
+    // Rewrite the current file as the first alpha wrote it: one server, no id, no launch timeouts.
+    saved.version = 1;
+    saved.server = { ...saved.servers[0] };
+    delete saved.server.id;
+    delete saved.servers;
+    delete saved.activeServerId;
     saved.server.profile = { executable: process.execPath, args: [fixture] };
     await writeFile(file, JSON.stringify(saved));
     const reopened = new SeedHostApplication(path.join(root, 'profile'), identity);
@@ -82,13 +88,16 @@ test('corrupt saved state is refused without being rewritten', async () => {
     await app.close();
     const file = path.join(root, 'profile', 'state.json');
     const valid = JSON.parse(await readFile(file, 'utf8'));
+    const entry = valid.servers[0];
     for (const corrupt of [
-      { ...valid, server: { ...valid.server, snapshotId: '../escape' } },
-      { ...valid, server: { ...valid.server, serverDir: 'relative/dir' } },
-      { ...valid, server: { ...valid.server, ledgerFile: 42 } },
-      { ...valid, server: { ...valid.server, profile: { executable: 'java', args: 'nogui' } } },
+      { ...valid, servers: [{ ...entry, snapshotId: '../escape' }] },
+      { ...valid, servers: [{ ...entry, serverDir: 'relative/dir' }] },
+      { ...valid, servers: [{ ...entry, ledgerFile: 42 }] },
+      { ...valid, servers: [{ ...entry, profile: { executable: 'java', args: 'nogui' } }] },
+      { ...valid, servers: [{ ...entry, id: 'not-hex' }] },
+      { ...valid, activeServerId: 'f'.repeat(32) },
       { ...valid, peers: [{ name: 'x', fingerprint: 'nope', host: '127.0.0.1', port: 1 }] },
-      { ...valid, version: 2 },
+      { ...valid, version: 1 },
     ]) {
       const bytes = JSON.stringify(corrupt);
       await writeFile(file, bytes);
