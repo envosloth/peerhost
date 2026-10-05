@@ -21,7 +21,7 @@ async function ownership(page,text){await page.waitForFunction(text=>document.qu
 async function profile(page){await page.bringToFront();await reveal(page,'#java-executable');await page.locator('#profile-details').evaluate(el=>el.open=true);await page.locator('#java-executable').fill(process.execPath);await page.locator('#java-args').fill(JSON.stringify([path.join(project,'tools/fake-java-server.mjs')]));assert.equal(await page.locator('#start-timeout').inputValue(),'600','modpack-friendly start timeout is the default');await action(page,'#save-profile');await page.waitForFunction(()=>!document.querySelector('#start-server').disabled);}
 try{
   console.log('STEP 1: Launch TWO visible Electron instances with isolated profiles.');a=await launch('a');b=await launch('b');pa=await a.firstWindow();pb=await b.firstWindow();
-  for(const p of [pa,pb]){p.on('pageerror',e=>errors.push(String(e)));await p.waitForFunction(()=>document.querySelector('#app-version').textContent.includes('v0.4.0'));}
+  for(const p of [pa,pb]){p.on('pageerror',e=>errors.push(String(e)));await p.waitForFunction(()=>document.querySelector('#app-version').textContent.includes('v0.5.0'));}
   await dismissInitialSetup(pa);await dismissInitialSetup(pb);
   const source=path.join(root,'Disposable fixture - NOT Minecraft');await mkdir(source);await writeFile(path.join(source,'eula.txt'),'eula=true\n');await writeFile(path.join(source,'world.bin'),'original');
   await a.evaluate(({dialog},source)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[source]});dialog.showMessageBox=async()=>({response:1});},source);await b.evaluate(({dialog})=>{dialog.showMessageBox=async()=>({response:1});});

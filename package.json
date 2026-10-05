@@ -1,6 +1,6 @@
 {
   "name": "seedhost",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "main": "dist/apps/desktop/main.js",
@@ -24,6 +24,8 @@
     "check:onboarding": "npm run build && node tools/desktop-onboarding-check.mjs",
     "check:server-create": "npm run build && node tools/desktop-server-create-check.mjs",
     "check:minecraft": "npm run build && node tools/real-minecraft-check.mjs",
+    "check:playit": "npm run build && node tools/desktop-playit-check.mjs",
+    "check:library": "npm run build && node tools/desktop-library-check.mjs",
     "install:linux": "bash tools/install-linux-launcher.sh"
   },
   "devDependencies": {

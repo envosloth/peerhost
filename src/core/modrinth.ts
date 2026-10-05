@@ -100,7 +100,7 @@ export class ModrinthClient {
   private readonly userAgent: string;
   private readonly timeoutMs: number;
 
-  constructor({ apiBase = 'https://api.modrinth.com/v2', downloadHosts = ['cdn.modrinth.com'], userAgent = 'envosloth/seedhost/0.4.0 (github.com/envosloth/seedhost)', timeoutMs = 20000 } = {}) {
+  constructor({ apiBase = 'https://api.modrinth.com/v2', downloadHosts = ['cdn.modrinth.com'], userAgent = 'envosloth/seedhost/0.5.0 (github.com/envosloth/seedhost)', timeoutMs = 20000 } = {}) {
     const api = new URL(apiBase);
     const local = api.protocol === 'http:' && ['127.0.0.1', '[::1]', 'localhost'].includes(api.hostname);
     if (api.username || api.password || api.search || api.hash || api.pathname.replace(/\/$/, '') !== '/v2' ||
