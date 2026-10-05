@@ -6,11 +6,11 @@ If no world is configured, **My server** shows the prominent lowercase **create 
 
 ## Create or import
 
-**Create** supports Vanilla and Fabric. The latest release and the newest detected Java are pre-selected; older releases sit behind **Show older versions**, and memory is a GB menu (2 GB recommended). Choose a release, Java and memory, explicitly read/accept the [Minecraft EULA](https://www.minecraft.net/en-us/eula), and approve native confirmation. SeedHost checks official metadata and downloads before adopting a separate managed copy with its own ownership ledger and first snapshot. Fabric currently uses the inspected Loader 0.19.5 layout; unsupported layouts fail closed rather than silently executing unchecked bootstrap code. Java is not bundled or installed automatically. Checksums verify download integrity, not that executable code is harmless.
+**Create** supports Vanilla and Fabric. The latest release is pre-selected; older releases sit behind **Show older versions**, and memory is a GB menu (2 GB recommended). There is no Java step: SeedHost reuses its own installed runtime, else a compatible Java already on the PC, else downloads Mojang's official runtime for that release into `<profile>/runtimes/` (SHA-1-pinned manifest, every file checked, installed atomically). Pressing **Create my world** and its native confirmation is the agreement to the [Minecraft EULA](https://www.minecraft.net/en-us/eula), stated beside the button. SeedHost checks official metadata and downloads before adopting a separate managed copy with its own ownership ledger and first snapshot. Fabric currently uses the inspected Loader 0.19.5 layout; unsupported layouts fail closed rather than silently executing unchecked bootstrap code. Java is never installed system-wide. Checksums verify download integrity, not that executable code is harmless.
 
-**Import** supports existing stopped server folders, including Forge/NeoForge/modpacks. Use the native folder picker and confirm the original server is stopped. The original stays untouched; setup never replaces an already configured world or changes its lineage. Separate servers need separate profiles.
+**Import** supports existing stopped server folders, including Forge/NeoForge/modpacks. Use the native folder picker and confirm the original server is stopped. The original stays untouched, and setup never replaces an already configured world or changes its lineage: a new server is added as its own entry under **Your servers**, where you can switch between servers or delete one.
 
-The **Java & memory** stage can discover Java or open a native executable picker. Selecting a file asks permission to run its bounded `-version` probe without a shell. Simple setup updates Java and RAM while preserving existing command/argument files. Empty profiles infer only unambiguous server JAR layouts; scripts, multiple candidate JARs and unknown modpack commands need **Advanced launch settings**. Preserve `@` argument files and the pack's documented Java requirements. Creation checks the selected release's minimum Java version; RAM must leave room for the OS and players' clients.
+The **Memory** stage shows the memory already saved during creation. Java selection is tucked inside **Advanced: change Java**; it can discover Java or open a native executable picker. Selecting a file asks permission to run its bounded `-version` probe without a shell. Simple setup updates Java and RAM while preserving existing command/argument files. Empty profiles infer only unambiguous server JAR layouts; scripts, multiple candidate JARs and unknown modpack commands need **Advanced launch settings**. Preserve `@` argument files and the pack's documented Java requirements. Creation checks the selected release's minimum Java version; RAM must leave room for the OS and players' clients.
 
 Choose **Start server** only after reviewing/trusting the saved executable, server JARs and mods. **Stop server** waits for the server's clean save and captures a local backup. Public access, firewall/router changes and startup services are not automatic.
 
@@ -44,3 +44,11 @@ Unreadable optional metadata produces a scoped warning and is not silently overw
 ## Verification boundaries
 
 Automated tests, real Electron checks and disposable real-server smoke results are recorded separately in the verification documents. Socket/process fixtures are not Minecraft proof; protocol status responses are not gameplay login tests. Published in v0.2.1-alpha; see that release for its verification summary.
+
+## Mods while creating (Fabric)
+
+Choosing **Fabric** adds an optional **Mods** section: a Modrinth list for the selected Minecraft version (most popular first, searchable). **Add** marks a mod; after **Create my world** finishes, each picked mod is installed with its required dependencies and verified against Modrinth's SHA-512 checksums. A mod without a compatible file is skipped and named. More can be added later under **My server → Mods**.
+
+## Always-on PC in one click
+
+See [relay](relay.md#setup--one-click-recommended): **This PC stays on** on the spare computer, then type its code under **I play on this PC** on each gaming PC.

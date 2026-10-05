@@ -94,9 +94,7 @@ try {
   assert.equal(await page.locator('#setup-name').inputValue(), 'Durable onboarding draft');
   await native(0);
   await click('setup-back'); await click('setup-import'); assert.equal((await state()).server, null, 'cancelled native folder picker does not import');
-  await click('setup-choose-create'); await click('setup-pick-java'); // Native cancel, if the new API is integrated.
-  const pickerError = await page.locator('#setup-error').textContent();
-  if (pickerError.includes('pickJava failed') && !blockers.some(b => b.startsWith('pickJava:'))) blockers.push('pickJava: ' + pickerError);
+  await click('setup-choose-create'); assert.equal(await page.locator('#setup-java').count(), 0, 'Java is automatic when creating');
   const source = path.join(root, 'Node process fixture - NOT Minecraft');
   await mkdir(source); await writeFile(path.join(source, 'eula.txt'), 'eula=true\n'); await writeFile(path.join(source, 'world-marker.txt'), 'original\n');
   await click('setup-back'); await native(1, source); await click('setup-import');
@@ -144,12 +142,12 @@ try {
   await click('peers-tab'); await click('park-relay'); await click('claim-relay');
   await page.locator('#profile-details').evaluate(node => { node.open = true; });
   await page.locator('#java-executable').fill(process.execPath); await page.locator('#java-args').fill(JSON.stringify([path.join(project, 'tools/fake-java-server.mjs'), '--lifetime-ms=120000'])); await click('save-profile');
-  await click('nav-setup'); await stage('gateway'); await page.locator('#setup-gateway-enabled').check(); await page.locator('#setup-gateway-port').fill(String(echo.address().port)); await click('setup-gateway-save'); await click('setup-gateway-check');
+  await click('nav-setup'); await stage('gateway'); await page.locator('#setup-gateway-advanced').evaluate(d => { d.open = true; }); await page.locator('#setup-gateway-enabled').check(); await page.locator('#setup-gateway-port').fill(String(echo.address().port)); await click('setup-gateway-save'); await click('setup-gateway-check');
   assert.match(await page.locator('#setup-gateway-status').textContent(), /Not ready/); assert.equal((await state()).gateway.enabled, true);
   await click('setup-save-close'); await click('start-server');
   const routeDeadline = Date.now()+20000;
   while (!(await page.evaluate(() => window.seedhost.call('checkGameGateway'))).ready) { if(Date.now()>routeDeadline) throw new Error('Visible host tunnel not ready'); await new Promise(resolve=>setTimeout(resolve,100)); }
-  await click('nav-setup'); await stage('gateway'); await click('setup-gateway-check'); assert.match(await page.locator('#setup-gateway-status').textContent(), /Verified/);
+  await click('nav-setup'); await stage('gateway'); await page.locator('#setup-gateway-advanced').evaluate(d => { d.open = true; }); await click('setup-gateway-check'); assert.match(await page.locator('#setup-gateway-status').textContent(), /Verified/);
   await page.screenshot({ path:path.join(root,'gateway-verified-visible.png') });
   const bytes = await new Promise((resolve,reject) => { const socket=connect({host:'127.0.0.1',port:relay.gameEndpoint.port}); socket.setTimeout(5000,()=>{socket.destroy();reject(new Error('Gateway echo timeout'));});socket.once('error',reject);socket.once('connect',()=>socket.write('visible gateway fixture'));socket.once('data',data=>{socket.destroy();resolve(data.toString());}); });
   assert.equal(bytes,'visible gateway fixture');

@@ -1,0 +1,28 @@
+import assert from 'node:assert/strict';
+import {mkdtemp} from 'node:fs/promises';import os from 'node:os';import path from 'node:path';import {createRequire} from 'node:module';
+import {_electron as electron} from 'playwright';
+import {dismissInitialSetup} from './desktop-test-setup.mjs';
+const root=await mkdtemp(path.join(process.env.TMPDIR||os.tmpdir(),'seed-playit-ui-'));
+const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
+const app=await electron.launch({executablePath:createRequire(import.meta.url)('electron'),args:['--no-sandbox',...(process.platform==='linux'?['--password-store=gnome-libsecret']:[]),path.resolve('dist/apps/desktop/main.js'),'--profile-root='+root],env});
+try{
+ const page=await app.firstWindow();const errors=[];page.on('pageerror',e=>errors.push(String(e)));
+ await page.waitForFunction(()=>document.querySelector('#app-version')?.textContent.includes('0.5.0'));await dismissInitialSetup(page);
+ await page.locator('#playit-panel summary').click();await page.locator('#playit-panel').scrollIntoViewIfNeeded();
+ await page.waitForFunction(()=>!document.querySelector('#playit-connect').disabled);
+ assert.equal(await page.locator('#playit-create').isDisabled(),true);
+ assert.equal(await page.locator('#playit-copy').isDisabled(),true);
+ await app.evaluate(({dialog})=>{dialog.showOpenDialog=async()=>({canceled:true,filePaths:[]});});
+ await page.locator('#playit-connect').click();await page.waitForFunction(()=>!document.querySelector('#playit-connect').disabled);
+ assert.match(await page.locator('#playit-status').textContent(),/Optional/);
+ await page.locator('#playit-check').click();await page.waitForFunction(()=>!document.querySelector('#playit-check').disabled);
+ assert.match(await page.locator('#playit-status').textContent(),/Could not verify/);
+ await page.reload();await page.waitForFunction(()=>!document.querySelector('#playit-connect').disabled);
+ await page.locator('#playit-panel').evaluate(el=>el.open=true);await page.locator('#playit-panel').scrollIntoViewIfNeeded();
+ assert.equal((await page.evaluate(()=>window.seedhost.call('playitStatus'))).state,'off');
+ assert.deepEqual(errors,[]);
+ await page.waitForFunction(()=>document.querySelector('#splash').hidden);await page.bringToFront();
+ await page.locator('#playit-panel').scrollIntoViewIfNeeded();
+ await page.screenshot({path:path.join(root,'playit-panel.png')});
+ console.log('PASS visible Electron playit controls, native picker cancel, safe error, opt-in restart; screenshot '+path.join(root,'playit-panel.png'));
+}finally{await app.close();}

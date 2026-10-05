@@ -127,7 +127,7 @@ test('renderer rejects contradictory holder results rather than displaying an un
   for (const result of [{ custody: 'held', holder: null }, { custody: 'unknown', holder: 'Local fallback' }, { holder: 'Legacy fallback' }]) {
     const page = await renderer(t, state, { members: [], ...result });
     await page.waitForFunction(() => window.fixture.calls.some(call => call.method === 'listFriends') && !document.querySelector('#refresh-friends').disabled);
-    assert.match(await page.locator('#friend-holder').textContent(), /Members unavailable: Relay returned invalid members/);
+    assert.match(await page.locator('#friend-holder').textContent(), /Members unavailable: Group information could not be verified/);
     assert.doesNotMatch(await page.locator('#friend-holder').textContent(), /fallback|no member holds/);
     await page.close();
   }

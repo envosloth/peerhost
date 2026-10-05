@@ -1,13 +1,14 @@
 import { validateSettings } from './settings.js';
 import { isValidEndpointHost } from './endpoints.js';
-import { validTimeout, MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS } from './saved-state.js';
+import { validTimeout, isServerId, MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS } from './saved-state.js';
 import { isModKind, isModName } from './mods.js';
 import { isGameVersion, isModLoader, isProjectKey } from './modrinth.js';
+import { accountUsername } from './accounts.js';
 import { validateOnboarding } from './onboarding.js';
-const NO_PAYLOAD=new Set(['getState','importServer','createSnapshot','startServer','stopServer','startPeerListener','cleanUp','parkAtRelay','claimFromRelay','checkRelay','exportClientPack','createInvite','listFriends','listSnapshots','listServerVersions','discoverJava','pickJava','checkGameGateway',
+const NO_PAYLOAD=new Set(['accountStartGroup','accountStatus','accountRequests','accountLogout','playitStatus','playitImport','playitCheck','playitCreate','playitDisconnect','playitSetup','getState','importServer','createSnapshot','startServer','stopServer','startPeerListener','cleanUp','parkAtRelay','claimFromRelay','checkRelay','exportClientPack','createInvite','listFriends','listSnapshots','listServerVersions','discoverJava','pickJava','checkGameGateway','alwaysOnStatus','alwaysOnDisable','alwaysOnNewCode','publicAddressStatus','publicAddressEnable','publicAddressDisable','publicAddressOpenApproval',
   // Window chrome acts only on the trusted app window.
   'getWindowState','windowMinimize','windowToggleFullscreen','windowClose','quitApp']);
-const METHODS=new Set([...NO_PAYLOAD,'saveProfile','sendCommand','saveSettings','addPeer','sendSnapshot','handoff','recoverStopped','saveRelay','addMods','removeMod','searchMods','installMod','saveModTarget','openModPage','previewInvite','joinWithInvite','saveOnboarding','restoreSnapshot','createServer','configureSimpleProfile','saveGameGateway','openSetupLink']);
+const METHODS=new Set([...NO_PAYLOAD,'accountRegister','accountLogin','accountSend','accountAccept','accountDecline','removeFriend','saveProfile','sendCommand','saveSettings','addPeer','sendSnapshot','handoff','recoverStopped','saveRelay','addMods','removeMod','searchMods','installMod','saveModTarget','openModPage','previewInvite','joinWithInvite','saveOnboarding','restoreSnapshot','createServer','configureSimpleProfile','saveGameGateway','openSetupLink','selectServer','deleteServer','alwaysOnEnable','pairAlwaysOn','setupFabricMods','searchSetupMods']);
 function boundedString(v:unknown,max:number):v is string{return typeof v==='string'&&v.length<=max&&!v.includes('\0');}
 function fingerprint(v:unknown):v is string{return typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);}
 export interface TrustedIpcContext {senderId:number;expectedSenderId:number;isMainFrame:boolean}
@@ -27,11 +28,24 @@ export function validateCall(method:unknown,payload:unknown,senderUrl:string,exp
   if(!payload||typeof payload!=='object'||Array.isArray(payload))throw new Error('Invalid payload');
   const p=payload as Record<string,unknown>;
   switch(method){
+    case 'accountRegister':case 'accountLogin':
+      if(Object.keys(p).sort().join(',')!=='password,username'||!boundedString(p.password,128)||p.password.length<12)throw new Error('Use a password of 12–128 characters');
+      return {username:accountUsername(p.username),password:p.password};
+    case 'accountSend':
+      if(Object.keys(p).join(',')!=='username')throw new Error('Invalid username');
+      return {username:accountUsername(p.username)};
+    case 'accountAccept':case 'accountDecline':
+      if(Object.keys(p).join(',')!=='id'||typeof p.id!=='string'||!/^[a-f0-9-]{36}$/.test(p.id))throw new Error('Invalid friend request');
+      return {id:p.id};
+    case 'removeFriend':
+      if(Object.keys(p).join(',')!=='fingerprint'||!fingerprint(p.fingerprint))throw new Error('Invalid friend');
+      return {fingerprint:p.fingerprint};
     case 'createServer':
       if(Object.keys(p).sort().join(',')!=='eulaAccepted,gameVersion,javaExecutable,loader,memoryMiB,name'||
         !boundedString(p.name,80)||!p.name.trim()||/[\x00-\x1f]/.test(p.name)||
         (p.loader!=='vanilla'&&p.loader!=='fabric')||!isGameVersion(p.gameVersion)||
-        !boundedString(p.javaExecutable,4096)||!p.javaExecutable.trim()||/[\r\n]/.test(p.javaExecutable)||
+        // Empty Java = automatic (found or installed by the main process).
+        !boundedString(p.javaExecutable,4096)||(p.javaExecutable!==''&&!p.javaExecutable.trim())||/[\r\n]/.test(p.javaExecutable)||
         !Number.isInteger(p.memoryMiB)||Number(p.memoryMiB)<512||Number(p.memoryMiB)>65536||typeof p.eulaAccepted!=='boolean')throw new Error('Invalid new server configuration');
       return {...p};
     case 'configureSimpleProfile':
@@ -43,6 +57,21 @@ export function validateCall(method:unknown,payload:unknown,senderUrl:string,exp
     case 'openSetupLink':
       if(Object.keys(p).join(',')!=='page'||!['eula','java','fabric','relay'].includes(p.page as string))throw new Error('Invalid setup link');
       return {page:p.page};
+    case 'alwaysOnEnable':
+      if(Object.keys(p).join(',')!=='name'||!boundedString(p.name,60)||!p.name.trim()||/[\x00-\x1f\x7f]/.test(p.name))throw new Error('Invalid always-on PC name');
+      return {name:p.name.trim()};
+    case 'pairAlwaysOn':
+      if(Object.keys(p).sort().join(',')!=='code,name'||!boundedString(p.code,64)||!/^[0-9A-Za-z\s-]{12,40}$/.test(p.code)||!boundedString(p.name,60)||!p.name.trim()||/[\x00-\x1f\x7f]/.test(p.name))throw new Error('Invalid pairing code or name');
+      return {code:p.code,name:p.name};
+    case 'setupFabricMods':
+      if(Object.keys(p).join(',')!=='projectIds'||!Array.isArray(p.projectIds)||p.projectIds.length>50||!p.projectIds.every(isProjectKey)||new Set(p.projectIds).size!==p.projectIds.length)throw new Error('Invalid mod selection');
+      return {projectIds:[...(p.projectIds as string[])]};
+    case 'searchSetupMods':
+      if(Object.keys(p).sort().join(',')!=='gameVersion,offset,query'||!boundedString(p.query,200)||!isGameVersion(p.gameVersion)||!Number.isSafeInteger(p.offset)||Number(p.offset)<0||Number(p.offset)>10000)throw new Error('Invalid mod search');
+      return {query:p.query,gameVersion:p.gameVersion,offset:p.offset};
+    case 'selectServer':case 'deleteServer':
+      if(Object.keys(p).join(',')!=='id'||!isServerId(p.id))throw new Error('Invalid server id');
+      return {id:p.id};
     case 'saveOnboarding':return validateOnboarding(p);
     case 'restoreSnapshot':
       if(Object.keys(p).join(',')!=='snapshotId'||!fingerprint(p.snapshotId))throw new Error('Invalid snapshot revision');

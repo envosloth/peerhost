@@ -26,6 +26,7 @@ async function renderer(t, state = appState()) {
       if (method === 'saveOnboarding') f.state.onboarding = { ...payload, version: 1, error: null };
       if (method === 'listServerVersions') return { latest: versions[0].id, versions };
       if (method === 'discoverJava') return [{ executable: '/fixture/java17', major: 17, version: '17.0.2' }, { executable: '/fixture/java21', major: 21, version: '21.0.4' }];
+      if (method === 'checkGameGateway') return f.gatewayCheck ?? { enabled: false, host: null, port: null, ready: false, detail: 'off' };
       if (method === 'listSnapshots') return [{ id: 's1'.padEnd(64, '0'), parentId: null, fileCount: 12, bytes: 5 * 1048576, current: true }];
       return undefined;
     } };
@@ -48,12 +49,12 @@ test('first run starts with a plain choice, not a form', async t => {
   assert.match(await page.locator('[data-setup-step="gateway"]').textContent(), /optional/i);
 });
 
-test('new world form picks sensible defaults: latest release, newest Java, RAM in GB', async t => {
+test('new world form picks sensible defaults: latest release, automatic Java, RAM in GB', async t => {
   const page = await renderer(t);
   await page.locator('#setup-choose-create').click();
   assert.equal(await page.locator('#setup-create-form').isVisible(), true);
   await page.waitForFunction(() => document.querySelector('#setup-version').value === '1.21.15');
-  await page.waitForFunction(() => document.querySelector('#setup-java').value === '/fixture/java21');
+  assert.equal(await page.locator('#setup-java').count(), 0, 'Java is automatic, not a choice');
   assert.equal(await page.locator('#setup-memory').evaluate(e => e.tagName), 'SELECT');
   assert.equal(await page.locator('#setup-memory').inputValue(), '2048');
   assert.match(await page.locator('#setup-memory option:checked').textContent(), /2 GB/);
@@ -61,7 +62,6 @@ test('new world form picks sensible defaults: latest release, newest Java, RAM i
   await page.locator('#setup-all-versions').check();
   assert.equal(await page.locator('#setup-version option').count(), 16, 'every release on request');
   assert.equal(await page.locator('#setup-version').inputValue(), '1.21.15', 'toggling keeps the selection');
-  assert.equal(await page.locator('#setup-discover-java').isVisible(), false, 'retry only when detection found nothing');
 });
 
 test('stepper shows completed stages and Ready summarises what was set up', async t => {
@@ -76,11 +76,13 @@ test('stepper shows completed stages and Ready summarises what was set up', asyn
   assert.equal(await page.locator('#setup-next').textContent(), 'Go to my server');
 });
 
-test('always-on PC stage leads with a short explanation; terminal steps are folded away', async t => {
+test('always-on PC stage is two big choices, with no terminal or commands anywhere', async t => {
   const page = await renderer(t);
   await page.locator('[data-setup-step="gateway"]').click(); await settled(page);
-  assert.equal(await page.locator('#setup-relay-details').evaluate(d => d.open), false);
-  assert.equal(await page.locator('#setup-relay-command').isVisible(), false);
+  assert.equal(await page.locator('#always-on-be').isVisible(), true);
+  assert.equal(await page.locator('#always-on-pair').isVisible(), true);
+  assert.equal(await page.locator('#setup-gateway-advanced').evaluate(d => d.open), false, 'fine controls are folded away');
+  assert.doesNotMatch(await page.locator('#setup-gateway').textContent(), /terminal|Node\.js|seedhost-relay|--host/i);
   assert.match(await page.locator('#setup-skip').textContent(), /skip/i);
 });
 
@@ -108,4 +110,48 @@ test('Operate with a server uses plain words and explains how to join', async t 
   assert.match(join, /192\.168\.1\.20:25565/);
   await page.waitForFunction(() => document.querySelectorAll('#snapshot-list li').length === 1);
   assert.match(await page.locator('#snapshot-list').textContent(), /5\.0 MB/);
+});
+
+test('join help shows the always-on PC player address once the tunnel is ready', async t => {
+  const running = server(); running.state = 'running'; running.ownership.state = 'hosting';
+  const state = appState(running, { relay: { fingerprint: 'c'.repeat(64), name: 'Home relay', parkOnStop: true }, gateway: { enabled: true, localPort: 25565, state: 'ready', detail: 'Pinned host tunnel is ready' }, onboarding: { ...progress('ready'), dismissed: true } });
+  const page = await renderer(t, state);
+  await page.evaluate(() => { window.fixture.gatewayCheck = { enabled: true, host: '100.97.20.84', port: 25565, ready: true, detail: 'Confirmed host route' }; document.dispatchEvent(new Event('visibilitychange')); });
+  await page.waitForFunction(() => document.querySelector('#join-help').textContent.includes('100.97.20.84:25565'), undefined, { timeout: 8000 });
+  assert.match(await page.locator('#join-help').textContent(), /always-on PC/i);
+});
+
+test('first gateway start explains the one-time hand-off in plain words', async t => {
+  const running = server(); running.state = 'running'; running.ownership.state = 'hosting';
+  const state = appState(running, { relay: { fingerprint: 'c'.repeat(64), name: 'Home relay', parkOnStop: true }, gateway: { enabled: true, localPort: 25565, state: 'error', detail: 'Park and Claim once to establish confirmed relay custody before forwarding' }, onboarding: { ...progress('ready'), dismissed: true } });
+  const page = await renderer(t, state);
+  const text = await page.locator('#player-gateway').textContent();
+  assert.doesNotMatch(text, /Park and Claim|custody/);
+  assert.match(text, /Stop server/);
+  assert.match(text, /Take over hosting/);
+});
+
+test('joining a group while this PC already has the world does not say to receive it', async t => {
+  const page = await renderer(t, appState(server(), { onboarding: { ...progress('ready'), dismissed: true } }));
+  const relay = { fingerprint: 'c'.repeat(64), name: 'Home relay', host: '100.97.20.84', port: 47625 };
+  await page.evaluate(relay => {
+    const call = window.seedhost.call;
+    window.seedhost.call = async (method, payload) => {
+      if (method === 'previewInvite') return { relayName: relay.name, host: relay.host, port: relay.port, relayFingerprint: relay.fingerprint, expiresAt: Date.now() + 3600000 };
+      if (method === 'joinWithInvite') { window.fixture.state.relay = { fingerprint: relay.fingerprint, name: relay.name, parkOnStop: true }; window.fixture.state.peers = [{ name: relay.name, fingerprint: relay.fingerprint, host: relay.host, port: relay.port }]; return { relayName: relay.name }; }
+      if (method === 'listFriends') return { members: [], custody: 'unknown', holder: null };
+      if (method === 'checkRelay') return null;
+      return call(method, payload);
+    };
+  }, relay);
+  await page.locator('#peers-tab').click();
+  if (await page.locator('#friends-intent-join').isVisible()) await page.locator('#friends-intent-join').click();
+  await page.locator('#friend-code').fill('SEEDHOST-' + 'A'.repeat(40));
+  await page.locator('#friend-name').fill('Angel');
+  await page.locator('#check-invitation').click();
+  await page.getByRole('button', { name: 'Review & join group' }).click();
+  await page.waitForFunction(() => /Joined/.test(document.querySelector('#friend-feedback').textContent));
+  const message = await page.locator('#friend-feedback').textContent();
+  assert.doesNotMatch(message, /receive the world/i, 'this PC already holds the world');
+  assert.match(message, /Weekend world|your world/i);
 });

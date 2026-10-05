@@ -56,28 +56,28 @@ test('fresh empty state has exact centered create action and resumable optional 
   assert.equal(await page.locator('#join-friend-form').count(), 1);
 });
 
-test('creation uses explicit EULA, release loader RAM and selected Java; cancellation never advances', async t => {
+test('creation needs no Java choice or EULA checkbox: Java is automatic and Create states the EULA agreement', async t => {
   const page = await renderer(t);
   assert.equal(await page.locator('#setup-create').count(), 1, 'creation form exists');
   if (await page.locator('#setup-choose-create').isVisible()) await page.locator('#setup-choose-create').click();
   await page.waitForFunction(() => document.querySelector('#setup-version').options.length > 1);
   await page.locator('#setup-loader').selectOption('fabric');
   await page.locator('#setup-memory').selectOption('4096');
-  await page.locator('#setup-java').selectOption('/fixture/java');
-  await page.locator('#setup-create').click();
-  assert.equal(await page.evaluate(() => window.fixture.calls.filter(c => c.method === 'createServer').length), 0);
-  assert.match(await page.locator('#setup-error').textContent(), /EULA/);
-  await page.locator('#setup-eula').check();
+  for (const removed of ['#setup-java', '#setup-eula', '#setup-pick-java', '#setup-discover-java', '#setup-create-form [data-setup-link="java"]']) assert.equal(await page.locator(removed).count(), 0, removed + ' is gone');
+  assert.match(await page.locator('#setup-eula-note').textContent(), /By creating a world you agree to the Minecraft EULA/);
   await page.locator('#setup-create').click(); await settled(page);
   assert.equal(await page.locator('#setup-server').isVisible(), true, 'cancelled native confirmation does not advance');
-  assert.deepEqual(await page.evaluate(() => window.fixture.calls.find(c => c.method === 'createServer').payload), { name: 'My server', loader: 'fabric', gameVersion: '1.21.1', memoryMiB: 4096, javaExecutable: '/fixture/java', eulaAccepted: true });
+  assert.deepEqual(await page.evaluate(() => window.fixture.calls.find(c => c.method === 'createServer').payload), { name: 'My server', loader: 'fabric', gameVersion: '1.21.1', memoryMiB: 4096, javaExecutable: '', eulaAccepted: true });
   await page.evaluate(() => { window.fixture.failure = 'createServer'; });
   await page.locator('#setup-create').click(); await settled(page);
   assert.equal(await page.locator('#setup-error').isVisible(), true, 'backend refusal is in the modal');
-  await page.evaluate(s => { const call = window.seedhost.call; window.seedhost.call = async (method, payload) => { if (method === 'createServer') { window.fixture.calls.push({ method, payload }); window.fixture.state.server = s; return {}; } return call(method, payload); }; }, server());
+  await page.evaluate(s => { const call = window.seedhost.call; window.seedhost.call = async (method, payload) => { if (method === 'createServer') { window.fixture.calls.push({ method, payload }); window.fixture.state.server = s; return {}; } return call(method, payload); }; }, { ...server(), profile: { ...server().profile, args: ['-Xmx4096M', '@args.txt', 'nogui'] } });
   await page.locator('#setup-create').click(); await settled(page);
   await page.waitForFunction(() => !document.querySelector('#setup-runtime').hidden);
   assert.equal(await page.locator('#setup-runtime-java').inputValue(), '/fixture/java', 'created Java selection is already in runtime help');
+  assert.equal(await page.locator('#setup-runtime-java').isVisible(), false, 'Java maintenance is hidden behind Advanced, not a beginner setup chore');
+  assert.equal(await page.locator('#setup-runtime-memory').inputValue(), '4096', 'the chosen RAM is already saved');
+  assert.doesNotMatch(await page.locator('#setup-runtime-feedback').textContent(), /Create or import/, 'completed creation must not show the old prerequisite warning');
   assert.equal(await page.evaluate(() => window.fixture.calls.some(c => c.method === 'startServer')), false);
   await page.locator('#setup-back').click(); await settled(page);
   assert.equal(await page.locator('#setup-create').isDisabled(), true, 'revisiting cannot overwrite the created server');
@@ -89,6 +89,7 @@ test('existing profiles are not interrupted; simple Java help preserves argument
   await page.locator('#nav-setup').click();
   await page.locator('[data-setup-step="runtime"]').click(); await settled(page);
   assert.equal(await page.locator('#setup-profile-save').count(), 1, 'simple runtime help exists');
+  await page.locator('#setup-java-advanced > summary').click();
   await page.locator('#setup-runtime-pick').click(); await settled(page);
   assert.equal(await page.locator('#setup-runtime-java').inputValue(), '/fixture/java', 'cancel preserves selection');
   await page.locator('#setup-runtime-memory').selectOption('3072');
@@ -125,7 +126,7 @@ test('gateway uses actual tunnel opt-in and explicit connectivity checks, not pr
   await page.locator('[data-setup-step="gateway"]').click(); await settled(page);
   assert.equal(await page.locator('#setup-gateway-check').count(), 1, 'real gateway check control exists');
   assert.match(await page.locator('#setup-gateway-status').textContent(), /Not checked/);
-  assert.match(await page.locator('#setup-relay-command').textContent(), /--game-host 0\.0\.0\.0 --game-port 25565/);
+  await page.locator('#setup-gateway-advanced > summary').click();
   await page.evaluate(() => { const call = window.seedhost.call; window.seedhost.call = async (method, payload) => { if (method === 'saveGameGateway') { window.fixture.calls.push({ method, payload }); window.fixture.state.gateway = { ...payload, state: 'connecting', detail: 'Waiting for hosting' }; return {}; } if (method === 'checkGameGateway') return { enabled: true, host: 'relay.example', port: 25565, ready: false, detail: 'No confirmed host tunnel' }; return call(method, payload); }; });
   await page.locator('#setup-gateway-enabled').check();
   await page.locator('#setup-gateway-save').click(); await settled(page);

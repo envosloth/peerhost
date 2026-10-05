@@ -1,0 +1,5 @@
+#playit-panel { margin-top: 16px; padding: 16px; }
+#playit-panel summary { cursor: pointer; font-weight: 600; }
+#playit-panel p { margin-top: 12px; }
+#playit-panel .playit-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+#playit-address { user-select: text; overflow-wrap: anywhere; font-weight: 600; }

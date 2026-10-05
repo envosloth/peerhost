@@ -1,0 +1,21 @@
+.account-dialog { position:fixed; inset:0; margin:auto; width:min(460px,calc(100vw - 48px)); height:fit-content; max-height:calc(100vh - 48px); overflow:auto; padding:32px; color:var(--text); background:var(--surface-fill); border:1px solid var(--line-strong); border-radius:24px; box-shadow:var(--sh-raise); }
+.account-dialog::backdrop { background:var(--backdrop); }
+.account-dialog[open] { animation:account-enter .28s cubic-bezier(.2,.8,.2,1) both; }
+.account-logo { width:58px; height:58px; display:block; margin-bottom:20px; }
+.account-dialog h1 { margin:4px 0 8px; font-size:28px; letter-spacing:-.6px; }
+.account-intro { color:var(--muted); margin-bottom:24px; }
+.account-dialog label { display:block; margin:16px 0 6px; }
+.account-dialog input { width:100%; }
+.account-dialog #account-submit { width:100%; margin-top:22px; }
+.account-footer { display:grid; gap:12px; justify-items:start; margin-top:18px; }
+.account-invite-form { margin:20px 0; }
+.account-invite-form > label { display:block; margin-bottom:8px; font-weight:600; }
+.account-input-row { display:flex; gap:12px; align-items:center; margin:8px 0; }
+.account-input-row input { flex:1; min-width:0; }
+.account-request { padding:16px; border-radius:14px; border:1px solid var(--line-strong); background:var(--well); animation:account-enter .25s ease-out both; }
+.account-request p { margin:0 0 5px; font-weight:600; }
+.account-request .field-help { display:block; }
+.friend-remove { color:var(--danger); margin-left:auto; }
+@keyframes account-enter { from {opacity:0;transform:translateY(10px);} to {opacity:1;transform:translateY(0);} }
+@media (prefers-reduced-motion:reduce) { .account-dialog[open],.account-request {animation:none;} }
+:root[data-motion="reduced"] .account-dialog[open],:root[data-motion="reduced"] .account-request {animation:none;}

@@ -4,3 +4,5 @@ release/
 .test-data/
 *.log
 tasks/
+# Per-install, non-secret pinned local account-directory endpoint (not a public default).
+apps/desktop/account-service.json

@@ -21,9 +21,9 @@
   const busyLabels = {
     importServer: 'Choosing / copying your server…', createSnapshot: 'Saving a backup…',
     saveProfile: 'Saving launch settings…', startServer: 'Starting server…', stopServer: 'Stopping server and saving the world…',
-    createServer: 'Downloading and checking the official server files… this can take a minute.', saveOnboarding: 'Saving…',
+    createServer: 'Setting up your world — downloading and checking the official files (and Java, if needed)… this can take a few minutes.', saveOnboarding: 'Saving…',
     configureSimpleProfile: 'Saving Java and memory…', pickJava: 'Checking the Java you chose…', restoreSnapshot: 'Restoring backup…',
-    saveGameGateway: 'Saving…', checkGameGateway: 'Testing the player address…',
+    saveGameGateway: 'Saving…', checkGameGateway: 'Testing the player address…', selectServer: 'Switching server…', deleteServer: 'Deleting the server and its backups…',
     sendCommand: 'Sending command…', saveSettings: 'Saving preferences…', startPeerListener: 'Starting peer listener…',
     addPeer: 'Saving trusted peer…', sendSnapshot: 'Sending snapshot…', handoff: 'Transferring hosting ownership…',
     cleanUp: 'Freeing up space…', saveRelay: 'Saving…',
@@ -31,6 +31,8 @@
     parkAtRelay: 'Handing the world to your always-on PC…', claimFromRelay: 'Taking over hosting…', checkRelay: 'Checking the always-on PC…',
     saveModTarget: 'Saving mod compatibility…', installMod: 'Reviewing / installing mod and dependencies…',
     createInvite: 'Creating an invitation code…', joinWithInvite: 'Joining the group…',
+    alwaysOnEnable: 'Setting up this PC as the always-on PC…', alwaysOnDisable: 'Turning off the always-on PC…', alwaysOnNewCode: 'Making a new code…',
+    pairAlwaysOn: 'Finding your always-on PC and connecting…', publicAddressEnable: 'Setting up your public address…', publicAddressDisable: 'Turning off the public address…', setupFabricMods: 'Installing your mods and anything they need…',
   };
   let relayStatus = null;
   let relayStatusError = null;
@@ -61,6 +63,9 @@
     saveModTarget: 'Couldn’t save mod compatibility', createInvite: 'Couldn’t create an invitation', joinWithInvite: 'Couldn’t join the group',
     parkAtRelay: 'Couldn’t hand off to the always-on PC', claimFromRelay: 'Couldn’t take over hosting', saveOnboarding: 'Couldn’t save your setup progress',
     saveGameGateway: 'Couldn’t save the player address', checkGameGateway: 'Couldn’t test the player address', recoverStopped: 'Couldn’t recover ownership',
+    selectServer: 'Couldn’t switch servers', deleteServer: 'Couldn’t delete the server',
+    alwaysOnEnable: 'Couldn’t make this the always-on PC', alwaysOnDisable: 'Couldn’t turn off the always-on PC', alwaysOnNewCode: 'Couldn’t make a new code',
+    pairAlwaysOn: 'Couldn’t connect to the always-on PC', publicAddressEnable: 'Couldn’t set up the public address', publicAddressDisable: 'Couldn’t turn off the public address', setupFabricMods: 'Couldn’t install the mods',
   };
   const element = (tag, className, text) => {
     const node = document.createElement(tag);
@@ -197,11 +202,11 @@
     $('world-preview-name').textContent = name || 'Untitled world';
     const memory = Number($('setup-memory').value);
     $('world-preview-meta').textContent = [$('setup-loader').value === 'fabric' ? 'Fabric · mods ready' : 'Vanilla', $('setup-version').value || 'pick a version', memory ? formatMemory(memory) : 'pick memory'].join(' · ');
-    const missing = [!name && 'a name', !$('setup-version').value && 'a version', !$('setup-java').value && 'Java', !$('setup-eula').checked && 'the EULA'].filter(Boolean);
+    const missing = [!name && 'a name', !$('setup-version').value && 'a version'].filter(Boolean);
     $('world-preview-ready').textContent = missing.length ? 'Still needed: ' + missing.join(', ') : 'Ready to create ✓';
     $('world-preview-ready').classList.toggle('is-ready', !missing.length);
   }
-  for (const id of ['setup-name', 'setup-loader', 'setup-version', 'setup-memory', 'setup-java', 'setup-eula']) {
+  for (const id of ['setup-name', 'setup-loader', 'setup-version', 'setup-memory']) {
     for (const type of ['input', 'change']) $(id).addEventListener(type, renderWorldPreview);
   }
   const NAME_START = ['Mossy', 'Sunny', 'Willow', 'Amber', 'Clover', 'Maple', 'Misty', 'Pebble', 'Fern', 'Honey', 'Cedar', 'Bramble', 'Starlit', 'Copper', 'Juniper', 'Sprout'];
@@ -257,7 +262,7 @@
     if (step === 'server') return Boolean(state?.server);
     if (step === 'runtime') return setupPrepared();
     if (step === 'friends') return Boolean(state?.relay);
-    if (step === 'gateway') return state?.gateway?.enabled === true;
+    if (step === 'gateway') return state?.gateway?.enabled === true || alwaysOnStatus?.running === true;
     return state?.onboarding?.completed === true;
   }
   function renderReadySummary() {
@@ -305,9 +310,7 @@
     $('setup-choices').hidden = Boolean(server) || setupMode === 'create';
     $('setup-create-form').hidden = Boolean(server) || setupMode !== 'create';
     $('setup-name').disabled = blocked || Boolean(server);
-    for (const id of ['setup-loader', 'setup-version', 'setup-all-versions', 'setup-memory', 'setup-java', 'setup-eula', 'setup-create']) $(id).disabled = blocked || Boolean(server);
-    $('setup-discover-java').hidden = setupMetadataLoading || setupJava.length > 0;
-    for (const id of ['setup-discover-java', 'setup-pick-java']) $(id).disabled = blocked || setupMetadataLoading;
+    for (const id of ['setup-loader', 'setup-version', 'setup-all-versions', 'setup-memory', 'setup-create']) $(id).disabled = blocked || Boolean(server);
     $('setup-existing').hidden = !server;
     $('setup-existing').textContent = server ? `✓ “${server.name}” is ready on this PC. Continue to check its Java and memory.` : '';
     $('setup-import').disabled = blocked || Boolean(server);
@@ -317,6 +320,8 @@
     for (const id of ['setup-runtime-java', 'setup-runtime-memory', 'setup-runtime-pick', 'setup-profile-save']) $(id).disabled = blocked || !server || !isStopped() || !ownsServer() || Boolean(server.modInstallError);
     $('setup-runtime-feedback').textContent = !server ? 'Create or import a server first.' : !isStopped() ? 'Stop the server before changing Java or memory.' : !ownsServer() ? 'Another PC is hosting this world right now, so its settings can’t be changed here.' : server.modInstallError ? server.modInstallError : $('setup-runtime-feedback').textContent || '';
     // Always-on PC stage.
+    renderAlwaysOn(blocked);
+    renderSetupMods(blocked, server);
     for (const id of ['setup-gateway-enabled', 'setup-gateway-port', 'setup-gateway-save', 'setup-gateway-check']) $(id).disabled = blocked;
     $('setup-storage-check').disabled = blocked || !state.relay;
     if (!state.relay && !$('setup-storage-status').dataset.checked) $('setup-storage-status').textContent = 'Join the always-on PC’s group first (Friends step).';
@@ -354,6 +359,7 @@
       if (state.onboarding?.error) { $('setup-error').textContent = state.onboarding.error; $('setup-error').hidden = false; }
       $('setup-dialog').showModal();
       if (!setupMetadataLoaded) void loadSetupMetadata();
+      void refreshAlwaysOn();
     }
     if (step) setupDraft.step = step;
     renderSetup(); $('setup-save-close').focus();
@@ -382,6 +388,14 @@
   $('nav-setup').addEventListener('click', () => openSetup());
   $('open-gateway-setup').addEventListener('click', () => openSetup('gateway'));
   $('create-server-empty').addEventListener('click', () => { openSetup('server'); if (!state?.server) { setupMode = 'create'; renderSetup(); $('setup-name').focus(); } });
+  $('add-server').addEventListener('click', () => { if ($('add-server').disabled) return; openSetup('server'); setupMode = 'create'; renderSetup(); $('setup-name').focus(); });
+  $('server-list').addEventListener('click', (event) => {
+    const button = event.target instanceof Element ? event.target.closest('button[data-action]') : null;
+    if (!button || button.disabled) return;
+    const id = button.dataset.id;
+    if (button.dataset.action === 'select') return runAction('selectServer', { id }, () => { $('server-list').dataset.signature = ''; });
+    if (button.dataset.action === 'delete') return runAction('deleteServer', { id }, () => { $('server-list').dataset.signature = ''; });
+  });
   $('import-server-empty').addEventListener('click', () => { openSetup('server'); $('setup-import').focus(); });
   $('setup-choose-create').addEventListener('click', () => { if ($('setup-choose-create').disabled) return; setupMode = 'create'; renderSetup(); $('setup-name').focus(); });
   $('setup-choose-join').addEventListener('click', () => { if (!$('setup-choose-join').disabled) void saveSetup('friends').then(() => selectFriendIntent('join')); });
@@ -424,26 +438,16 @@
     } catch (error) { showError(errorMessage(error)); }
     finally { setupMetadataLoading = false; renderVersions(); renderSetupJava(); renderSetup(); }
   }
-  // Newest Java first and pre-selected: modern Minecraft needs a recent Java, and creation re-checks compatibility.
-  function renderSetupJava(selected = $('setup-java').value) {
-    const label = java => `Java ${java.major}${java === setupJava[0] ? ' · recommended' : ''}`;
-    const placeholder = element('option', '', setupMetadataLoading ? 'Looking for Java…' : setupJava.length ? 'Select Java' : 'No Java found'); placeholder.value = '';
-    $('setup-java').replaceChildren(placeholder, ...setupJava.map(java => { const option = element('option', '', label(java)); option.value = java.executable; option.title = java.executable; return option; }));
-    $('setup-java').value = selected || setupJava[0]?.executable || '';
+  // Java is automatic when creating a world (found on this PC or installed from Mojang's official runtimes).
+  // Only the Java & memory step lists runtimes, for imported servers or a deliberate change.
+  function renderSetupJava() {
     const runtimeSelected = $('setup-runtime-java').value || state?.server?.profile?.executable || '';
     const candidates = [...setupJava];
     if (runtimeSelected && !candidates.some(item => item.executable === runtimeSelected)) candidates.push({ executable: runtimeSelected, major: '' });
     const runtimePlaceholder = element('option', '', 'Select Java'); runtimePlaceholder.value = '';
     $('setup-runtime-java').replaceChildren(runtimePlaceholder, ...candidates.map(java => { const option = element('option', '', java.major ? `Java ${java.major} · ${java.executable}` : `Current · ${java.executable}`); option.value = java.executable; return option; }));
     $('setup-runtime-java').value = runtimeSelected;
-    $('setup-java-help').classList.toggle('warning-copy', !setupMetadataLoading && !setupJava.length);
-    $('setup-java-help').textContent = setupMetadataLoading ? 'Looking for Java on this PC…' : setupJava.length ? 'Found on this PC. The newest is picked for you; Seed Hosting checks it works with your Minecraft version.' : 'No Java found. Install Java 21 or newer (see “How to install Java”), then press Search again.';
   }
-  $('setup-discover-java').addEventListener('click', () => void loadSetupMetadata());
-  $('setup-pick-java').addEventListener('click', () => runAction('pickJava', undefined, java => {
-    if (!java) return;
-    setupJava = [...setupJava.filter(item => item.executable !== java.executable), java]; renderSetupJava(java.executable);
-  }));
   $('setup-runtime-pick').addEventListener('click', () => runAction('pickJava', undefined, java => {
     if (!java) return;
     setupJava = [...setupJava.filter(item => item.executable !== java.executable), java];
@@ -495,11 +499,206 @@
     if (!draft.name.trim() || /[\0\r\n]/.test(draft.name)) return invalid('setup-name', 'Give your server a name.');
     if (!draft.gameVersion) return invalid('setup-version', 'Choose a Minecraft version.');
     if (!Number.isSafeInteger(draft.memoryMiB) || draft.memoryMiB < 512 || draft.memoryMiB > 65536) return invalid('setup-memory', 'Choose an amount of memory.');
-    if (!$('setup-java').value) return invalid('setup-java', 'Choose which Java to use. If none is listed, install Java first.');
-    if (!$('setup-eula').checked) return invalid('setup-eula', 'Please agree to the Minecraft EULA — Mojang requires it to run a server.');
     $('setup-error').hidden = true;
-    await runAction('createServer', { ...draft, javaExecutable: $('setup-java').value, eulaAccepted: true });
-    if (state.server) await saveSetup('runtime');
+    // Empty Java = automatic. Pressing Create is the EULA agreement shown beside the button.
+    await runAction('createServer', { ...draft, javaExecutable: '', eulaAccepted: true });
+    if (state.server && draft.loader === 'fabric' && setupPickedMods.size) {
+      const picked = [...setupPickedMods.keys()];
+      await runAction('setupFabricMods', { projectIds: picked }, result => {
+        const failed = result?.failed ?? [];
+        setupPickedMods.clear();
+        if (failed.length) showError(`Some mods couldn’t be added: ${failed.map(f => `${setupModTitles.get(f.projectId) ?? f.projectId} (${f.reason})`).join('; ')}. You can try others later under My server → Mods.`);
+      });
+    }
+    if (state.server) { fillMemory('setup-runtime-memory', profileMemoryMiB() ?? draft.memoryMiB); $('setup-runtime-feedback').textContent = 'Ready — Java and memory are already set up.'; await loadSetupMetadata(); await saveSetup('runtime'); }
+  });
+
+  // ---------- Setup guide: pick Fabric mods before the world exists ----------
+  const setupPickedMods = new Map(); // projectId → title, in pick order
+  const setupModTitles = new Map();
+  let setupModHits = [], setupModLoading = false, setupModQuery = null, setupModVersion = null, setupModRequest = 0, setupModNotice = '';
+  async function searchSetupMods() {
+    const gameVersion = $('setup-version').value;
+    if (!gameVersion || $('setup-loader').value !== 'fabric') return;
+    const query = $('setup-mod-query').value.trim();
+    const token = ++setupModRequest;
+    setupModLoading = true; setupModNotice = ''; renderSetup();
+    try {
+      const result = await window.seedhost.call('searchSetupMods', { query, gameVersion, offset: 0 });
+      if (token !== setupModRequest) return;
+      if (!Array.isArray(result?.hits)) throw new Error('Modrinth returned an invalid search result.');
+      setupModHits = result.hits; setupModQuery = query; setupModVersion = gameVersion;
+      if (!setupModHits.length) setupModNotice = query ? `No Fabric mods for ${gameVersion} match “${query}”.` : `No Fabric mods found for ${gameVersion}.`;
+    } catch (error) {
+      if (token !== setupModRequest) return;
+      setupModHits = []; setupModNotice = `Couldn’t reach Modrinth: ${errorMessage(error)} You can add mods later too.`;
+    } finally { if (token === setupModRequest) { setupModLoading = false; renderSetup(); } }
+  }
+  function renderSetupMods(blocked, server) {
+    const fabric = $('setup-loader').value === 'fabric';
+    $('setup-mods').hidden = !fabric || Boolean(server);
+    if ($('setup-mods').hidden) return;
+    const version = $('setup-version').value;
+    // A different Minecraft version invalidates picks: mods are version-specific.
+    if (setupModVersion && version !== setupModVersion) { setupModHits = []; setupModVersion = null; setupModQuery = null; if (setupPickedMods.size) { setupPickedMods.clear(); setupModNotice = 'Minecraft version changed, so your mod picks were cleared.'; } }
+    if (version && !setupModLoading && setupModQuery === null && !setupModNotice) queueMicrotask(() => void searchSetupMods());
+    for (const id of ['setup-mod-query', 'setup-mod-search']) $(id).disabled = blocked || !version;
+    $('setup-mod-status').textContent = !version ? 'Choose a Minecraft version to see compatible mods.' : setupModLoading ? 'Searching Modrinth…' : setupModNotice || (setupModQuery ? `Results for “${setupModQuery}”` : `Most popular Fabric mods for ${version}`);
+    const signature = JSON.stringify([setupModHits.map(h => h.projectId), [...setupPickedMods.keys()], blocked]);
+    if ($('setup-mod-list').dataset.signature !== signature) {
+      $('setup-mod-list').dataset.signature = signature;
+      $('setup-mod-list').replaceChildren(...setupModHits.map(hit => {
+        setupModTitles.set(hit.projectId, hit.title);
+        const picked = setupPickedMods.has(hit.projectId);
+        const row = element('li', 'setup-mod' + (picked ? ' is-picked' : ''));
+        let icon;
+        if (hit.iconUrl) { icon = element('img'); icon.src = hit.iconUrl; icon.alt = ''; icon.loading = 'lazy'; icon.referrerPolicy = 'no-referrer'; }
+        else icon = element('span', 'setup-mod-icon');
+        const copy = element('div');
+        copy.append(element('strong', '', hit.title), element('span', '', hit.description || `by ${hit.author}`));
+        const button = element('button', 'button button-small' + (picked ? '' : ' button-primary'), picked ? 'Added ✓' : 'Add');
+        button.type = 'button'; button.dataset.setupMod = hit.projectId; button.disabled = blocked;
+        button.setAttribute('aria-pressed', String(picked)); button.setAttribute('aria-label', `${picked ? 'Remove' : 'Add'} ${hit.title}`);
+        row.append(icon, copy, button);
+        return row;
+      }));
+    }
+    $('setup-mod-picked').hidden = !setupPickedMods.size;
+    $('setup-mod-picked').textContent = setupPickedMods.size ? `${setupPickedMods.size} mod${setupPickedMods.size === 1 ? '' : 's'} will be installed: ${[...setupPickedMods.values()].join(', ')}` : '';
+  }
+  $('setup-mod-search').addEventListener('click', () => void searchSetupMods());
+  $('setup-mod-query').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); void searchSetupMods(); } });
+  $('setup-mod-list').addEventListener('click', event => {
+    const button = event.target.closest('button[data-setup-mod]');
+    if (!button || button.disabled) return;
+    const id = button.dataset.setupMod;
+    if (setupPickedMods.has(id)) setupPickedMods.delete(id);
+    else if (setupPickedMods.size < 50) setupPickedMods.set(id, setupModTitles.get(id) ?? id);
+    renderSetup();
+  });
+
+  // ---------- Setup guide: one-click always-on PC ----------
+  let alwaysOnStatus = null, alwaysOnMode = null, alwaysOnPaired = '', alwaysOnTimer = null;
+  // ---------- Public address: one button on My server ----------
+  // Works on any PC: on the always-on PC it acts locally, on a paired gaming PC it asks the always-on PC.
+  // Without an always-on PC yet, the same button first makes this PC the always-on PC.
+  let publicStatus = null, publicTimer = null;
+  const PUBLIC_WORKING = ['downloading', 'approve', 'starting', 'creating', 'pending'];
+  async function refreshPublicAddress() {
+    try { publicStatus = await window.seedhost.call('publicAddressStatus'); } catch { return; }
+    renderPublicCard();
+  }
+  function renderPublicCard() {
+    const st = publicStatus?.state ?? 'off', working = PUBLIC_WORKING.includes(st), card = $('public-card');
+    const address = ['reachable', 'reserved'].includes(st) ? publicStatus.address : null;
+    card.dataset.state = st;
+    card.hidden = st === 'unsupported';
+    $('public-title').textContent = address ? (st === 'reachable' ? 'Your world is open to friends 🎉' : 'Your address is ready') : working ? 'Setting up your address…' : st === 'error' ? 'That didn’t work' : 'Let friends join from anywhere';
+    const needsAlwaysOn = publicStatus?.detail === 'needs-always-on';
+    $('public-detail').textContent = address
+      ? (st === 'reachable' ? 'Send this to your friends. They put it in Minecraft → Multiplayer → Add Server.' : 'Send this to your friends. It works whenever someone is hosting the world.')
+      : st === 'approve' ? 'playit.gg opened in your browser. Make a free account or log in, then click the big Approve button. Come back here after — the rest is automatic.'
+      : working ? 'This takes about a minute. You don’t need to do anything.'
+      : st === 'error' ? `${publicStatus.detail} Press the button to try again.`
+      : needsAlwaysOn ? 'Get a free address your friends can type into Minecraft. This PC will stay connected to it while Seed Hosting is open.'
+      : 'Get a free address your friends can type into Minecraft. No setup needed.';
+    $('public-steps').hidden = !working;
+    const order = ['download', 'approve', 'address'], now = st === 'approve' ? 'approve' : ['downloading', 'starting'].includes(st) && !publicStatus?.approveUrl ? 'download' : 'address';
+    for (const li of $('public-steps').querySelectorAll('li')) {
+      li.classList.toggle('is-now', li.dataset.step === now);
+      li.classList.toggle('is-done', order.indexOf(li.dataset.step) < order.indexOf(now));
+    }
+    $('public-live').hidden = !address;
+    $('public-value').textContent = address ?? '';
+    $('public-go').hidden = working || Boolean(address);
+    $('public-go').textContent = st === 'error' ? 'Try again' : 'Get my address';
+    $('public-approve').hidden = st !== 'approve';
+    $('public-off').hidden = !address && st !== 'error';
+    const blocked = !bridgeReady || isBusy();
+    for (const id of ['public-go', 'public-approve', 'public-off', 'public-copy']) $(id).disabled = blocked;
+    // Poll quickly while something is happening, slowly otherwise.
+    const wanted = working ? 2000 : 30000;
+    if (publicTimer?.ms !== wanted) { clearInterval(publicTimer?.id); publicTimer = { ms: wanted, id: setInterval(() => void refreshPublicAddress(), wanted) }; }
+  }
+  $('public-go').addEventListener('click', async () => {
+    if ($('public-go').disabled) return;
+    // No always-on PC yet: this PC becomes it (one more approval dialog from the OS-level confirm), then continue.
+    if (publicStatus?.detail === 'needs-always-on') {
+      const ok = await runAction('alwaysOnEnable', { name: state.deviceName || 'Always-on PC' }, result => { alwaysOnStatus = result; });
+      if (!ok || !alwaysOnStatus?.running) return;
+    }
+    await runAction('publicAddressEnable', undefined, result => { if (result) publicStatus = result; });
+    renderPublicCard();
+  });
+  $('public-off').addEventListener('click', () => runAction('publicAddressDisable', undefined, result => { if (result) publicStatus = result; renderPublicCard(); }));
+  $('public-approve').addEventListener('click', async () => { try { publicStatus = await window.seedhost.call('publicAddressOpenApproval'); } catch { /* status explains */ } renderPublicCard(); });
+  $('public-copy').addEventListener('click', async () => {
+    const value = $('public-value').textContent; if (!value) return;
+    try { await navigator.clipboard.writeText(value); $('public-copy').textContent = 'Copied ✓'; setTimeout(() => { $('public-copy').textContent = 'Copy'; }, 2000); } catch { /* text is selectable */ }
+  });
+
+  async function refreshAlwaysOn() {
+    try { alwaysOnStatus = await window.seedhost.call('alwaysOnStatus'); } catch { alwaysOnStatus = null; }
+    renderSetup();
+  }
+  function renderAlwaysOn(blocked) {
+    const running = alwaysOnStatus?.running === true;
+    const paired = Boolean(state.relay);
+    const mode = running ? 'host' : alwaysOnMode;
+    $('always-on-choices').hidden = Boolean(mode) || paired;
+    $('always-on-host').hidden = mode !== 'host';
+    $('always-on-pair-form').hidden = mode !== 'pair' || paired;
+    $('always-on-paired').hidden = !paired || running;
+    $('always-on-paired').textContent = paired ? (alwaysOnPaired || `Connected to ${state.relay.name}. Your world is kept there when you stop playing.`) + (state.gateway?.enabled ? ' Friends join through it.' : '') : '';
+    $('always-on-back').hidden = !alwaysOnMode || running || paired;
+    for (const id of ['always-on-be', 'always-on-pair', 'always-on-new-code', 'always-on-off', 'always-on-connect', 'always-on-code-input', 'always-on-back']) $(id).disabled = blocked;
+    if (mode === 'host') {
+      const ok = running && !alwaysOnStatus.error;
+      $('always-on-led').className = 'led ' + (ok ? 'led-ok' : 'led-bad');
+      $('always-on-title').textContent = running ? `${alwaysOnStatus.name} is your always-on PC` : 'Always-on PC is off';
+      $('always-on-detail').textContent = alwaysOnStatus?.error ? alwaysOnStatus.error : 'Running. Keep this PC on with Seed Hosting open — it can sit in the tray.';
+      const code = alwaysOnStatus?.code;
+      if ($('always-on-code').textContent !== (code || '— — —')) { $('always-on-code').textContent = code || '— — —'; $('always-on-code').classList.remove('is-new'); void $('always-on-code').offsetWidth; if (code) $('always-on-code').classList.add('is-new'); }
+      $('always-on-new-code').textContent = code ? 'New code' : 'Show a code';
+      const address = alwaysOnStatus?.addresses?.[0];
+      $('always-on-address').textContent = address && alwaysOnStatus.gamePort ? `${address}${alwaysOnStatus.gamePort === 25565 ? '' : ':' + alwaysOnStatus.gamePort}` : '—';
+      const members = alwaysOnStatus?.members ?? [];
+      $('always-on-members').textContent = members.length ? members.map(m => m.name).join(', ') : 'None yet';
+    }
+    // Keep the code and the paired list fresh while the host panel is visible.
+    const live = $('setup-dialog').open && setupDraft?.step === 'gateway' && running;
+    if (live && !alwaysOnTimer) alwaysOnTimer = setInterval(() => void refreshAlwaysOn(), 4000);
+    if (!live && alwaysOnTimer) { clearInterval(alwaysOnTimer); alwaysOnTimer = null; }
+  }
+  $('always-on-be').addEventListener('click', async () => {
+    alwaysOnMode = 'host';
+    const ok = await runAction('alwaysOnEnable', { name: state.deviceName || 'Always-on PC' }, result => { alwaysOnStatus = result; });
+    if (!ok || !alwaysOnStatus?.running) { alwaysOnMode = null; return renderSetup(); }
+    await runAction('alwaysOnNewCode', undefined, result => { alwaysOnStatus = result; });
+  });
+  $('always-on-new-code').addEventListener('click', () => runAction('alwaysOnNewCode', undefined, result => { alwaysOnStatus = result; }));
+  $('always-on-off').addEventListener('click', async () => {
+    await runAction('alwaysOnDisable', undefined, result => { alwaysOnStatus = result; if (!result?.running) alwaysOnMode = null; });
+  });
+  $('always-on-pair').addEventListener('click', () => { alwaysOnMode = 'pair'; renderSetup(); $('always-on-code-input').focus(); });
+  $('always-on-back').addEventListener('click', () => { alwaysOnMode = null; $('always-on-pair-status').textContent = ''; renderSetup(); });
+  $('always-on-code-input').addEventListener('input', () => {
+    const raw = $('always-on-code-input').value.toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, 12);
+    const formatted = raw.match(/.{1,4}/g)?.join('-') ?? '';
+    if ($('always-on-code-input').value !== formatted) $('always-on-code-input').value = formatted;
+    $('always-on-code-input').removeAttribute('aria-invalid'); $('always-on-pair-status').textContent = '';
+  });
+  $('always-on-pair-form').addEventListener('submit', async event => {
+    event.preventDefault(); if ($('always-on-connect').disabled) return;
+    const code = $('always-on-code-input').value;
+    if (code.replace(/-/g, '').length !== 12) { $('always-on-pair-status').textContent = 'Type all 12 characters shown on the always-on PC.'; return invalid('always-on-code-input', 'Type all 12 characters shown on the always-on PC.'); }
+    $('always-on-pair-status').textContent = 'Looking for your always-on PC on this network…';
+    const ok = await runAction('pairAlwaysOn', { code, name: state.deviceName || 'Gaming PC' }, result => {
+      if (!result) { $('always-on-pair-status').textContent = ''; return; }
+      $('always-on-code-input').value = '';
+      alwaysOnPaired = `Connected to ${result.relayName}. Your world is kept there when you stop playing.`;
+    });
+    if (!ok) $('always-on-pair-status').textContent = 'Not connected. Check the code, and that both PCs are on the same network with Seed Hosting open on the always-on PC.';
   });
 
   let snapshotContext = null;
@@ -548,6 +747,26 @@
   });
 
   let playHelpRequested = false;
+  // The relay's actual player endpoint, read from the relay itself (not the display-only preference).
+  let relayPlayerAddress = null, relayPlayerContext = null, relayPlayerLoading = false;
+  function refreshRelayPlayerAddress() {
+    const context = JSON.stringify([state?.relay?.fingerprint, state?.gateway?.enabled, state?.gateway?.state]);
+    if (context === relayPlayerContext || relayPlayerLoading) return;
+    relayPlayerContext = context; relayPlayerAddress = null;
+    if (!bridgeReady || !state?.relay || state?.gateway?.state !== 'ready') return;
+    relayPlayerLoading = true;
+    window.seedhost.call('checkGameGateway').then(result => {
+      if (context !== relayPlayerContext) return;
+      if (result?.ready && typeof result.host === 'string' && Number.isInteger(result.port)) { relayPlayerAddress = formatEndpoint(result.host, result.port); renderJoinHelp(); }
+      else relayPlayerContext = null; // Not routable yet: ask again on the next poll.
+    }).catch(() => { if (context === relayPlayerContext) relayPlayerContext = null; }).finally(() => { relayPlayerLoading = false; });
+  }
+  function gatewayStatusText(label) {
+    const detail = state?.gateway?.detail || '';
+    if (/Park and Claim once/.test(detail)) return 'One-time step: Stop server (it hands the world to your always-on PC), then press Take over hosting and Start server again. After that, the always-on PC address works every time you host.';
+    if (state?.gateway?.state === 'ready') return `Ready · ${detail || 'tunnel connected'}. Friends can join through your always-on PC while this server runs.`;
+    return `${label}${detail ? ` · ${detail}` : ''}.`;
+  }
   function renderJoinHelp() {
     const server = state?.server;
     const port = server?.playerPort ?? 25565;
@@ -563,7 +782,7 @@
     const rows = [
       ['On this PC', `localhost${suffix}`],
       ...(lan.length ? [['Same Wi-Fi / home network', lan.join('  ·  ')]] : []),
-      ...(state?.settings?.persistentAddress && state.settings.gatewayAddress ? [['Through your always-on PC', state.settings.gatewayAddress]] : []),
+      ...(relayPlayerAddress ? [['Through your always-on PC (may require VPN)', relayPlayerAddress]] : state?.settings?.persistentAddress && state.settings.gatewayAddress ? [['Through your always-on PC', state.settings.gatewayAddress]] : []),
     ];
     const signature = JSON.stringify([rows, running]);
     if ($('join-help').dataset.signature === signature) return;
@@ -571,8 +790,37 @@
     const heading = element('p', 'join-title', running ? 'Your server is running. In Minecraft: Multiplayer → Add Server, then use:' : 'How to join: press Start server, then in Minecraft choose Multiplayer → Add Server and use:');
     const list = element('dl', 'join-list');
     for (const [label, value] of rows) { const row = element('div'); row.append(element('dt', '', label), element('dd', 'mono', value)); list.append(row); }
-    const note = element('p', 'field-help', 'Friends outside your home network need an always-on PC (Setup guide) or a VPN such as Tailscale. Seed Hosting never changes your router.');
+    const note = element('p', 'field-help', 'Friends anywhere else: use the “Let friends join from anywhere” card above.');
     $('join-help').replaceChildren(heading, list, note);
+  }
+  // One row per server on this PC. Only the server in use can run; deleting is guarded in the backend.
+  function renderServers(blocked) {
+    const servers = Array.isArray(state?.servers) ? state.servers : [];
+    $('server-library').hidden = servers.length === 0;
+    $('add-server').disabled = blocked;
+    const signature = JSON.stringify([servers, blocked]);
+    if ($('server-list').dataset.signature === signature) return;
+    $('server-list').dataset.signature = signature;
+    const rows = servers.map((entry) => {
+      const row = element('li', entry.active ? 'server-row is-current' : 'server-row');
+      const label = element('span', 'server-row-name', entry.name || 'Untitled server');
+      row.append(label);
+      if (entry.active) row.append(element('span', 'subtle-label', 'In use'));
+      const actions = element('span', 'server-row-actions');
+      if (!entry.active) {
+        const use = element('button', 'button button-small', 'Use this server');
+        use.type = 'button'; use.dataset.action = 'select'; use.dataset.id = entry.id;
+        use.disabled = blocked; use.title = `Switch to ${entry.name}`;
+        actions.append(use);
+      }
+      const remove = element('button', 'button button-small button-danger', 'Delete…');
+      remove.type = 'button'; remove.dataset.action = 'delete'; remove.dataset.id = entry.id;
+      remove.disabled = blocked; remove.title = `Delete ${entry.name} from this PC`;
+      actions.append(remove);
+      row.append(actions);
+      return row;
+    });
+    $('server-list').replaceChildren(...rows);
   }
   function renderGettingStarted() {
     const checks = { server: Boolean(state?.server), start: state?.server?.state === 'running', friends: Boolean(state?.relay), relay: state?.gateway?.enabled === true };
@@ -581,6 +829,7 @@
   function render() {
     const server = state?.server;
     const blocked = !bridgeReady || isBusy();
+    if (publicStatus) renderPublicCard();
     const active = !isStopped() || isHosting();
     const profileEditable = !blocked && Boolean(server) && !active;
     const nextServerKey = server ? `${server.serverDir}\n${server.storeDir}` : null;
@@ -594,6 +843,7 @@
     $('app-version').textContent = state ? `v${state.version} · alpha` : 'App unavailable';
     $('server-name').textContent = server?.name || 'No server yet';
     $('server-empty').hidden = Boolean(server);
+    renderServers(blocked);
     $('server-info').hidden = !server;
     $('server-directory').textContent = server?.serverDir || '—';
     $('store-directory').textContent = server?.storeDir || '—';
@@ -631,7 +881,7 @@
     $('profile-feedback').textContent = !server ? 'Create or import a server first.' : profileDirty ? 'Unsaved changes · save before starting.' : active ? 'Stop the server to edit these settings.' : 'Saved.';
     const hint = !server ? '' : !bridgeReady ? 'Seed Hosting can’t reach its background service; buttons are paused.' : isBusy() ? '' : active ? '' : server.modInstallError ? `${server.modInstallError}. Repair the mod files before starting.` : pendingOffer() ? 'Your world is being handed to another PC. Use Retry on that PC if it didn’t finish; if they decline, it comes back here.' : !ownsServer() ? `${server.ownerName || 'Another PC'} is hosting this world right now. Use Take over hosting once they’ve stopped.` : profileDirty ? 'Save your launch settings before starting.' : '';
     const needsJava = Boolean(server) && !hint && !active && (!server.profile?.executable || !server.profile?.args?.length);
-    $('server-action-hint').textContent = needsJava ? 'Choose Java before starting: open the Setup guide → Java & memory.' : hint; $('server-action-hint').hidden = !needsJava && !hint;
+    $('server-action-hint').textContent = needsJava ? 'Choose Java before starting: open the Setup guide → Memory → Advanced: change Java.' : hint; $('server-action-hint').hidden = !needsJava && !hint;
     $('server-toolbar').hidden = !server;
     for (const id of ['mods-details', 'profile-details', 'console-section', 'server-status']) $(id).hidden = !server;
     $('console-tab').hidden = !server;
@@ -680,9 +930,9 @@
     const gatewayLabel = state?.gateway ? gatewayLabels[state.gateway.state] || 'Unknown' : 'Unavailable in this build';
     $('gateway-status').textContent = state?.gateway?.enabled ? gatewayLabel : 'Unconnected';
     $('player-gateway').hidden = !(state?.gateway?.enabled || state?.relay || state?.settings?.persistentAddress);
-    $('player-gateway-status').textContent = `${gatewayLabel}${state?.gateway?.detail ? ` · ${state.gateway.detail}` : ''}.`;
+    $('player-gateway-status').textContent = gatewayStatusText(gatewayLabel);
     $('player-address').textContent = state?.settings?.persistentAddress && state.settings.gatewayAddress ? `Displayed player address: ${state.settings.gatewayAddress}` : '';
-    renderJoinHelp(); renderGettingStarted();
+    refreshRelayPlayerAddress(); renderJoinHelp(); renderGettingStarted();
     $('open-gateway-setup').disabled = blocked;
     $('settings-feedback').textContent = settingsDirty ? 'Unsaved preferences.' : 'Preferences loaded from this PC.';
     const busy = pendingMethod || state?.busy;
@@ -1022,12 +1272,24 @@
       renderedFriends = signature;
       $('friend-list').replaceChildren(...(friends?.members || []).map((member) => {
         const item = element('li', 'friend-item');
-        item.append(element('span', 'friend-name', member.name), element('span', 'subtle-label', member.you ? 'You' : 'Can host'));
+        item.append(element('span', 'friend-name', member.name), element('span', 'subtle-label', member.fingerprint === friends.owner ? (member.you ? 'You · group owner' : 'Group owner') : member.you ? 'You' : 'Can host'));
+        if (friends.canManage && !member.you && member.fingerprint !== friends.owner) {
+          const remove = element('button', 'text-button friend-remove', 'Remove');
+          remove.type = 'button'; remove.dataset.removeFriend = member.fingerprint;
+          remove.setAttribute('aria-label', `Remove ${member.name} from group`);
+          remove.disabled = !bridgeReady || isBusy();
+          remove.addEventListener('click', () => runAction('removeFriend', { fingerprint: member.fingerprint }, async result => {
+            if (result?.removed) { await refreshFriends(); $('friend-feedback').textContent = `${member.name} was removed from your group.`; }
+          }));
+          item.append(remove);
+        }
         item.title = `Fingerprint: ${member.fingerprint}`;
         return item;
       }));
     }
+    for (const button of $('friend-list').querySelectorAll('[data-remove-friend]')) button.disabled = !bridgeReady || isBusy();
   }
+  window.addEventListener('seedhost-account-changed', () => { void refresh(); void refreshFriends(); });
   async function refreshFriends() {
     if (!bridgeReady || !friendContext || friendsLoading) return;
     const token = ++friendRequest;
@@ -1041,7 +1303,10 @@
       friends = result;
     } catch (error) {
       if (token !== friendRequest || context !== friendContext) return;
-      friends = null; friendError = 'Check the same network / VPN and that the always-on PC is running.';
+      friends = null;
+      friendError = /invalid members|invalid relay friends|invalid group (owner|permissions)/i.test(String(error?.message ?? error))
+        ? 'Group information could not be verified.'
+        : 'Check your connection and that the always-on PC is running.';
     } finally {
       if (token === friendRequest) { friendsLoading = false; friendCheckedAt = Date.now(); renderFriends(); }
     }
@@ -1087,7 +1352,9 @@
       const peer = state.peers.find(entry => entry.fingerprint === expected.relayFingerprint);
       if (!state.relay || state.relay.fingerprint !== expected.relayFingerprint || state.relay.parkOnStop !== true || state.relay.name !== result?.relayName || peer?.host !== expected.host || peer?.port !== expected.port) throw new Error('The joined relay could not be confirmed. Your entries have been kept.');
       $('friend-code').value = ''; invalidateInvitation(); joinNotice = '';
-      $('friend-feedback').textContent = `Joined the group on ${result.relayName}. Nothing was downloaded or started. Next: receive the world from the always-on PC, review Java and mods, and start only when ready. Clean stops will try to send the world to the always-on PC; if it’s unreachable, the world stays here.`;
+      $('friend-feedback').textContent = state.server && ownsServer()
+        ? `Joined the group on ${result.relayName}. Your world “${state.server.name}” stays on this PC. Each time you stop the server, it’s handed to the always-on PC so friends can take over hosting.`
+        : `Joined the group on ${result.relayName}. Nothing was downloaded or started. Next: use Take over hosting on My server to get the world, then press Start server.`;
       await refreshFriends(); void checkRelay();
     });
   });
@@ -1459,6 +1726,7 @@
         if (!next || typeof next !== 'object' || !next.settings || !Array.isArray(next.peers) || !Array.isArray(next.logs)) throw new Error('The app returned an invalid state.');
         state = next;
         bridgeReady = true;
+        if (!publicStatus) void refreshPublicAddress();
         if (errorKind === 'state') { $('error-banner').hidden = true; errorKind = null; }
         render();
         if (state.relay && Date.now() - friendCheckedAt > 10000 && !isBusy()) void refreshFriends();

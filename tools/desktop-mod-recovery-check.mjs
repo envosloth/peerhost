@@ -57,7 +57,7 @@ try {
  await closed;
  const saved=JSON.parse(await readFile(path.join(root,'profile','state.json'),'utf8'));
  const {OwnershipLedger}=await import('../dist/src/core/ownership.js');
- const ledger=await new OwnershipLedger(saved.server.ledgerFile,before.deviceId).status();
- assert.equal(ledger.state,'owned');assert.equal(ledger.snapshotId,saved.server.snapshotId);
+ const ledger=await new OwnershipLedger(saved.servers[0].ledgerFile,before.deviceId).status();
+ assert.equal(ledger.state,'owned');assert.equal(ledger.snapshotId,saved.servers[0].snapshotId);
  console.log('PASS: corrupt-index visible Stop + command availability + scoped mutation block; oversized index native safe quit with final snapshot. Fixture NOT Minecraft.');
 } finally { await app.close().catch(()=>{});console.log('ARTIFACT_DIR='+root); }

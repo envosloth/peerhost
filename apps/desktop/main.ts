@@ -1,5 +1,10 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, safeStorage, shell, Tray } from 'electron';
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { accountEndpoint } from '../../src/core/accounts.js';
+import { AccountIntegration } from '../../src/core/account-integration.js';
+import { PlayitIntegration } from '../../src/core/playit.js';
+import { playitApi, probeMinecraft } from '../../src/core/playit-network.js';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { SeedHostApplication } from '../../src/core/application.js';
 import { loadIdentity } from '../../src/core/identity-store.js';
@@ -7,13 +12,15 @@ import { validateCall } from '../../src/core/ipc-policy.js';
 import { decodeInvite, previewInvite } from '../../src/core/invites.js';
 import { applicationMenuTemplate } from './menu.js';
 import { ServerSetupClient, discoverJava, probeJava, type CreateServerInput } from '../../src/core/server-setup.js';
+import { AlwaysOnHost } from '../../src/core/always-on.js';
+import { PublicAddress, playitClaim } from '../../src/core/public-address.js';
 const setupLinks: Record<string,string> = Object.freeze({
   eula:'https://www.minecraft.net/en-us/eula',
   java:'https://adoptium.net/temurin/releases/',
   fabric:'https://fabricmc.net/use/server/',
   relay:'https://github.com/envosloth/seedhost/blob/main/docs/relay.md',
 });
-let window:BrowserWindow;let tray:Tray;let backend:SeedHostApplication;let quitAllowed=false;let quitting=false;
+let window:BrowserWindow;let tray:Tray;let backend:SeedHostApplication;let alwaysOn:AlwaysOnHost;let publicAddress:PublicAddress;let quitAllowed=false;let quitting=false;
 // Display name; the profile folder below is SeedHost (or --profile-root).
 app.setName('Seed Hosting');
 const profileArgument=process.argv.find(a=>a.startsWith('--profile-root='));
@@ -33,7 +40,7 @@ async function quit(){
     if(state.server?.state==='running'||state.server?.state==='starting'){
       show();if(!await confirm('Stop hosting and quit?','Players will disconnect. Seed Hosting will request a clean stop and save a final local snapshot. This does not guarantee another device has received it.'))return;
     }
-    await backend.close();quitAllowed=true;app.quit();
+    await backend.close();await publicAddress?.close();await alwaysOn?.close();quitAllowed=true;app.quit();
   }catch(e){show();await dialog.showMessageBox(window,{type:'error',message:'Seed Hosting could not quit safely.',detail:String(e),buttons:['Keep app open']});}
   finally{quitting=false;}
 }
@@ -46,19 +53,115 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
     backend=new SeedHostApplication(root,identity,{confirmIncomingHandoff:async(source,snapshot)=>{
       show();return confirm('Accept hosting ownership from this peer?','Verified peer: '+source+'\nSnapshot: '+snapshot.id+'\nThis copies server files into a new local directory. Old files are retained. It will not start automatically; review the local launch profile and executable/mod trust first.');
     }});await backend.open();
+    let accountConfig;
+    if(process.env.SEEDHOST_ACCOUNT_SERVICE) accountConfig=accountEndpoint(JSON.parse(process.env.SEEDHOST_ACCOUNT_SERVICE));
+    else {
+      const files=[path.join(root,'account-service.json'),...(!profileArgument?[fileURLToPath(new URL('../../../apps/desktop/account-service.json',import.meta.url))]:[])];
+      for(const file of files){try {accountConfig=accountEndpoint(JSON.parse(await readFile(file,'utf8')));break;}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}}
+    }
+    const accounts=new AccountIntegration(root,identity,{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)},backend,accountConfig);
+    // The always-on PC role runs inside this app: no Node.js install, terminal or commands. Its relay data and
+    // OS-encrypted-at-rest identity live under the profile; it restarts with the app when it was turned on.
+    alwaysOn=new AlwaysOnHost(path.join(root,'always-on'),await loadIdentity(path.join(root,'always-on'),{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)}), profileArgument && process.env.SEEDHOST_TEST_LOOPBACK==='1' ? {host:'127.0.0.1',port:0,gamePorts:[0],discoveryPort:0} : {});
+    await alwaysOn.restore();
+    // One-click public address: playit.gg's official agent, downloaded (pinned + SHA-256), approved in the browser
+    // and run hidden by this app, forwarding to this always-on PC's player port.
+    let gamePort:number|null=null;
+    const refreshGamePort=async()=>{const s=await alwaysOn.status();gamePort=s.running?s.gamePort:null;};
+    await refreshGamePort();
+    publicAddress=new PublicAddress(root,{vault:{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)},target:()=>gamePort===null?null:{host:'127.0.0.1',port:gamePort},
+      api:playitApi,claim:playitClaim,probe:probeMinecraft,openBrowser:url=>shell.openExternal(url)});
+    if(gamePort!==null)await publicAddress.restore();
+    // Where the one public-address button acts: this PC if it is the always-on PC, else the always-on PC it is paired with.
+    const publicVia=async():Promise<'here'|'relay'|'none'>=>{await refreshGamePort();if(gamePort!==null)return 'here';return (await backend.getState()).relay?'relay':'none';};
+    const NO_ALWAYS_ON={state:'off',address:null,approveUrl:null,detail:'needs-always-on'};
+    let lastApproveOpened='';
+    const openApprovalOnce=async(status:{approveUrl:string|null})=>{if(status.approveUrl&&status.approveUrl!==lastApproveOpened&&/^https:\/\/playit\.gg\/claim\/[a-f0-9]{10}$/.test(status.approveUrl)){lastApproveOpened=status.approveUrl;await shell.openExternal(status.approveUrl);}return status;};
     const image=nativeImage.createFromPath(fileURLToPath(new URL('../../../apps/desktop/icon.png',import.meta.url)));
     if(image.isEmpty())throw new Error('App icon could not be loaded');
     window=new BrowserWindow({width:1240,height:860,minWidth:1000,minHeight:700,title:'Seed Hosting',icon:image,frame:false,fullscreenable:true,backgroundColor:'#0f1116',show:true,webPreferences:{preload:fileURLToPath(new URL('./preload.cjs',import.meta.url)),nodeIntegration:false,contextIsolation:true,sandbox:true}});
     window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
     window.webContents.on('will-navigate',event=>event.preventDefault());
     window.on('close',event=>{if(!quitAllowed){event.preventDefault();window.hide();}});
+    const playit = new PlayitIntegration(root, {vault:{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)},api:playitApi,probe:probeMinecraft,gateway:async()=>{
+      const state=await backend.getState();const relay=state.peers.find(p=>p.fingerprint===state.relay?.fingerprint);
+      return {...await backend.checkGameGateway(),fingerprint:relay?.fingerprint??'',controlPort:relay?.port??0};
+    }});
     ipcMain.handle('seedhost:call',async(event,method,payload)=>{
       const sender=new URL(event.senderFrame?.url??'about:blank');sender.hash='';
       const p=validateCall(method,payload,sender.href,rendererUrl,{senderId:event.sender.id,expectedSenderId:window.webContents.id,isMainFrame:event.senderFrame===window.webContents.mainFrame});
       switch(method){
+        case 'accountStartGroup':{
+          const a=await accounts.status();if(!a.signedIn||!a.online||!a.username)throw new Error('Sign in first');
+          if((await backend.getState()).relay)throw new Error('This PC already belongs to a group');
+          await alwaysOn.enable(a.username+'’s group');
+          const invite=await alwaysOn.ownerInvite(a.username,identity.fingerprint);
+          await backend.joinWithInvite({code:invite.code,name:a.username});
+          return {created:true};
+        }
+        case 'accountStatus':return accounts.status();
+        case 'accountRequests':return accounts.requests();
+        case 'accountRegister':return accounts.authenticate('register',p as any);
+        case 'accountLogin':return accounts.authenticate('login',p as any);
+        case 'accountLogout':return accounts.logout();
+        case 'accountSend':return accounts.send(p.username);
+        case 'accountAccept':return accounts.accept(p.id);
+        case 'accountDecline':return accounts.decline(p.id);
+        case 'removeFriend':{
+          const friends=await backend.listFriends(),target=friends.members.find(m=>m.fingerprint===p.fingerprint);
+          if(!friends.canManage||!target||target.you||target.fingerprint===friends.owner)throw new Error('Only the group owner can remove a friend');
+          if(!await confirm('Remove “'+target.name+'” from your group?','They will lose access to shared hosting here. Copies of world files they already have cannot be erased. This does not ban them from Minecraft; use the Minecraft whitelist for that.'))return {removed:false};
+          await backend.removeFriend(p.fingerprint);return {removed:true};
+        }
+        case 'playitStatus':return playit.status();
+        case 'playitSetup':return shell.openExternal('https://playit.gg/download');
+        case 'playitCheck':return playit.check();
+        case 'playitCreate':if(await confirm('Make the Minecraft gateway public?', 'This creates a free playit Minecraft Java tunnel to your configured always-on player gateway. Anyone with its address can attempt to join; keep Minecraft online-mode enabled and use a whitelist for private play. Your playit agent must run on the always-on PC. No router, firewall or startup settings are changed.'))return playit.create();return null;
+        case 'playitDisconnect':if(await confirm('Disconnect playit from this app?', 'Only this app’s encrypted connection is removed. The public tunnel and external agent keep running. Disable or delete the tunnel in your playit account to stop public access.')){await playit.disconnect();return playit.status();}return null;
+        case 'playitImport':{
+          const selected=await dialog.showOpenDialog(window,{title:'Select the approved playit agent secret file (plain hex)',properties:['openFile']});
+          if(selected.canceled||!selected.filePaths[0])return null;
+          if(!await confirm('Connect this playit agent?', 'Seed Hosting stores an OS-encrypted copy of this agent credential to check or create its public Minecraft tunnel. Select the agent running on your always-on PC; never send this file to friends.'))return null;
+          try{await playit.importAgentFile(selected.filePaths[0]);return playit.status();}catch{throw new Error('Could not connect that agent. Select its plain hexadecimal secret file and check playit approval.');}
+        }
+        case 'selectServer':return backend.selectServer(p.id);
+        case 'deleteServer':{
+          const state=await backend.getState();
+          const target=state.servers.find(entry=>entry.id===p.id);
+          if(!target)throw new Error('That server is no longer in the library. Refresh and try again.');
+          if(!await confirm('Delete “'+target.name+'” from this PC?','This permanently deletes this app’s managed copy of that server, its saved backups and its ownership record on this PC. Other servers, your group, your playit tunnel and the folder you originally imported are not touched. This cannot be undone.'))return null;
+          return backend.deleteServer(p.id);
+        }
         case 'getState':return backend.getState();
+        case 'alwaysOnStatus':return alwaysOn.status();
+        case 'alwaysOnEnable':{
+          const status=await alwaysOn.status();
+          if(!status.running&&!await confirm('Make this PC the always-on PC?','Seed Hosting will keep your friends’ world here between play sessions and give players one address to join. It listens on this network (ports 47625 and 25565) while the app is open; only PCs you pair with a code can store or take the world. Keep this PC on and Seed Hosting open (it can sit in the tray). Nothing else on this PC is changed.'))return status;
+          return alwaysOn.enable(p.name);
+        }
+        case 'alwaysOnDisable':
+          if(!await confirm('Stop being the always-on PC?','Paired PCs can’t store or take the world here until you turn it back on, and the public address (if any) goes offline. The stored world, pairings and address are kept.'))return alwaysOn.status();
+          await publicAddress.close();
+          return alwaysOn.disable();
+        case 'alwaysOnNewCode':return alwaysOn.newCode();
+        case 'publicAddressStatus':{const via=await publicVia();if(via==='here')return publicAddress.refresh();if(via==='relay')return openApprovalOnce(await backend.publicAddress('public-status'));return NO_ALWAYS_ON;}
+        case 'publicAddressEnable':{
+          const via=await publicVia();
+          if(via==='none')return NO_ALWAYS_ON;
+          if(via==='relay')return openApprovalOnce(await backend.publicAddress('public-enable'));
+          return publicAddress.enable();
+        }
+        case 'publicAddressDisable':
+          if(!await confirm('Turn off the public address?','Friends outside your network can’t join until you turn it back on. Your address is kept for when you do.'))return publicAddress.status();
+          {const via=await publicVia();if(via==='relay')return backend.publicAddress('public-disable');return publicAddress.disable();}
+        case 'publicAddressOpenApproval':{const via=await publicVia();const url=(via==='relay'?await backend.publicAddress('public-status'):publicAddress.status()).approveUrl;if(url&&/^https:\/\/playit\.gg\/claim\/[a-f0-9]{10}$/.test(url))await shell.openExternal(url);return publicAddress.status();}
+        case 'pairAlwaysOn':
+          if(!await confirm('Connect to your always-on PC?','Seed Hosting will look for the always-on PC that shows this code on your network, check that it really knows the code, and connect to it. From then on your world is kept there when you stop playing, and friends join one address.'))return null;
+          return backend.pairAlwaysOn(p as {code:string;name:string});
+        case 'searchSetupMods':return backend.searchSetupMods(p as {query:string;gameVersion:string;offset:number});
+        case 'setupFabricMods':return backend.setupFabricMods(p as {projectIds:string[]});
         case 'listServerVersions':return new ServerSetupClient().listVersions();
-        case 'discoverJava':return discoverJava();
+        case 'discoverJava':return discoverJava(path.join(root,'runtimes'));
         case 'pickJava':{
           const selected=await dialog.showOpenDialog(window,{title:'Choose an installed Java executable (java or java.exe)',properties:['openFile'],...(process.platform==='win32'?{filters:[{name:'Java executable',extensions:['exe']}]}:{})});
           if(selected.canceled||!selected.filePaths[0])return null;
@@ -68,7 +171,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         case 'createServer':{
           const input={...p} as CreateServerInput;
           if(input.eulaAccepted!==true)throw new Error('Explicit Minecraft EULA acceptance is required before creating a server');
-          if(!await confirm('Create this Minecraft server and accept its EULA?', 'By continuing you explicitly accept https://www.minecraft.net/en-us/eula for this server. Seed Hosting downloads and checks official '+input.loader+' server files, creates a managed copy, and checks the chosen Java runtime. Checksums do not prove executable code harmless. Nothing starts automatically.'))return;
+          if(!await confirm('Create “'+input.name+'”?', 'Seed Hosting downloads the official '+(input.loader==='fabric'?'Fabric':'Minecraft')+' server files'+(input.javaExecutable?'':' and, if this PC needs it, the matching official Java from Mojang')+', and checks every file. Nothing starts until you press Start.\n\nBy creating this world you agree to the Minecraft EULA: https://www.minecraft.net/en-us/eula'))return;
           return backend.createServer(input);
         }
         case 'configureSimpleProfile':
