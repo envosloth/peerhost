@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual, X509Certificate } from "node:crypto";
 import { createServer, connect, type TLSSocket } from "node:tls";
-import type { Socket } from "node:net";
+import { isIP, type Socket } from "node:net";
 import { generate } from "selfsigned";
 
 export interface PeerIdentity {
@@ -134,6 +134,8 @@ export async function connectPeer(
   return new Promise<TLSSocket>((resolve, reject) => {
     const socket = connect({
       host, port, key: identity.keyPem, cert: identity.certPem,
+      // Public TLS ingress routes by DNS SNI; authentication still uses the raw certificate pin below.
+      ...(isIP(host) === 0 ? { servername: host } : {}),
       minVersion: "TLSv1.2", rejectUnauthorized: false,
     });
     let settled = false;

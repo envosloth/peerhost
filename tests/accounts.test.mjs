@@ -1,0 +1,34 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { createIdentity } from '../dist/src/core/peer-transport.js';
+import { existsSync } from 'node:fs';
+
+test('account registration reserves a username; login is bound to this device and survives service restart', async t => {
+  assert.ok(existsSync('dist/src/core/accounts.js'),'account service must exist');
+  const { AccountService, AccountClient } = await import('../dist/src/core/accounts.js');
+  const root = await mkdtemp(path.join(process.env.TMPDIR,'accounts-'));
+  const [server, aliceDevice, secondDevice, bobDevice] = await Promise.all(Array.from({length:4},()=>createIdentity()));
+  let service = new AccountService(root,server); await service.listen();
+  t.after(async()=>{await service.close();await rm(root,{recursive:true,force:true});});
+  const endpoint = ()=>({...service.endpoint,fingerprint:server.fingerprint});
+  const alice = new AccountClient(aliceDevice,endpoint());
+  const bob = new AccountClient(bobDevice,endpoint());
+  const secret = 'test-only-passphrase-012345';
+  const a = await alice.call('register',{username:'Alice',password:secret});
+  assert.equal(a.username,'alice'); assert.match(a.token,/^[a-f0-9]{64}$/);
+  await assert.rejects(bob.call('register',{username:'ALICE',password:secret}),/taken/);
+  await assert.rejects(bob.call('register',{username:'a b',password:secret}),/Username/);
+  await assert.rejects(bob.call('login',{username:'alice',password:'wrong-test-password'}),/Username or password/);
+  await assert.rejects(bob.call('me',{token:a.token}),/Sign in/);
+  assert.equal((await alice.call('me',{token:a.token})).username,'alice');
+  const second = new AccountClient(secondDevice,endpoint());
+  assert.equal((await second.call('login',{username:'ALICE',password:secret})).username,'alice');
+  await service.close(); service = new AccountService(root,server); await service.listen();
+  const restored = new AccountClient(aliceDevice,endpoint());
+  assert.equal((await restored.call('me',{token:a.token})).username,'alice');
+  assert.ok(!(await readFile(path.join(root,'accounts.sqlite'))).includes(Buffer.from(secret)),'no plaintext passwords');
+  await restored.call('logout',{token:a.token});
+  await assert.rejects(restored.call('me',{token:a.token}),/Sign in/);
+});
