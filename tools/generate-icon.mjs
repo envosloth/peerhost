@@ -1,5 +1,5 @@
 // Rasterizes the Seed Hosting mark (same geometry as the inline SVG in apps/desktop/index.html):
-// a golden seed with a white sprout on the accent tile. Pure Node, 4×4 supersampling.
+// a sprout — two leaves on a stem rising from a seed — on a dark graphite tile. Pure Node, 4×4 supersampling.
 // Writes icon.png (window + tray), icon-256.png (Linux launcher) and icon.ico (Windows, 16–256 px).
 // Run: node tools/generate-icon.mjs
 import { deflateSync } from 'node:zlib';
@@ -8,13 +8,10 @@ const crc=b=>{let c=0xffffffff;for(const v of b){c^=v;for(let k=0;k<8;k++)c=(c>>
 const chunk=(name,data)=>{const type=Buffer.from(name);const size=Buffer.alloc(4);size.writeUInt32BE(data.length);const sum=Buffer.alloc(4);sum.writeUInt32BE(crc(Buffer.concat([type,data])));return Buffer.concat([size,type,data,sum]);};
 
 // --- Geometry (64-unit box), shared with the SVG mark. ---
-export const SEED='M32 23C37.8 27.5 42.5 35.5 42.5 43.5C42.5 50.4 37.8 55.5 32 55.5C26.2 55.5 21.5 50.4 21.5 43.5C21.5 35.5 26.2 27.5 32 23Z';
-// Seedling pair: pointed tips, a fuller upper edge and a flatter lower edge, each with a fine light midrib.
-export const LEAF_RIGHT='M33 15.5C35.5 10 41.5 6.8 48.5 8.5C46.2 14.6 40.5 17.8 33 15.5Z';
-export const LEAF_LEFT='M32.3 17C29.6 12.6 24.6 10.3 19 11.5C21 16.4 26 18.6 32.3 17Z';
-export const VEIN_RIGHT='M33.8 15C38.5 12.5 43.2 10.4 47.6 8.9', VEIN_LEFT='M31.5 16.6C27.8 14.7 23.6 12.9 19.8 11.8', VEIN_WIDTH=0.9;
-export const STEM='M32 24C32 20.5 32.3 17.6 33 15.2', STEM_WIDTH=2.2;
-export const HIGHLIGHT='M26.6 43.5C26.6 38.6 28.6 34.2 31 30.8', HIGHLIGHT_WIDTH=1.8;
+export const LEAF_LEFT='M30.6 35.5C23.4 35.8 16.6 30.4 16.2 21.6C24.4 21.2 30.8 26.8 30.6 35.5Z';
+export const LEAF_RIGHT='M33.4 30.5C33.2 21.4 40.2 14.4 49.5 14.6C49.6 23.8 42.6 30.6 33.4 30.5Z';
+export const STEM='M32 49.5L32 31', STEM_WIDTH=4.4;
+export const SEED={cx:32,cy:50,r:4.6};
 
 // Flattens an absolute M/C/L/Z path into polylines.
 function flatten(d){
@@ -34,30 +31,24 @@ const inside=(polys,x,y)=>{let hit=false;for(const p of polys)for(let a=0,b=p.le
 const segment=(x,y,[ax,ay],[bx,by])=>{const px=x-ax,py=y-ay,dx=bx-ax,dy=by-ay;const t=Math.max(0,Math.min(1,(px*dx+py*dy)/(dx*dx+dy*dy||1)));return Math.hypot(px-dx*t,py-dy*t);};
 const nearLine=(lines,x,y,w)=>lines.some(l=>l.some((p,k)=>k>0&&segment(x,y,l[k-1],p)<=w/2));
 const roundRect=(x,y,cx,cy,hw,hh,r)=>{const qx=Math.abs(x-cx)-hw+r,qy=Math.abs(y-cy)-hh+r;return Math.hypot(Math.max(qx,0),Math.max(qy,0))+Math.min(Math.max(qx,qy),0)-r;};
-const seed=flatten(SEED), leafRight=flatten(LEAF_RIGHT), leafLeft=flatten(LEAF_LEFT), veins=[...flatten(VEIN_RIGHT),...flatten(VEIN_LEFT)], stem=flatten(STEM), highlight=flatten(HIGHLIGHT);
-// Position along a leaf from its base (0) to its tip (1), for the base-to-tip shading.
-const along=(x,y,[bx,by],[tx,ty])=>Math.max(0,Math.min(1,((x-bx)*(tx-bx)+(y-by)*(ty-by))/((tx-bx)**2+(ty-by)**2)));
+const leafLeft=flatten(LEAF_LEFT), leafRight=flatten(LEAF_RIGHT), stem=flatten(STEM);
 const mix=(a,b,t)=>a.map((v,i)=>v+(b[i]-v)*t);
 const over=(dst,src,a)=>{const out=dst[3]+a*(1-dst[3]);if(out<=0)return [0,0,0,0];return [...[0,1,2].map(i=>(src[i]*a+dst[i]*dst[3]*(1-a))/out),out];};
 
-// Fixed brand colours (the mark does not follow the accent): deep forest tile, cream seed, green sprout.
+// Default "sprout" accent: leaves #6ee7a0 → #22b26b (top-left to bottom), stem #22b26b, seed #effff5.
+const A1=[110,231,160], A2=[34,178,107];
 function shade(x,y){
   let px=[0,0,0,0];
-  const tile=roundRect(x,y,32,32,30,30,15);
+  const tile=roundRect(x,y,32,32,30,30,16);
   if(tile<=0){
-    px=over(px,mix([30,62,46],[10,24,17],(x+y)/128),1);
-    px=over(px,[255,255,255],Math.max(0,1-Math.hypot(x-16,y-10)/40)*0.07);
-    if(tile>-1.1)px=over(px,[255,255,255],y<32?0.12:0.04); // crisp rim
-    if(inside(seed,x,y-1.8))px=over(px,[0,0,0],0.35); // seed shadow
+    px=over(px,mix([31,38,48],[11,14,19],(x+y)/128),1);
+    px=over(px,A1,Math.max(0,1-Math.hypot(x-32,y-30)/22)*0.22); // soft accent glow
+    if(tile>-1)px=over(px,[255,255,255],0.08); // crisp rim
   }
-  if(inside(seed,x,y)){
-    px=over(px,mix([255,243,207],[226,184,102],(y-24)/31.5),1);
-    if(nearLine(highlight,x,y,HIGHLIGHT_WIDTH))px=over(px,[255,255,255],0.55);
-  }
-  if(nearLine(stem,x,y,STEM_WIDTH))px=over(px,[69,194,127],1);
-  if(inside(leafLeft,x,y))px=over(px,mix([39,154,93],[111,220,152],along(x,y,[32.3,17],[19,11.5])),1);
-  if(inside(leafRight,x,y))px=over(px,mix([47,174,108],[142,240,179],along(x,y,[33,15.5],[48.5,8.5])),1);
-  if((inside(leafLeft,x,y)||inside(leafRight,x,y))&&nearLine(veins,x,y,VEIN_WIDTH))px=over(px,[214,250,228],0.6);
+  if(nearLine(stem,x,y,STEM_WIDTH))px=over(px,A2,1);
+  const leaf=(x,y)=>mix(A1,A2,Math.max(0,Math.min(1,(0.35*(x-16)+(y-14))/ (0.35*34+22))));
+  if(inside(leafLeft,x,y)||inside(leafRight,x,y))px=over(px,leaf(x,y),1);
+  if(Math.hypot(x-SEED.cx,y-SEED.cy)<=SEED.r)px=over(px,[239,255,245],1);
   return px;
 }
 
