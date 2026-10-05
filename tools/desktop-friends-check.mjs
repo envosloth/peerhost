@@ -433,7 +433,13 @@ const cases = {
     assert.equal(await a.page.locator('#preview-fingerprint').textContent(), '', 'successful join clears preview secret context');
     await click(a.page, '#create-invite'); await wait(a.page, () => document.querySelector('#invite-code').value.startsWith('SEEDHOST-'));
     const invitation = await a.page.locator('#invite-code').inputValue(); await click(a.page, '#copy-invite');
-    assert.ok(await a.app.evaluate(({ clipboard }) => clipboard.readText()) === invitation, 'actual clipboard contains invitation');
+    // The renderer's copy is async: wait for the app's own confirmation before checking the OS clipboard.
+    await wait(a.page, () => /^(?:Copied|Couldn)/.test(document.querySelector('#invite-status').textContent));
+    const copyStatus = await a.page.locator('#invite-status').textContent();
+    assert.match(copyStatus, /^Copied/, 'copy confirmation: ' + copyStatus);
+    let clipboardText = '';
+    for (let attempt = 0; attempt < 50 && clipboardText !== invitation; attempt++) { clipboardText = await a.app.evaluate(({ clipboard }) => clipboard.readText()); if (clipboardText !== invitation) await new Promise(resolve => setTimeout(resolve, 100)); }
+    assert.equal(clipboardText, invitation, 'actual clipboard contains invitation (got ' + clipboardText.length + ' chars)');
     await check(b.page, invitation, 'Sam'); await wait(b.page, () => !document.querySelector('#join-friend').disabled);
     assert.equal(node.trusted.length, 1, 'B preview does not enroll');
     await click(b.page, '#join-friend'); await idle(b.page);
