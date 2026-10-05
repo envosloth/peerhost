@@ -36,7 +36,7 @@ async function shot(page, name) {
   await page.screenshot({ path: target }); console.log('SCREENSHOT=' + target);
 }
 async function launch(name) {
-  const args = [...(packaged ? [] : [path.join(project, 'dist/apps/desktop/main.js')]), '--profile-root=' + path.join(root, name)];
+  const args = [...(process.platform === 'linux' ? ['--password-store=gnome-libsecret'] : []), ...(packaged ? [] : [path.join(project, 'dist/apps/desktop/main.js')]), '--profile-root=' + path.join(root, name)];
   const app = await electron.launch({ executablePath, args, env });
   apps.push(app); const page = await app.firstWindow();
   page.on('pageerror', error => pageErrors.push(String(error)));
@@ -429,7 +429,7 @@ const cases = {
     await check(a.page, initial.code, 'River <QA>'); await wait(a.page, () => !document.querySelector('#join-friend').disabled);
     await click(a.page, '#join-friend'); await idle(a.page);
     await wait(a.page, () => document.querySelector('#friend-feedback').textContent.startsWith('Joined'));
-    assert.match(await a.page.locator('#friend-feedback').textContent(), /Nothing was downloaded or started.*Next.*review.*start.*ready/is);
+    assert.match(await a.page.locator('#friend-feedback').textContent(), /Nothing was downloaded or started.*Next.*Take over hosting.*My server.*Start server/is);
     assert.equal(await a.page.locator('#preview-fingerprint').textContent(), '', 'successful join clears preview secret context');
     await click(a.page, '#create-invite'); await wait(a.page, () => document.querySelector('#invite-code').value.startsWith('SEEDHOST-'));
     const invitation = await a.page.locator('#invite-code').inputValue(); await click(a.page, '#copy-invite');
