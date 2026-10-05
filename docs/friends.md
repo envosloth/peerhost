@@ -23,11 +23,29 @@ In another terminal on the relay PC:
 node dist/src/relay/cli.js invite --root /absolute/path/to/relay-data --hours 24
 ```
 
-Copy the `PEERHOST-…` line privately to the first member. In PeerHost they open **Friends → I have an invitation code**, enter their name, paste the code, and approve the native confirmation. The relay becomes trusted and park-on-stop is enabled. Nothing is downloaded or started; use **Take over hosting** once a server has been parked there.
+Copy the complete `PEERHOST-…` line privately to the first member. In Seed Hosting they open **Friends → I have an invitation**, paste the code, enter their own display name, and choose **Check invitation**. Review the group, always-on PC address and expiry; expand **Verify details with your friend** to compare the full certificate fingerprint through a trusted channel. These are details from the code, not proof of authenticity or a successful connection.
+
+**Review & join group** requests native confirmation displaying independently decoded details before any enrollment. The relay becomes trusted and park-on-stop is enabled only after joining and saving its settings. Nothing is downloaded or started; use **Take over hosting** once a server has been parked there. Stop any running local server before joining. A different configured relay is never silently replaced.
 
 ## Invite another friend
 
-A member chooses **Add friend → Create invitation**, approves the access warning, and copies the code. Each code permits one new certificate to enroll and expires after 24 hours by default. Send it privately, not in a public channel. **Refresh members** shows membership and relay custody; it is not an online-presence indicator. Before the first park the holder is unknown, parked means custody is on the relay, checkout pending means ownership acknowledgment is not yet confirmed, and a confirmed checkout names the holder. A locally owned unrelated world never substitutes a holder.
+A member chooses **Friends → Invite a friend → Create invitation**, approves the access warning, then uses **Copy invitation**. The sharing steps stay beside the code. Each code permits one new certificate to enroll and expires after 24 hours by default. Send it privately, not in a public channel. Creating a new code does not revoke earlier invitations.
+
+**Refresh members** shows membership and relay custody; it is not an online-presence indicator. A successful refresh shows **Members confirmed** and its check time. A failed refresh clears stale member entries and offers retry guidance. Before the first park the holder is unknown, parked means custody is on the relay, checkout pending means ownership acknowledgment is not yet confirmed, and a confirmed checkout names the holder. A locally owned unrelated world never substitutes a holder.
+
+### Players do not need a hosting invitation
+
+Friends who only want to play use a Minecraft address, not this code. **Show how to join Minecraft** opens the player instructions under **My server**. When you do not host a server on this PC, ask the current host for their address. This action does not create a server, join a hosting group, or configure any network service.
+
+### Invitation recovery
+
+- **Damaged/incomplete:** copy the entire code again. Do not change its case or try to repair its contents.
+- **Expired or already used by another PC:** ask the sender for a new code.
+- **No response:** check that the always-on PC is running and reachable on the same network/VPN. Retry the same code on the same PC: it may already have been enrolled before an acknowledgment was lost.
+- **Cancelled native confirmation:** no join is attempted; the pasted entries are kept.
+- **Different group already configured:** deliberately clear the existing relay under **Settings → Network** before joining another. No automatic switch occurs.
+
+Editing the code or display name requires another check. Closing the setup guide clears the invitation and preview; secrets are not saved in setup progress.
 
 A relay group currently shares one server lineage. Membership authorizes access to its world/configuration files and the ability to claim hosting. There are no read-only roles. Enrollment cannot silently replace a different configured relay; clear that relay explicitly in Settings first.
 

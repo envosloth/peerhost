@@ -9,7 +9,7 @@ This is an **Operate** surface, not a marketing page or simulated dashboard:
 - **Sidebar page tabs** (vertical ARIA tablist; arrow keys, Home and End move between them):
   - **My server** (`#operate-panel`): a status marquee with four gauges and a ticker that mirrors state and offers no actions; the server card (getting started, how to join, lifecycle buttons, latest console line, always-on PC, technical details); backups; mods; advanced launch settings.
   - **Console** (`#console-panel`): the tab is hidden until a server exists.
-  - **Friends** (`#peers-panel`): invite, join, group members, and the folded *Advanced: direct PC-to-PC transfers*.
+  - **Friends** (`#peers-panel`): a Configure surface with **Invite a friend** / **I have an invitation** intent buttons, one focused form, local invitation review, group membership/custody, player-only instructions, and folded *Advanced: direct PC-to-PC transfers*.
   - **Settings** (`#settings-panel`): category tabs **Appearance**, **Network** (displayed player address, relay) and **App** (close button, start at login).
   - Only the selected tab is marked active, and focus stays on the tab that was clicked.
   - **Setup guide** is a separate button that opens the dialog.
@@ -40,6 +40,9 @@ The only privileged interface is `window.peerhost.call(method, payload)`, return
 | `startPeerListener` | None |
 | `addPeer` | `{ name, fingerprint, host, port }` |
 | `sendSnapshot` | `{ fingerprint }` |
+| `previewInvite` | `{ code }`; local-only validated decoding, no token in result, no enrollment/network request |
+| `joinWithInvite` | `{ code, name }`; independently decoded native consent before enrollment |
+| `createInvite` / `listFriends` | None; require a configured relay |
 | `getWindowState` / `windowMinimize` / `windowToggleFullscreen` | None; returns `{ fullScreen, maximized }` |
 | `windowClose` | None; same as closing the window (hides to tray) |
 | `quitApp` | None; runs main's safe-quit path (busy / hosting checks and native confirmation) |
@@ -72,7 +75,7 @@ Process states recognized by the renderer are `offline`, `failed`, `starting`, `
 
 Direct hosting on **this Windows PC** is the default. A persistent address is optional and off by default. The gateway badge always says **Unconnected** because this contract has no gateway-connection operation or proof of public incoming reachability. Saving a preference does not connect, deploy, change a router / firewall, or prove public availability.
 
-Manual trust comes first: exchange full fingerprints over a separate trusted channel and share the actual listener endpoint; both peers must trust each other. Loopback listener addresses are clearly labeled as local-only. There is no automatic discovery, invitation flow, or NAT traversal; invitation ease is later work, not an unfinished working-looking control.
+Hosting invitations enroll members of an existing optional relay. **Check invitation** only decodes metadata; it does not prove authenticity, reachability, or that the token is unused. **Review & join group** shows native consent based on the original code, not renderer-supplied preview details. Compare the full fingerprint through a trusted channel. There is no automatic discovery or NAT traversal. The advanced direct listener is explicitly loopback-only; a separately configured reachable relay is needed between separate PCs.
 
 Sending shares server files, potentially including configuration or player data. It does not claim that an ownership handoff completed. The renderer warns before sending and reflects whatever ownership main actually returns.
 
@@ -85,4 +88,14 @@ Start-at-login is labeled a saved preference only in this alpha, not a Windows s
 - Headed Chromium loaded the actual local HTML / CSS / JS at **1100 × 760** with an explicitly synthetic bridge. Exercised import-state rendering, profile validation / save, listener / peer trust, send cancellation / confirmation, hosting locks, command errors / retry, settings save, and keyboard tabs. No horizontal overflow, no remote requests, and no page / console errors. Screenshots inspected for layout and copy.
 - These are renderer / browser checks, **not Electron preload/main, Minecraft, Java-process, socket, public-connectivity, or real snapshot proof**. Parent integration verification must exercise the visible real Electron application and actual backend independently.
 
-Temporary harnesses and screenshots live under the Hermes scratch directory, not the app or repository; none is a production fallback. Only the four assigned renderer / documentation files are changed by this renderer task.
+Temporary harnesses and screenshots live under the Hermes scratch directory, not the app or repository; none is a production fallback.
+
+## Guided friends flow
+
+- A hosting invitation grants access to world/configuration files and the ability to share hosting. Players who only join Minecraft need a player address, not enrollment.
+- Without a relay, the join form is the default; the invite view offers **Set up shared hosting** rather than an unexplained disabled action.
+- The preview displays group name, endpoint and expiry using text nodes; the full fingerprint is under **Verify details with your friend**. Editing the code/name or closing setup invalidates pending and completed previews. Joining requires an exact current, unexpired preview. Main independently repeats decoding/validation.
+- Codes and display-name drafts are transient, not saved in onboarding progress or local storage. Guide closure and play-only navigation are blocked while a mutation is pending; once idle, closing clears invitation drafts. Native cancellation preserves entries for retry; errors never echo invitation tokens. A verified successful retry clears the earlier cancellation/failure notice.
+- Successful enrollment requires authoritative read-back of the relay and endpoint. Joining does not create/download/start a server. Clean stops attempt to park at the relay; an offline relay leaves the world local.
+- **Members confirmed** means a successful membership read, not online presence. A failed refresh clears stale members. Custody remains based only on the relay's ledger, never an unrelated local server.
+- `tools/desktop-friends-check.mjs` and `tests/friends-ux-desktop.test.mjs` exercise isolated visible Electron profiles and a real loopback relay. Timing-only IPC substitutions are explicitly labelled in their concurrency cases. They are not two-physical-PC or Minecraft-gameplay evidence.

@@ -61,3 +61,10 @@ export function decodeInvite(code: string): Invite {
   if (invite.expiresAt <= Math.floor(Date.now() / 1000)) throw new Error('PeerHost invite has expired');
   return invite;
 }
+
+/** Local parsing only: does not authenticate/reach the relay or redeem the invitation. Never exposes its token. */
+export function previewInvite(code: string): { relayName: string; host: string; port: number; relayFingerprint: string; expiresAt: number } {
+  const invite = decodeInvite(code);
+  return { relayName: invite.relayName, host: invite.host, port: invite.port,
+    relayFingerprint: invite.relayFingerprint, expiresAt: invite.expiresAt * 1000 };
+}

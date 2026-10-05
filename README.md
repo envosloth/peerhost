@@ -54,7 +54,15 @@ Direct handoff needs both PCs online at once. An optional **relay**, a headless 
 
 ### Add a friend
 
-With a reachable relay configured, open **Peers → Add friend → Create invitation**, then send the single-use code privately. Your friend chooses **Join with an invitation**, enters their name and pastes the code. This enrolls their PC and configures the same relay without manual fingerprint exchange; nothing downloads or starts automatically. **Refresh members** shows the group and the current holder. The first member needs an invitation created on the relay itself. Invites expire after 24 hours by default; loopback codes work only on the same machine. Setup and owner controls: [friend invitations](docs/friends.md).
+**Only joining to play Minecraft?** Ask the host for the Minecraft address shown under **My server → How to join**. A hosting invitation is not a player address: it gives a trusted friend access to world/configuration files and permission to share hosting.
+
+To share hosting, open **Friends**:
+
+1. **Invite a friend:** with a reachable always-on relay configured, choose **Create invitation**, approve the access warning, and **Copy invitation**. Send the code privately to one trusted friend. Without a group, **Set up shared hosting** opens the optional always-on PC guide.
+2. **I have an invitation:** paste the complete `PEERHOST-…` code, enter your own display name, then choose **Check invitation**. This only reads the code locally; it does not contact the relay, consume the invitation, or prove connectivity. Review the group name, address and expiry; compare the full fingerprint with your friend through a trusted channel.
+3. **Review & join group:** approve the native confirmation to enroll this PC and save the relay. Nothing downloads or starts automatically. Clean stops then attempt to park the world at that relay; an unreachable relay leaves the world local. **Refresh members** checks membership and current custody, not who is online.
+
+The first member needs an invitation created on the relay itself. Invites allow one new PC and expire after 24 hours by default; creating another code does not revoke earlier codes. Loopback codes work only on the same machine. See [friend invitations](docs/friends.md) for setup, recovery and owner controls.
 
 Old server execution directories and revisions are retained until you click **Free up space**, which (after a native confirmation) deletes earlier managed server folders, interrupted transfer staging, and revisions older than the current one and its two parents. The original imported folder is never touched. Conflicting ownership is refused rather than silently replaced or merged. Keep independent backups. Only an online device holding the latest complete revision can supply it; no free unlimited always-online availability is implied.
 

@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PeerHostApplication } from '../../src/core/application.js';
 import { loadIdentity } from '../../src/core/identity-store.js';
 import { validateCall } from '../../src/core/ipc-policy.js';
+import { decodeInvite, previewInvite } from '../../src/core/invites.js';
 import { applicationMenuTemplate } from './menu.js';
 import { ServerSetupClient, discoverJava, probeJava, type CreateServerInput } from '../../src/core/server-setup.js';
 const setupLinks: Record<string,string> = Object.freeze({
@@ -111,9 +112,21 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
           if(!await confirm('Invite a friend to share hosting?', 'Anyone who redeems this one-use invitation can access the server files and take a turn hosting through your relay. Send it privately to someone you trust.'))return;
           return backend.createInvite();
         case 'listFriends':return backend.listFriends();
-        case 'joinWithInvite':
-          if(!await confirm('Join this friend’s hosting relay?', 'Only use an invitation received privately from a trusted friend. It pins their relay certificate and authorizes this PC to share hosting. It does not download or start a server.'))return;
+        case 'previewInvite': {
+          return previewInvite(p.code);
+        }
+        case 'joinWithInvite': {
+          const invite=decodeInvite(p.code);
+          if(!await confirm('Join this friend’s hosting relay?', `Group: ${invite.relayName}
+Always-on PC: ${invite.host}:${invite.port}
+Invitation expires: ${new Date(invite.expiresAt * 1000).toISOString()}
+Full relay fingerprint: ${invite.relayFingerprint}
+
+These details are parsed locally from the invitation; they do not prove the group is authentic or the always-on PC is reachable. Compare the full relay fingerprint with your friend via a trusted channel before continuing. Only use an invitation received privately from a trusted friend.
+
+Joining pins the relay certificate and authorizes this PC. Members of this group can read your world files and share hosting. It does not download or start a server. Clean stops will attempt to send the world to the always-on PC. If that PC is offline, the world stays local.`))return;
           return backend.joinWithInvite(p as {code:string;name:string});
+        }
         case 'addMods':{
           // Paths come only from the native picker, never from the renderer.
           const client=p.kind==='client';

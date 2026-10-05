@@ -23,3 +23,16 @@ test('preload forwards only the window chrome controls main implements',async()=
   assert.deepEqual(invoked.map(a=>a[1]),chrome);
   await assert.rejects(exposed.peerhost.call('windowSetBounds',{}),/method/i);
 });
+test('preload forwards read-only invitation preview without exposing extra privileges',async()=>{
+  const source=await readFile(new URL('../apps/desktop/preload.cjs',import.meta.url),'utf8');
+  const exposed:Record<string,any>={};const invoked:any[]=[];
+  runInNewContext(source,{exports:{},require:()=>({contextBridge:{exposeInMainWorld:(key:string,api:any)=>{exposed[key]=api;}},ipcRenderer:{invoke:(...args:any[])=>{invoked.push(args);return Promise.resolve({relayName:'Friends'});}}})});
+  const payload={code:'PEERHOST-test-input'};
+  await assert.doesNotReject(exposed.peerhost.call('previewInvite',payload));
+  assert.equal(invoked.length,1);
+  assert.equal(invoked[0][0],'peerhost:call');
+  assert.equal(invoked[0][1],'previewInvite');
+  assert.equal(invoked[0][2],payload,'the main process must validate the original code');
+  await assert.rejects(exposed.peerhost.call('decodeInvite',payload),/method/i);
+  assert.equal(invoked.length,1,'no additional API is exposed');
+});

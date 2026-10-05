@@ -1,6 +1,7 @@
 // Real visible Electron + live Modrinth + loopback relay. No fabricated Modrinth responses.
 // Run after npm run build. --static checks the renderer contract without opening a window.
 // --mods-only exercises only the live catalogue/install path, not friends or relay handoff.
+// --friends-only exercises enrollment/membership/custody without Modrinth requests.
 import assert from 'node:assert/strict';
 import { dismissInitialSetup, reveal } from './desktop-test-setup.mjs';
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
@@ -30,6 +31,8 @@ if (process.argv.includes('--static')) {
   const apps = [];
   const errors = [];
   const modsOnly = process.argv.includes('--mods-only');
+  const friendsOnly = process.argv.includes('--friends-only');
+  assert.ok(!(modsOnly && friendsOnly), 'choose --mods-only or --friends-only, not both');
   let relay;
   let clipboard;
   const getState = (page) => page.evaluate(() => window.peerhost.call('getState'));
@@ -47,9 +50,12 @@ if (process.argv.includes('--static')) {
     return { app, page };
   }
   async function join(page, code, name) {
+    await click(page, '#friends-intent-join');
     await reveal(page, '#friend-code');
     await page.locator('#friend-code').fill(code);
     await page.locator('#friend-name').fill(name);
+    await click(page, '#check-invitation');
+    await wait(page, () => !document.querySelector('#join-friend').disabled);
     await click(page, '#join-friend');
     await wait(page, () => document.querySelector('#friend-feedback').textContent.includes('Joined'));
     await settled(page);
@@ -60,9 +66,9 @@ if (process.argv.includes('--static')) {
     let b;
     if (!modsOnly) {
     console.log('Checking validation before any join or network search.');
-    await click(a.page, '#join-friend');
+    await click(a.page, '#check-invitation');
     await wait(a.page, () => document.querySelector('#friend-name').getAttribute('aria-invalid') === 'true');
-    await a.page.locator('#dismiss-error').click();
+    if (await a.page.locator('#dismiss-error').isVisible()) await a.page.locator('#dismiss-error').click();
     relay = new RelayNode(path.join(root, 'relay'), await createIdentity(), { name: 'QA relay', log: () => {} });
     await relay.open(); await relay.listen();
     await join(a.page, (await relay.createInvite({ hours: 1 })).code, 'Angel <QA>');
@@ -88,6 +94,7 @@ if (process.argv.includes('--static')) {
     await click(a.page, '#import-server');
     await wait(a.page, () => document.querySelector('#server-name').textContent.includes('NOT Minecraft'));
     await settled(a.page);
+    if (!friendsOnly) {
     await a.page.locator('#mods-details > summary').click();
     await reveal(a.page, '#mod-loader');
     await a.page.locator('#mod-loader').selectOption('fabric');
@@ -148,6 +155,7 @@ if (process.argv.includes('--static')) {
       assert.deepEqual(overflow, [], `no browser/friends clipping at ${width}`);
       await a.page.screenshot({ path: path.join(root, `browser-friends-${width}.png`) });
     }
+    }
     if (!modsOnly) {
     console.log('Checking real relay holder updates through park and claim controls.');
     await click(a.page, '#refresh-friends');
@@ -158,14 +166,14 @@ if (process.argv.includes('--static')) {
     await click(b.page, '#claim-relay'); await settled(b.page);
     await wait(b.page, () => document.querySelector('#server-name').textContent === 'Received server');
     const claimed = await getState(b.page);
-    assert.ok(claimed.server.mods.server.some(mod => mod.source?.projectId === 'gvQqBUqZ'), 'claimed server carries the real downloaded mod and its provenance');
+    if (!friendsOnly) assert.ok(claimed.server.mods.server.some(mod => mod.source?.projectId === 'gvQqBUqZ'), 'claimed server carries the real downloaded mod and its provenance');
     assert.equal(claimed.server.snapshotId, (await getState(a.page)).server.snapshotId, 'both profiles agree on the final revision');
     await click(a.page, '#refresh-friends');
     await wait(a.page, () => document.querySelector('#friend-holder').textContent === 'Hosting: Sam');
     assert.equal((await getState(b.page)).server.ownership.owner, (await getState(b.page)).deviceId);
     }
     assert.deepEqual(errors, []);
-    console.log(modsOnly ? 'PASS: Mod-only visible check: live Modrinth popular/pagination/empty/search, native cancel/install, real jar + persisted provenance. Friends NOT exercised. Fixture is NOT Minecraft.' : 'PASS: Real relay invites, copy, join, members/holder park/claim; live Modrinth popular/pagination/empty/search, native cancel/install, real jar + persisted provenance. Fixture is NOT Minecraft.');
+    console.log(friendsOnly ? 'PASS: Friends-only visible check: real relay invitation preview/copy/join, members and holder park/claim. No Modrinth requests. Fixture is NOT Minecraft.' : modsOnly ? 'PASS: Mod-only visible check: live Modrinth popular/pagination/empty/search, native cancel/install, real jar + persisted provenance. Friends NOT exercised. Fixture is NOT Minecraft.' : 'PASS: Real relay invites, copy, join, members/holder park/claim; live Modrinth popular/pagination/empty/search, native cancel/install, real jar + persisted provenance. Fixture is NOT Minecraft.');
   } catch (error) {
     for (const [index, app] of apps.entries()) for (const page of app.windows()) if (!page.isClosed()) {
       console.error('UI DIAGNOSTIC:', await page.locator('#error-text').textContent(), await page.locator('#mod-search-status').textContent(), await page.locator('#friend-holder').textContent());

@@ -244,27 +244,44 @@
           </header>
           <div id="friends-home"></div>
           <section id="friends-controls" class="friends-section" aria-labelledby="add-friend-heading">
-            <div class="friends-grid">
-              <div class="card card-tight friend-card">
-                <div class="compact-heading"><h3 id="add-friend-heading">Invite a friend</h3><button id="create-invite" type="button" class="button button-small button-primary" disabled>Create invitation</button></div>
-                <p id="invite-help" class="field-help">Join a group first, then create an invitation code to send privately.</p>
-                <div id="invite-result" hidden><label for="invite-code">Invitation code</label><textarea id="invite-code" class="invite-code mono" readonly rows="3" spellcheck="false" aria-describedby="invite-expiry invite-warning"></textarea><div class="compact-heading"><span id="invite-expiry" class="field-help"></span><button id="copy-invite" type="button" class="text-button" disabled>Copy invitation</button></div><p id="invite-warning" class="warning-copy">Anyone with this code can join your relay once. Send it only to the friend you trust.</p></div>
+            <div class="friends-configure card card-tight">
+              <h2 id="add-friend-heading">Share hosting with a friend</h2>
+              <p class="field-help">Hosting invitations let trusted friends take turns running the world. Just want to play? Use a Minecraft address instead.</p>
+              <div class="friends-intents" role="group" aria-label="What would you like to do?">
+                <button id="friends-intent-invite" type="button" class="button" aria-pressed="false" aria-controls="invite-panel">Invite a friend</button>
+                <button id="friends-intent-join" type="button" class="button" aria-pressed="true" aria-controls="join-friend-details">I have an invitation</button>
               </div>
-              <details id="join-friend-details" class="join-friend-details card card-tight friend-card" open><summary><svg class="icon summary-chevron" aria-hidden="true"><use href="#i-chevron"/></svg><span class="summary-title">I have an invitation code</span></summary><form id="join-friend-form" class="join-friend-form" novalidate>
-                <label for="friend-name">Your name</label><input id="friend-name" type="text" maxlength="60" placeholder="A name your friends recognize" autocomplete="off" disabled>
-                <label for="friend-code">Paste invitation code</label><textarea id="friend-code" class="mono" rows="3" maxlength="2000" placeholder="PEERHOST-…" autocomplete="off" spellcheck="false" disabled></textarea>
-                <p class="field-help">Only accept codes from people you trust. Joining never starts a server.</p><button id="join-friend" type="submit" class="button button-small" disabled>Join group</button>
-              </form></details>
+              <section id="invite-panel" class="friend-card" aria-labelledby="invite-heading" hidden>
+                <div class="compact-heading"><h3 id="invite-heading">Send a hosting invitation</h3><button id="create-invite" type="button" class="button button-small button-primary" disabled>Create invitation</button></div>
+                <p id="invite-help" class="field-help">Set up shared hosting or use a friend’s invitation first.</p>
+                <div id="invite-no-group" class="friends-next-actions"><button id="friends-setup-hosting" type="button" class="button">Set up shared hosting</button><button id="friends-use-invitation" type="button" class="text-button">Use a friend’s invitation</button></div>
+                <div id="invite-result" hidden><label for="invite-code">Invitation code</label><textarea id="invite-code" class="invite-code mono" readonly rows="3" spellcheck="false" aria-describedby="invite-expiry invite-warning"></textarea><div class="compact-heading"><span id="invite-expiry" class="field-help"></span><button id="copy-invite" type="button" class="button button-primary button-large" disabled>Copy invitation</button></div><p id="invite-status" class="field-help" role="status" aria-live="polite"></p><ol id="invite-next-steps" class="invite-next-steps"><li>Send the code privately to one trusted friend.</li><li>Your friend chooses <strong>I have an invitation</strong> and enters their own display name.</li><li>They check the invitation, review the details with you, and join.</li></ol><p id="invite-warning" class="warning-copy">One use · expires in 24 hours. Anyone with this code can share hosting and access the world files. Creating a new code does not revoke previous invitations.</p></div>
+              </section>
+              <section id="join-friend-details" class="friend-card" aria-labelledby="join-friend-heading"><h3 id="join-friend-heading">Use your friend’s hosting invitation</h3><form id="join-friend-form" class="join-friend-form" novalidate>
+                <label for="friend-code">Paste invitation code</label><textarea id="friend-code" class="mono" rows="3" maxlength="2000" placeholder="PEERHOST-…" autocomplete="off" spellcheck="false" aria-describedby="friend-code-error" disabled></textarea><p id="friend-code-error" class="field-error" role="alert" hidden></p>
+                <label for="friend-name">Your display name</label><input id="friend-name" type="text" maxlength="60" placeholder="Your own name, so friends recognize you" autocomplete="off" aria-describedby="friend-name-error" disabled><p id="friend-name-error" class="field-error" role="alert" hidden></p>
+                <p class="field-help">Only accept codes sent privately by someone you trust. Joining never downloads or starts a server.</p>
+                <button id="check-invitation" type="button" class="button" disabled>Check invitation</button>
+                <div id="invitation-preview" class="invitation-preview" hidden>
+                  <h3>Review your invitation</h3>
+                  <dl class="preview-facts"><div><dt>Group</dt><dd id="preview-group"></dd></div><div><dt>Always-on PC address</dt><dd id="preview-address" class="mono"></dd></div><div><dt>Use by</dt><dd id="preview-expiry"></dd></div></dl>
+                  <p id="preview-local-warning" class="warning-copy" hidden>This invitation only works on this PC. Ask your friend for a new code using the always-on PC’s LAN or VPN address to join from another PC.</p>
+                  <details id="invitation-verify"><summary>Verify details with your friend</summary><label>Full relay fingerprint</label><code id="preview-fingerprint" class="preview-fingerprint"></code></details>
+                  <p class="warning-copy">These details are from the invitation, not a connection check. Verify with your friend before joining.</p>
+                </div>
+                <button id="join-friend" type="submit" class="button button-primary" disabled>Review &amp; join group</button><p id="join-friend-feedback" class="field-help" role="status" aria-live="polite"></p>
+              </form></section>
+              <div class="friends-play"><p class="field-help">Only playing Minecraft? Players need the server’s Minecraft address, not a hosting invitation.</p><button id="friends-play-only" type="button" class="text-button">Show how to join Minecraft</button></div>
             </div>
             <div class="card card-tight members-card">
-              <div class="compact-heading friend-list-heading"><h3>Group members</h3><button id="refresh-friends" type="button" class="text-button" disabled>Refresh members</button></div>
+              <div class="compact-heading friend-list-heading"><h3>Group members <span id="group-status" class="section-caption" role="status">No group</span></h3><button id="refresh-friends" type="button" class="text-button" disabled>Refresh members</button></div>
               <p id="friend-feedback" class="field-help" role="status" aria-live="polite">Not in a group yet.</p>
-              <p id="friend-holder" class="holder-line" role="status">Current holder: not checked</p><ul id="friend-list" class="friend-list" aria-label="Relay members"></ul>
+              <p id="friend-last-checked" class="field-help"></p><p id="friend-holder" class="holder-line" role="status">Current holder: not checked</p><ul id="friend-list" class="friend-list" aria-label="Relay members"></ul>
             </div>
           </section>
           <details id="advanced-peers" class="advanced-peers card"><summary><svg class="icon summary-chevron" aria-hidden="true"><use href="#i-chevron"/></svg><span class="summary-title">Advanced: direct PC-to-PC transfers</span><span class="summary-meta">Fingerprints</span></summary>
             <div class="advanced-body">
-              <p class="field-help">For experienced users. Pair two PCs by exchanging fingerprints, then send the world directly. Most people should use friends and an always-on PC instead.</p>
+              <p class="field-help">For experienced users. The current direct listener is loopback-only: it works on this PC, not between separate PCs. Use hosting invitations and an always-on PC for shared hosting.</p>
               <div class="peers-grid">
                 <div class="peers-col">
                   <div class="identity-block well"><div class="compact-heading"><label for="device-fingerprint">Your device fingerprint</label><button id="copy-fingerprint" type="button" class="text-button" disabled>Copy</button></div><textarea id="device-fingerprint" class="fingerprint mono" readonly rows="2" spellcheck="false" aria-describedby="fingerprint-help"></textarea><p id="fingerprint-help" class="field-help">Share this fingerprint through a separate, trusted channel. Both peers must trust each other.</p></div>

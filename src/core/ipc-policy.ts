@@ -7,7 +7,7 @@ import { validateOnboarding } from './onboarding.js';
 const NO_PAYLOAD=new Set(['getState','importServer','createSnapshot','startServer','stopServer','startPeerListener','cleanUp','parkAtRelay','claimFromRelay','checkRelay','exportClientPack','createInvite','listFriends','listSnapshots','listServerVersions','discoverJava','pickJava','checkGameGateway',
   // Window chrome acts only on the trusted app window.
   'getWindowState','windowMinimize','windowToggleFullscreen','windowClose','quitApp']);
-const METHODS=new Set([...NO_PAYLOAD,'saveProfile','sendCommand','saveSettings','addPeer','sendSnapshot','handoff','recoverStopped','saveRelay','addMods','removeMod','searchMods','installMod','saveModTarget','openModPage','joinWithInvite','saveOnboarding','restoreSnapshot','createServer','configureSimpleProfile','saveGameGateway','openSetupLink']);
+const METHODS=new Set([...NO_PAYLOAD,'saveProfile','sendCommand','saveSettings','addPeer','sendSnapshot','handoff','recoverStopped','saveRelay','addMods','removeMod','searchMods','installMod','saveModTarget','openModPage','previewInvite','joinWithInvite','saveOnboarding','restoreSnapshot','createServer','configureSimpleProfile','saveGameGateway','openSetupLink']);
 function boundedString(v:unknown,max:number):v is string{return typeof v==='string'&&v.length<=max&&!v.includes('\0');}
 function fingerprint(v:unknown):v is string{return typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);}
 export interface TrustedIpcContext {senderId:number;expectedSenderId:number;isMainFrame:boolean}
@@ -75,9 +75,14 @@ export function validateCall(method:unknown,payload:unknown,senderUrl:string,exp
     case 'openModPage':
       if(Object.keys(p).join(',')!=='slug'||!isProjectKey(p.slug)||p.slug==='..')throw new Error('Invalid mod slug');
       return {slug:p.slug};
-    case 'joinWithInvite':
+    case 'previewInvite': {
+      if(Object.keys(p).join(',')!=='code'||!boundedString(p.code,1500)||!p.code.trim())throw new Error('Invalid invite code');
+      return {code:p.code};
+    }
+    case 'joinWithInvite': {
       if(Object.keys(p).sort().join(',')!=='code,name'||!boundedString(p.code,1500)||!p.code.trim()||!boundedString(p.name,60)||!p.name.trim()||/[\r\n]/.test(p.name))throw new Error('Invalid invite code or friend name');
       return {code:p.code,name:p.name};
+    }
     case 'addMods':
       if(Object.keys(p).join(',')!=='kind'||!isModKind(p.kind))throw new Error('Invalid mod kind');
       return {kind:p.kind};

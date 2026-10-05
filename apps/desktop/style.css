@@ -448,7 +448,14 @@ input.switch:disabled { opacity: .5; }
 
 /* ---------- Friends page ---------- */
 .friends-section { display: flex; flex-direction: column; gap: 16px; }
-.friends-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 16px; align-items: start; }
+.friends-configure { min-width: 0; }
+.friends-configure > .field-help { margin-top: 4px; }
+.friends-intents { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0; }
+.friends-intents .button { flex: 1 1 180px; }
+.friends-intents [aria-pressed="true"] { border-color: var(--accent-text); background: var(--tint); color: var(--accent-text); }
+.friends-next-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 14px; }
+.friends-play { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line); }
+.friends-configure .friend-card { max-width: 680px; }
 .friend-card .compact-heading { flex-wrap: wrap; }
 .compact-heading, .panel-heading { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .compact-heading label { margin: 0 !important; }
@@ -456,13 +463,27 @@ input.switch:disabled { opacity: .5; }
 #invite-result { margin-top: 12px; }
 #invite-result .compact-heading { margin-top: 6px; }
 .invite-code { overflow-wrap: anywhere; word-break: break-all; }
+#invite-result .compact-heading { flex-wrap: wrap; }
+#copy-invite { min-width: 200px; }
+#invite-status { margin-top: 8px; }
+.invite-next-steps { padding-left: 20px; margin: 12px 0 0; color: var(--muted); font-size: 12px; }
+.invite-next-steps li + li { margin-top: 6px; }
 details.join-friend-details.card { padding: 16px; }
 [data-density="compact"] details.join-friend-details.card { padding: 12px; }
 details.join-friend-details > summary { padding: 0; font-size: 13px; }
 details.join-friend-details.card[open] > summary { margin-bottom: 4px; border: 0; }
 .join-friend-form label { margin-top: 12px; }
 .join-friend-form .field-help { margin-top: 8px; }
+.field-error { color: var(--danger); font-size: 12px; margin-top: 6px; overflow-wrap: anywhere; }
 .join-friend-form .button { width: 100%; margin-top: 12px; }
+.invitation-preview { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line-strong); }
+.preview-facts { display: grid; gap: 7px; margin-top: 10px; }
+.preview-facts > div { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 12px; font-size: 12px; }
+.preview-facts dt { color: var(--dim); }
+.preview-facts dd { overflow-wrap: anywhere; }
+#invitation-verify { margin-top: 10px; }
+#invitation-verify > summary { padding: 6px 0; color: var(--accent-text); font-size: 12px; }
+.preview-fingerprint { display: block; overflow-wrap: anywhere; user-select: all; color: var(--muted); }
 .members-card #friend-feedback { margin-top: 4px; }
 .holder-line { margin-top: 8px; font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere; }
 .friend-list { display: grid; gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }

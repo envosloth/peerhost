@@ -358,6 +358,11 @@
     if (step) setupDraft.step = step;
     renderSetup(); $('setup-save-close').focus();
   }
+  function closeSetup() {
+    if (isBusy()) return false;
+    $('setup-dialog').close(); setupReturnFocus?.focus();
+    return true;
+  }
   async function saveSetup(step, close = false, skipped = false) {
     if (!setupDraft || isBusy()) return;
     const payload = setupPayload();
@@ -371,7 +376,7 @@
       setupDraft = payload;
     });
     if (!saved) { $('setup-close-unsaved').hidden = false; return; }
-    if (close) { $('setup-dialog').close(); setupReturnFocus?.focus(); }
+    if (close) closeSetup();
     else { renderSetup(); $('setup-dialog').querySelector('.setup-body').scrollTop = 0; $('setup-save-close').focus(); }
   }
   $('nav-setup').addEventListener('click', () => openSetup());
@@ -379,15 +384,17 @@
   $('create-server-empty').addEventListener('click', () => { openSetup('server'); if (!state?.server) { setupMode = 'create'; renderSetup(); $('setup-name').focus(); } });
   $('import-server-empty').addEventListener('click', () => { openSetup('server'); $('setup-import').focus(); });
   $('setup-choose-create').addEventListener('click', () => { if ($('setup-choose-create').disabled) return; setupMode = 'create'; renderSetup(); $('setup-name').focus(); });
-  $('setup-choose-join').addEventListener('click', () => { if (!$('setup-choose-join').disabled) void saveSetup('friends').then(() => { $('join-friend-details').open = true; }); });
+  $('setup-choose-join').addEventListener('click', () => { if (!$('setup-choose-join').disabled) void saveSetup('friends').then(() => selectFriendIntent('join')); });
   $('setup-all-versions').addEventListener('change', renderVersions);
   for (const button of document.querySelectorAll('[data-setup-step]')) button.addEventListener('click', () => saveSetup(button.dataset.setupStep));
   for (const id of ['setup-save-close', 'setup-later']) $(id).addEventListener('click', () => saveSetup(setupDraft.step, true));
   $('setup-dialog').addEventListener('cancel', event => { event.preventDefault(); void saveSetup(setupDraft.step, true); });
-  $('setup-close-unsaved').addEventListener('click', () => { if (!isBusy()) { $('setup-dialog').close(); setupReturnFocus?.focus(); } });
+  $('setup-close-unsaved').addEventListener('click', () => closeSetup());
   $('setup-dialog').addEventListener('close', () => {
     $('friends-home').after($('friends-controls'));
-    invitation = null; $('invite-code').value = ''; $('friend-code').value = ''; renderFriends();
+    invitation = null; inviteCopyStatus = ''; joinNotice = ''; $('invite-code').value = ''; $('friend-code').value = ''; $('friend-name').value = '';
+    for (const id of ['friend-name', 'friend-code']) { $(id).removeAttribute('aria-invalid'); $(`${id}-error`).hidden = true; $(`${id}-error`).textContent = ''; }
+    invalidateInvitation(); renderFriends();
   });
   $('setup-back').addEventListener('click', () => {
     if (setupDraft.step === 'server' && setupMode === 'create') { setupMode = 'choose'; return renderSetup(); }
@@ -540,13 +547,17 @@
     await loadSnapshots();
   });
 
+  let playHelpRequested = false;
   function renderJoinHelp() {
     const server = state?.server;
     const port = server?.playerPort ?? 25565;
     const suffix = port === 25565 ? '' : `:${port}`;
     const show = Boolean(server) && ownsServer() || isHosting();
-    $('join-help').hidden = !show;
-    if (!show) return;
+    $('join-help').hidden = !show && !playHelpRequested;
+    if (!show) {
+      if (playHelpRequested) $('join-help').replaceChildren(element('p', 'join-title', 'To play, ask your host for the Minecraft server address.'), element('p', 'field-help', 'Open Minecraft Java → Multiplayer → Add Server. A hosting invitation is not a Minecraft address. If you are the host, create or import a server here first; nothing starts automatically.'));
+      return;
+    }
     const lan = (state?.lanAddresses || []).map(address => `${address}:${port}`);
     const running = server.state === 'running';
     const rows = [
@@ -873,6 +884,77 @@
     }
   });
 
+  let friendIntent = null;
+  function selectFriendIntent(intent) {
+    if (friendIntent !== intent) invalidateInvitation();
+    friendIntent = intent; renderFriends();
+  }
+  $('friends-intent-invite').addEventListener('click', () => selectFriendIntent('invite'));
+  $('friends-intent-join').addEventListener('click', () => selectFriendIntent('join'));
+  $('friends-use-invitation').addEventListener('click', () => { selectFriendIntent('join'); $('friend-code').focus(); });
+  $('friends-setup-hosting').addEventListener('click', () => openSetup('gateway'));
+  $('friends-play-only').addEventListener('click', () => {
+    if (!bridgeReady || isBusy()) return;
+    if ($('setup-dialog').open && !closeSetup()) return;
+    playHelpRequested = true;
+    selectPage('operate'); renderJoinHelp();
+    $('join-help').scrollIntoView({ block: 'center' });
+  });
+  let checkedInvitation = null;
+  let checkingInvitation = false;
+  let invitationRequest = 0;
+  let invitationTimer = null;
+  function invalidateInvitation() {
+    invitationRequest++; checkedInvitation = null; checkingInvitation = false;
+    clearTimeout(invitationTimer); $('invitation-verify').open = false;
+  }
+  const currentInvitation = () => checkedInvitation && checkedInvitation.code === $('friend-code').value && checkedInvitation.name === $('friend-name').value && checkedInvitation.details.expiresAt > Date.now();
+  let joinNotice = '';
+  function invitationProblem(error, method = 'previewInvite') {
+    const reason = errorMessage(error);
+    if (/could not be confirmed/i.test(reason)) return 'Couldn’t confirm the saved group details. Your invitation is kept. This PC may already be enrolled; retry the same code on this PC or ask your friend to check its members.';
+    if (/already used/i.test(reason)) return /expired|not valid/i.test(reason) ? 'This invitation may be expired or already used. Ask your friend for a new code.' : 'This invitation was already used. Ask your friend for a new code.';
+    if (/expired/i.test(reason)) return 'This invitation has expired. Ask your friend for a new code.';
+    if (/damaged|incomplete|not a .*invite|invalid.*invitation/i.test(reason)) return 'This invitation is damaged or incomplete. Copy the complete code from your friend and paste it again.';
+    if (method === 'joinWithInvite') return 'Couldn’t confirm joining. Your invitation is kept. Retry the same code on this PC. Check that you’re on the same network / VPN and that the always-on PC is running.';
+    return 'Couldn’t check this invitation. Ask your friend for a complete, unexpired code and try again.';
+  }
+  function invitationFieldsValid() {
+    const name = $('friend-name').value, code = $('friend-code').value;
+    const errors = [
+      ['friend-name', !name.trim() || name.length > 60 || /[\p{Cc}]/u.test(name), 'Enter your own display name (up to 60 characters).'],
+      ['friend-code', !/^PEERHOST-[A-Za-z0-9_-]+$/.test(code.trim()) || code.length > 1500, 'Copy the complete PEERHOST- invitation code, then paste it here.'],
+    ];
+    for (const [id, bad, message] of errors) {
+      $(id).toggleAttribute('aria-invalid', bad);
+      if (bad) $(id).setAttribute('aria-invalid', 'true');
+      $(`${id}-error`).textContent = bad ? message : ''; $(`${id}-error`).hidden = !bad;
+    }
+    const first = errors.find(([, bad]) => bad);
+    if (first) { $(first[0]).focus(); return false; }
+    return true;
+  }
+  $('check-invitation').addEventListener('click', async () => {
+    if ($('check-invitation').disabled) return;
+    const code = $('friend-code').value, name = $('friend-name').value;
+    if (!invitationFieldsValid()) return;
+    invalidateInvitation();
+    const token = invitationRequest;
+    checkingInvitation = true; renderFriends();
+    try {
+      const details = await window.peerhost.call('previewInvite', { code });
+      if (typeof details?.relayName !== 'string' || typeof details.host !== 'string' || !Number.isInteger(details.port) || details.port < 1 || details.port > 65535 || !/^[a-f0-9]{64}$/.test(details.relayFingerprint) || !Number.isFinite(details.expiresAt) || details.expiresAt <= Date.now()) throw new Error('Invalid or expired invitation.');
+      if (token !== invitationRequest || code !== $('friend-code').value || name !== $('friend-name').value) return;
+      checkedInvitation = { code, name, details };
+      invitationTimer = setTimeout(() => { invalidateInvitation(); renderFriends(); }, Math.min(details.expiresAt - Date.now(), 2147483647));
+    } catch (error) {
+      if (token === invitationRequest) {
+        const message = invitationProblem(error);
+        $('friend-code-error').textContent = message; $('friend-code-error').hidden = false; $('friend-code').setAttribute('aria-invalid', 'true');
+        showError(message);
+      }
+    } finally { if (token === invitationRequest) { checkingInvitation = false; renderFriends(); } }
+  });
   let friendContext = null;
   let friends = null;
   let friendRequest = 0;
@@ -880,6 +962,7 @@
   let friendError = '';
   let friendCheckedAt = 0;
   let invitation = null;
+  let inviteCopyStatus = '';
   let renderedFriends = null;
   function renderFriends() {
     const context = state?.relay?.fingerprint || null;
@@ -888,20 +971,43 @@
       friendRequest++; friends = null; friendsLoading = false; friendError = '';
       invitation = null; renderedFriends = null; friendCheckedAt = 0;
       $('invite-code').value = '';
-      $('join-friend-details').open = !context;
+      friendIntent = context ? 'invite' : 'join';
       $('friend-feedback').textContent = context ? `You’re in the group on ${state.relay.name}.` : 'Not in a group yet.';
     }
+    if (!friendIntent) friendIntent = context ? 'invite' : 'join';
+    $('friends-intent-invite').setAttribute('aria-pressed', String(friendIntent === 'invite'));
+    $('friends-intent-join').setAttribute('aria-pressed', String(friendIntent === 'join'));
+    $('invite-panel').hidden = friendIntent !== 'invite';
+    $('join-friend-details').hidden = friendIntent !== 'join';
+    $('invite-no-group').hidden = Boolean(context);
+    $('create-invite').hidden = !context;
     const blocked = !bridgeReady || isBusy();
-    for (const id of ['friend-name', 'friend-code', 'join-friend']) $(id).disabled = blocked;
+    for (const id of ['friend-name', 'friend-code']) $(id).disabled = blocked;
+    $('friends-play-only').disabled = blocked;
+    $('check-invitation').disabled = blocked || checkingInvitation;
+    $('check-invitation').textContent = checkingInvitation ? 'Checking invitation…' : 'Check invitation';
+    const differentGroup = checkedInvitation && state?.relay && state.relay.fingerprint !== checkedInvitation.details.relayFingerprint;
+    $('join-friend').disabled = blocked || !currentInvitation() || Boolean(differentGroup) || !isStopped();
+    $('invitation-preview').hidden = !checkedInvitation;
+    const preview = checkedInvitation?.details;
+    $('preview-group').textContent = preview?.relayName || '';
+    $('preview-address').textContent = preview ? formatEndpoint(preview.host, preview.port) : '';
+    $('preview-local-warning').hidden = !preview || !/^(?:localhost|127(?:\.\d{1,3}){3})$/i.test(preview.host);
+    $('preview-expiry').textContent = preview ? `Expires ${new Date(preview.expiresAt).toLocaleString()}` : '';
+    $('preview-fingerprint').textContent = preview?.relayFingerprint || '';
+    $('join-friend-feedback').textContent = joinNotice || (differentGroup ? 'This invitation is for a different group. To switch deliberately, open Settings → Network → Relay, choose None, and Save settings first. Nothing has been cleared automatically.' : !isStopped() ? 'Stop your server before joining a hosting group. Your invitation is kept.' : '');
     $('create-invite').disabled = blocked || !context;
     $('invite-help').textContent = context ? `Creates a one-time code for one friend. It expires in 24 hours.` : 'Join a group first, then create an invitation code to send privately.';
     $('invite-result').hidden = !invitation;
+    $('invite-status').textContent = invitation ? inviteCopyStatus : '';
     const expired = invitation && invitation.expiresAt <= Date.now();
     $('copy-invite').disabled = !bridgeReady || !invitation || expired;
     $('invite-expiry').textContent = invitation ? expired ? 'Expired · create a new invitation.' : `Expires ${new Date(invitation.expiresAt).toLocaleString()}` : '';
     $('refresh-friends').disabled = !bridgeReady || !context || friendsLoading;
     $('refresh-friends').textContent = friendsLoading ? 'Refreshing…' : 'Refresh members';
     $('friend-list').setAttribute('aria-busy', String(friendsLoading));
+    $('group-status').textContent = !context ? 'No group' : !bridgeReady ? 'Not checked · app unavailable' : friendsLoading ? 'Checking members…' : friendError ? 'Unreachable · retry' : friends ? 'Members confirmed' : 'Not checked';
+    $('friend-last-checked').textContent = friendCheckedAt ? `Last checked ${new Date(friendCheckedAt).toLocaleTimeString()}${friendError ? ' · unsuccessful' : ''}. Membership is not online presence.` : '';
     const custodyLabels = {
       unknown: 'Hosting: unknown · the always-on PC hasn’t stored this world yet.',
       parked: 'Hosting: nobody · the world is waiting on the always-on PC.',
@@ -916,7 +1022,7 @@
       renderedFriends = signature;
       $('friend-list').replaceChildren(...(friends?.members || []).map((member) => {
         const item = element('li', 'friend-item');
-        item.append(element('span', 'friend-name', member.name), element('span', 'subtle-label', member.you ? 'YOU' : 'MEMBER'));
+        item.append(element('span', 'friend-name', member.name), element('span', 'subtle-label', member.you ? 'You' : 'Can host'));
         item.title = `Fingerprint: ${member.fingerprint}`;
         return item;
       }));
@@ -935,7 +1041,7 @@
       friends = result;
     } catch (error) {
       if (token !== friendRequest || context !== friendContext) return;
-      friends = null; friendError = errorMessage(error);
+      friends = null; friendError = 'Check the same network / VPN and that the always-on PC is running.';
     } finally {
       if (token === friendRequest) { friendsLoading = false; friendCheckedAt = Date.now(); renderFriends(); }
     }
@@ -946,25 +1052,42 @@
     return runAction('createInvite', undefined, (result) => {
       if (result === undefined) return; // Native consent was cancelled.
       if (typeof result?.code !== 'string' || !result.code.startsWith('PEERHOST-') || !Number.isFinite(result.expiresAt)) throw new Error('Relay did not return a valid invitation.');
-      invitation = result; $('invite-code').value = result.code;
+      invitation = result; inviteCopyStatus = 'Ready to copy. Send privately to one friend.'; $('copy-invite').textContent = 'Copy invitation'; $('invite-code').value = result.code;
       $('friend-feedback').textContent = 'Invitation created. Share it privately with one trusted friend.';
       renderFriends(); $('invite-code').focus(); $('invite-code').select();
     });
   });
-  $('copy-invite').addEventListener('click', () => copyText('copy-invite', invitation?.code || ''));
-  for (const id of ['friend-name', 'friend-code']) $(id).addEventListener('input', () => $(id).removeAttribute('aria-invalid'));
+  $('copy-invite').addEventListener('click', async () => {
+    if ($('copy-invite').disabled || !invitation) return;
+    const current = invitation;
+    try {
+      await navigator.clipboard.writeText(current.code);
+      if (invitation !== current) return;
+      inviteCopyStatus = 'Copied. Send the code privately to your friend.';
+      $('copy-invite').textContent = 'Copied'; renderFriends();
+    } catch {
+      if (invitation !== current) return;
+      inviteCopyStatus = 'Couldn’t copy. Select the complete code above and copy it manually.'; renderFriends();
+    }
+  });
+  for (const id of ['friend-name', 'friend-code']) $(id).addEventListener('input', () => {
+    $(id).removeAttribute('aria-invalid'); $(`${id}-error`).textContent = ''; $(`${id}-error`).hidden = true;
+    invalidateInvitation(); joinNotice = ''; renderFriends();
+  });
   $('join-friend-form').addEventListener('submit', (event) => {
     event.preventDefault();
-    if ($('join-friend').disabled) return;
+    if ($('join-friend').disabled || !currentInvitation() || !isStopped() || state?.relay && state.relay.fingerprint !== checkedInvitation.details.relayFingerprint) return;
     const name = $('friend-name').value;
     const code = $('friend-code').value;
     if (!name.trim() || name.length > 60 || /[\0\r\n]/.test(name)) return invalid('friend-name', 'Enter your name on the relay (up to 60 characters).');
     if (!/^PEERHOST-[A-Za-z0-9_-]+$/.test(code.trim()) || code.length > 2000) return invalid('friend-code', 'Paste the complete PEERHOST- invitation code.');
+    const expected = checkedInvitation.details;
     return runAction('joinWithInvite', { code, name }, async (result) => {
-      if (result === undefined) return; // Keep pasted details when consent is cancelled.
-      if (!state.relay || state.relay.name !== result?.relayName || state.relay.parkOnStop !== true) throw new Error('The joined relay could not be confirmed. Your entries have been kept.');
-      $('friend-code').value = '';
-      $('friend-feedback').textContent = `Joined the group on ${result.relayName}. Your world is handed to the always-on PC each time you stop.`;
+      if (result === undefined) { joinNotice = 'Not joined. Your invitation is kept.'; return; }
+      const peer = state.peers.find(entry => entry.fingerprint === expected.relayFingerprint);
+      if (!state.relay || state.relay.fingerprint !== expected.relayFingerprint || state.relay.parkOnStop !== true || state.relay.name !== result?.relayName || peer?.host !== expected.host || peer?.port !== expected.port) throw new Error('The joined relay could not be confirmed. Your entries have been kept.');
+      $('friend-code').value = ''; invalidateInvitation(); joinNotice = '';
+      $('friend-feedback').textContent = `Joined the group on ${result.relayName}. Nothing was downloaded or started. Next: receive the world from the always-on PC, review Java and mods, and start only when ready. Clean stops will try to send the world to the always-on PC; if it’s unreachable, the world stays here.`;
       await refreshFriends(); void checkRelay();
     });
   });
@@ -1066,7 +1189,9 @@
       if (state?.relay) void refreshFriends();
       return true;
     } catch (error) {
-      const message = `${ACTION_FAILURES[method] || `${method} failed`}: ${errorMessage(error)}`;
+      const reason = method === 'joinWithInvite' ? invitationProblem(error, method) : method === 'createInvite' ? 'Couldn’t create an invitation. Check the same network / VPN and that the always-on PC is running, then try again.' : errorMessage(error);
+      if (method === 'joinWithInvite') { joinNotice = reason; friendIntent = 'join'; }
+      const message = `${ACTION_FAILURES[method] || `${method} failed`}: ${reason}`;
       if (refreshInFlight) await refreshInFlight;
       await refresh(); // Failed operations can still alter process / ownership state.
       showError(message);
