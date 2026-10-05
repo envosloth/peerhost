@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp } from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { execFileSync } from 'node:child_process';
 import { _electron as electron } from 'playwright';
 import { dismissInitialSetup } from '../tools/desktop-test-setup.mjs';
 
@@ -99,7 +100,18 @@ test('splash, borderless/fullscreen toggle, page tabs, appearance, minimize, clo
     await page.keyboard.press('Escape');
     await page.waitForFunction(() => document.querySelector('#window-mode')?.getAttribute('data-mode') === 'borderless');
 
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1000, 700));
+    // Tiled Wayland windows ignore application-requested sizing; float only this isolated test process.
+    if (process.platform === 'linux' && process.env.HYPRLAND_INSTANCE_SIGNATURE) {
+      const pid = await app.evaluate(() => process.pid);
+      let luaDispatch = false;
+      try { luaDispatch = execFileSync('hyprctl', ['repl', 'return type(hl.dsp.window.float)'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() === 'function'; } catch { /* Legacy Hyprland has no Lua REPL. */ }
+      execFileSync('hyprctl', luaDispatch
+        ? ['dispatch', `hl.dsp.window.float({window='pid:${pid}', action='set'})`]
+        : ['dispatch', 'setfloating', 'pid:' + pid]);
+    }
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].unmaximize());
+    await page.waitForFunction(async () => !(await window.seedhost.call('getWindowState')).maximized);
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1000, 700));
     await page.waitForFunction(() => innerWidth <= 1000);
 
     // Each sidebar tab owns one page; only that page shows, only that tab is marked, focus stays on it.
@@ -169,10 +181,8 @@ test('splash, borderless/fullscreen toggle, page tabs, appearance, minimize, clo
     const rolled = await page.locator('#setup-name').inputValue();
     assert.ok(rolled && rolled !== 'Mossy Hollow', 'dice suggest a different name');
     assert.equal(await page.locator('#world-preview-name').textContent(), rolled);
-    assert.match(await page.locator('#world-preview-ready').textContent(), /EULA/, 'lists what is still needed');
-    await page.locator('#setup-eula').check();
-    assert.doesNotMatch(await page.locator('#world-preview-ready').textContent(), /EULA/);
-    await page.locator('#setup-eula').uncheck();
+    await page.waitForFunction(() => document.querySelector('#setup-version').value);
+    assert.match(await page.locator('#world-preview-ready').textContent(), /Ready to create/, 'no Java or EULA chores block a named world');
     await page.locator('#setup-memory').selectOption('3072');
     for (const [w, h] of [[1000, 700], [1240, 860]]) {
       await app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setSize(w, h), [w, h]);
@@ -196,9 +206,10 @@ test('splash, borderless/fullscreen toggle, page tabs, appearance, minimize, clo
     assert.deepEqual(await page.evaluate(() => ({ ...document.documentElement.dataset })), { theme: 'light', accent: 'violet', density: 'compact', depth: 'soft', motion: 'full' }, 'appearance survives reload');
 
     await page.locator('#window-minimize').click();
-    await app.evaluate(async ({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; for (let i = 0; i < 100 && !w.isMinimized(); i++) await new Promise((r) => setTimeout(r, 20)); });
-    assert.equal((await win(app)).minimized, true);
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].restore());
+    await app.evaluate(async ({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; for (let i = 0; i < 100 && !w.isMinimized() && w.isVisible(); i++) await new Promise((r) => setTimeout(r, 20)); });
+    const minimized = await win(app);
+    assert.ok(minimized.minimized || !minimized.visible, 'minimize either minimizes natively or hides to the recoverable tray on Wayland');
+    await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; w.restore(); w.show(); w.focus(); });
     await page.locator('#window-close').click();
     await app.evaluate(async ({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; for (let i = 0; i < 100 && w.isVisible(); i++) await new Promise((r) => setTimeout(r, 20)); });
     const closed = await win(app);

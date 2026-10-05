@@ -148,7 +148,8 @@ Joining pins the relay certificate and authorizes this PC. Members of this group
         case 'claimFromRelay':if(await confirm('Claim the server from the relay?','The newest stored revision is copied into a new folder on this PC and this PC becomes the host. Old folders are kept. Nothing starts automatically; review the launch profile and executable/mod trust first.'))return backend.claimFromRelay();return;
         case 'cleanUp':if(await confirm('Delete old server copies and revisions?','This permanently deletes earlier managed server folders, interrupted transfers, and snapshot revisions older than the current one and its two parents. The current server folder and current revision are kept. Your original imported folder is never touched.'))return backend.cleanUp();return;
         case 'getWindowState':return windowState();
-        case 'windowMinimize':window.minimize();return windowState();
+        // Wayland tiling compositors may ignore native minimize requests; the tray keeps a hidden window recoverable.
+        case 'windowMinimize':if(process.platform==='linux' && process.env.WAYLAND_DISPLAY)window.hide();else window.minimize();return windowState();
         case 'windowToggleFullscreen':window.setFullScreen(!window.isFullScreen());return windowState();
         case 'windowClose':window.close();return;
         case 'quitApp':void quit();return;
