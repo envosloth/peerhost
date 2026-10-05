@@ -13,7 +13,7 @@ const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
 const app=await electron.launch({executablePath:createRequire(import.meta.url)('electron'),args:[...(process.platform==='linux'?['--password-store=gnome-libsecret']:[]),path.join(project,'dist/apps/desktop/main.js'),'--profile-root='+path.join(root,'profile')],env});
 try {
  const page=await app.firstWindow();
- const getState=()=>page.evaluate(()=>window.peerhost.call('getState'));
+ const getState=()=>page.evaluate(()=>window.seedhost.call('getState'));
  const wait=fn=>page.waitForFunction(fn,undefined,{timeout:15000});
  await wait(()=>document.querySelector('#activity-message').textContent.startsWith('Ready'));
  await app.evaluate(({dialog},source)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[source]});dialog.showMessageBox=async()=>({response:1});},source);
@@ -26,7 +26,7 @@ try {
  await page.locator('#save-profile').click();await wait(()=>!document.querySelector('#start-server').disabled);
  await page.locator('#start-server').click();await wait(()=>document.querySelector('#server-status').textContent==='Hosting');
  const before=await getState();
- const index=path.join(before.server.serverDir,'peerhost-mods.json');
+ const index=path.join(before.server.serverDir,'seedhost-mods.json');
  await writeFile(index,'{');
  await wait(()=>document.querySelector('#mod-target-feedback').textContent.includes('Mod information unavailable'));
  assert.equal(await page.locator('#stop-server').isDisabled(),false,'Stop is reachable during index failure');
@@ -41,7 +41,7 @@ try {
  assert.equal(stopped.server.snapshotId,stopped.server.ownership.snapshotId);
  await writeFile(index,JSON.stringify({version:1,target:null,mods:[]}));
  await wait(()=>!document.querySelector('#start-server').disabled);
- const fence=path.join(before.server.serverDir,'peerhost-mod-install.json');
+ const fence=path.join(before.server.serverDir,'seedhost-mod-install.json');
  await writeFile(fence,'{}');
  await wait(()=>document.querySelector('#mod-target-feedback').textContent.includes('Incomplete or uncertain mod install'));
  assert.equal(await page.locator('#start-server').isDisabled(),true,'interrupted installs disable Start');

@@ -208,7 +208,7 @@ export class ServerSetupClient {
     if (!Number.isSafeInteger(download.size) || (download.size as number) < 1 || (download.size as number) > this.maxArtifactBytes || !isHash(download.sha1, 40)) throw new Error('Missing verifiable official server download');
     const bytes = await this.bytes(download.url, ['piston-data.mojang.com', 'launcher.mojang.com'], download.size as number, operation);
     if (bytes.length !== download.size || createHash('sha1').update(bytes).digest('hex') !== download.sha1) throw new Error('Server download integrity check failed');
-    const sourceDir = await mkdtemp(path.join(stagingParent, 'peerhost-setup-'));
+    const sourceDir = await mkdtemp(path.join(stagingParent, 'seedhost-setup-'));
     try {
       await writeFile(path.join(sourceDir, 'server.jar'), bytes, { flag: 'wx', mode: 0o600 });
       if (input.loader === 'fabric') await this.prepareFabric(sourceDir, input.gameVersion, java.major, this.maxArtifactBytes - bytes.length, operation);

@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { createIdentity } from '../src/core/peer-transport.js';
-import { PeerHostApplication } from '../src/core/application.js';
+import { SeedHostApplication } from '../src/core/application.js';
 
 const cli = path.resolve('dist/src/relay/cli.js');
 function run(args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
@@ -49,7 +49,7 @@ test('the headless relay CLI initializes, trusts a host, serves a park, reports 
   const source = path.join(root, 'source');
   await mkdir(source);
   await writeFile(path.join(source, 'world.bin'), 'parked by the CLI test');
-  const app = new PeerHostApplication(path.join(root, 'host'), identity);
+  const app = new SeedHostApplication(path.join(root, 'host'), identity);
   t.after(() => app.close().catch(() => {}));
   await app.open();
   await app.importExisting(source, true);

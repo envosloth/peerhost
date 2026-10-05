@@ -201,7 +201,7 @@ test('materializes independent file copies and retains the replaced directory as
       await readFile(path.join(source, ...file.path.split('/'))));
   }
   await assert.rejects(readFile(path.join(destination, 'old.txt')), /ENOENT/);
-  const backups = (await readdir(dir)).filter((name) => name.startsWith('.peerhost-previous-'));
+  const backups = (await readdir(dir)).filter((name) => name.startsWith('.seedhost-previous-'));
   assert.equal(backups.length, 1);
   assert.equal(await readFile(path.join(dir, backups[0]!, 'old.txt'), 'utf8'), 'prior destination bytes');
   const file = snapshot.files[0]!;

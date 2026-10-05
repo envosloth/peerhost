@@ -1,6 +1,6 @@
-# PeerHost — local-first experimental alpha
+# SeedHost — local-first experimental alpha
 
-The desktop app is presented as **Seed Hosting**. The repository, package, IPC channel and profile folder keep the `peerhost` name.
+The desktop app is presented as **Seed Hosting**. The repository, package, Windows executable, relay binary, IPC channel, invite code prefix and profile folder all use the `seedhost` name.
 
 A Windows-first Minecraft Java server manager under development. Create a checked official Vanilla/Fabric server or import a **stopped** existing server into a separate managed copy, run it locally, retain world revisions, and explicitly hand ownership to a trusted peer. The original source is not edited. No cloud object storage or gateway is required for local hosting.
 
@@ -8,7 +8,7 @@ A Windows-first Minecraft Java server manager under development. Create a checke
 
 ## Run from source
 
-**Linux launcher:** `npm run install:linux` adds PeerHost to your app menu (and `~/Desktop` if it exists), rebuilding automatically when sources change.
+**Linux launcher:** `npm run install:linux` adds SeedHost to your app menu (and `~/Desktop` if it exists), rebuilding automatically when sources change.
 
 Use a modern Node runtime with built-in `node:sqlite` (development tested with Node 26.7.0; Electron's embedded Node 24.21.0 is used by the desktop). Java is not bundled.
 
@@ -21,10 +21,10 @@ npm start
 
 On the development Windows Git Bash session, use `command node` if its wrapper reports `stdin is not a tty`.
 
-The app keeps its own profile at `%APPDATA%/PeerHost`. `--profile-root=<absolute path>` selects an isolated development/test profile. Never copy, delete, or reinitialize ownership databases to unblock hosting. That can erase a safety fence.
+The app keeps its own profile at `%APPDATA%/SeedHost`. `--profile-root=<absolute path>` selects an isolated development/test profile. Never copy, delete, or reinitialize ownership databases to unblock hosting. That can erase a safety fence.
 
 1. Open **Setup guide**, or use the prominent **create a server** action in an empty **My server** page. Setup saves non-secret drafts/stages and can be closed or resumed at any time.
-2. **Create:** choose Vanilla/Fabric, release, trusted installed Java and RAM; explicitly read/accept the Minecraft EULA and approve native confirmation. Official files are checked before adoption. **Import:** stop the original server, select its folder through the native picker and confirm it is stopped; PeerHost preserves the original.
+2. **Create:** choose Vanilla/Fabric, release, trusted installed Java and RAM; explicitly read/accept the Minecraft EULA and approve native confirmation. Official files are checked before adoption. **Import:** stop the original server, select its folder through the native picker and confirm it is stopped; SeedHost preserves the original.
 3. **Java & hosting:** discover/select Java and configure RAM with native execution consent. Simple setup preserves existing Java arguments; argument files controlling RAM or ambiguous/scripted modpacks need **advanced Launch profile**. Example: `["-Xmx4G", "-jar", "server.jar", "nogui"]`. Start/stop timeouts default to 600/180 s.
 4. Friends and **Always-on PC** are optional skippable stages. Local hosting requires neither. The managed server must contain your explicitly accepted EULA; imported servers need their own acceptance.
 5. Start only executables/mods you trust. Nothing starts automatically. Stop cleanly before snapshots/handoffs; **Backups** offers confirmed restore into a separate managed folder with a safety revision and preserved ownership generation. See [beginner setup](docs/onboarding.md).
@@ -39,18 +39,18 @@ The app keeps its own profile at `%APPDATA%/PeerHost`. `--profile-root=<absolute
 
 ### Mods
 
-Open **Mods → Browse Modrinth** on the Operate page. PeerHost detects common Fabric, Quilt, Forge and NeoForge layouts; if detection is incomplete, select the loader and Minecraft version and click **Save compatibility**. Browse popular compatible mods, search, and click **Install**. Required dependencies are resolved and downloaded with SHA-512 verification before files are added; native consent is required. Installing requires this PC to own the stopped server.
+Open **Mods → Browse Modrinth** on the Operate page. SeedHost detects common Fabric, Quilt, Forge and NeoForge layouts; if detection is incomplete, select the loader and Minecraft version and click **Save compatibility**. Browse popular compatible mods, search, and click **Install**. Required dependencies are resolved and downloaded with SHA-512 verification before files are added; native consent is required. Installing requires this PC to own the stopped server.
 
 - **Server mods** are copied into the server's `mods/` folder and load on the next start.
 - **Client pack** holds client-only mods (shaders, minimaps, the client half of a modpack). The server never loads them. **Export client pack** writes a zip with a `mods/` folder and install instructions to hand to players.
 
-Placement follows Modrinth's declared client/server requirements. The existing **Add .jar…** buttons remain available for local files. Files and their Modrinth provenance travel with snapshots and relay claims. A checksum proves download integrity, not that a mod is harmless; review trusted sources and use the correct loader. PeerHost does not install or upgrade the loader itself. See [mod browsing](docs/mod-browser.md).
+Placement follows Modrinth's declared client/server requirements. The existing **Add .jar…** buttons remain available for local files. Files and their Modrinth provenance travel with snapshots and relay claims. A checksum proves download integrity, not that a mod is harmless; review trusted sources and use the correct loader. SeedHost does not install or upgrade the loader itself. See [mod browsing](docs/mod-browser.md).
 
 Only real `.jar` files are accepted; a batch with any invalid, duplicate or unsafe file is refused as a whole, and an existing mod is never overwritten (remove it first to update). Both lists live inside the managed server, so they travel with snapshots, handoffs and relay claims. Remove buttons delete from the current copy only; earlier snapshots keep their files.
 
 ### Optional relay (always-on storage)
 
-Direct handoff needs both PCs online at once. An optional **relay**, a headless `peerhost-relay` process on an always-on PC, stores the server between hosts: **Hand off to always-on PC** when you finish, and any trusted PC can **Take over hosting** later, even while the first PC is off. Park-on-stop can do this automatically. Parking and claiming are ordinary pinned, verified handoffs with one owner at a time; a lineage id stops a different server from passing as a newer one. Setup and guarantees: [relay documentation](docs/relay.md).
+Direct handoff needs both PCs online at once. An optional **relay**, a headless `seedhost-relay` process on an always-on PC, stores the server between hosts: **Hand off to always-on PC** when you finish, and any trusted PC can **Take over hosting** later, even while the first PC is off. Park-on-stop can do this automatically. Parking and claiming are ordinary pinned, verified handoffs with one owner at a time; a lineage id stops a different server from passing as a newer one. Setup and guarantees: [relay documentation](docs/relay.md).
 
 ### Add a friend
 
@@ -59,7 +59,7 @@ Direct handoff needs both PCs online at once. An optional **relay**, a headless 
 To share hosting, open **Friends**:
 
 1. **Invite a friend:** with a reachable always-on relay configured, choose **Create invitation**, approve the access warning, and **Copy invitation**. Send the code privately to one trusted friend. Without a group, **Set up shared hosting** opens the optional always-on PC guide.
-2. **I have an invitation:** paste the complete `PEERHOST-…` code, enter your own display name, then choose **Check invitation**. This only reads the code locally; it does not contact the relay, consume the invitation, or prove connectivity. Review the group name, address and expiry; compare the full fingerprint with your friend through a trusted channel.
+2. **I have an invitation:** paste the complete `SEEDHOST-…` code, enter your own display name, then choose **Check invitation**. This only reads the code locally; it does not contact the relay, consume the invitation, or prove connectivity. Review the group name, address and expiry; compare the full fingerprint with your friend through a trusted channel. Codes from a pre-rename build are not accepted; ask for a fresh invitation.
 3. **Review & join group:** approve the native confirmation to enroll this PC and save the relay. Nothing downloads or starts automatically. Clean stops then attempt to park the world at that relay; an unreachable relay leaves the world local. **Refresh members** checks membership and current custody, not who is online.
 
 The first member needs an invitation created on the relay itself. Invites allow one new PC and expire after 24 hours by default; creating another code does not revoke earlier codes. Loopback codes work only on the same machine. See [friend invitations](docs/friends.md) for setup, recovery and owner controls.
@@ -72,7 +72,7 @@ Old server execution directories and revisions are retained until you click **Fr
 - Single-use invitations pin the relay certificate; manual fingerprint trust remains available for advanced direct peers. No automatic discovery, NAT traversal, firewall/router changes, or public deployment. An explicitly enabled relay player listener supports host-initiated pinned TLS forwarding; see [game gateway](docs/game-gateway.md).
 - Persistent address is **optional and OFF by default**. The displayed-address preference does not enable routing. Enable actual host tunnels in **Setup → Always-on PC**, configure the local Minecraft port, and enable the third PC's separate player listener. Park/Claim establishes custody; only the confirmed running holder forwards. Players reconnect after a host change, and tunnel readiness is not Internet reachability.
 - Start-at-login is a saved preference only. No Windows startup entry is installed.
-- The window is frameless with no title strip; the window buttons sit on the page: **minimize**, a **fullscreen ⇄ borderless** toggle (also F11; Esc leaves fullscreen) and **✕**. By default ✕ hides PeerHost to the tray; *Settings → App → Close button* can make it quit instead. Use **Quit safely** in the sidebar or the tray menu to exit. Busy operations block quitting; running hosting requires a clean stop.
+- The window is frameless with no title strip; the window buttons sit on the page: **minimize**, a **fullscreen ⇄ borderless** toggle (also F11; Esc leaves fullscreen) and **✕**. By default ✕ hides SeedHost to the tray; *Settings → App → Close button* can make it quit instead. Use **Quit safely** in the sidebar or the tray menu to exit. Busy operations block quitting; running hosting requires a clean stop.
 - Fullscreen uses Electron's native fullscreen: the window takes the whole display and hides the taskbar. Chromium-based apps cannot use a GPU "exclusive fullscreen" display mode the way DirectX games can.
 - Appearance preferences (theme, accent, surface style, density, motion, close behavior) stay in the renderer's local storage on this PC. They are not part of hosting state, snapshots or relays.
 - Transfers send only the current revision, so history length never affects them. Bounds: 65,536 files, 16 GiB per file, 128 GiB per revision, and a 1 GiB free-disk reserve on the receiver; see [transfer documentation](docs/transfers.md). Both peers must run the same alpha (wire protocol v2).
@@ -96,12 +96,12 @@ npm run check:minecraft
 npm run package:windows
 ```
 
-The desktop checks open visible Electron windows and log each step. Legacy checks save screenshots under ignored `.test-data` and hold windows for inspection. Their server child is explicitly a **Node process fixture, NOT Minecraft**. QA substitutes native consent dialog answers, not the backend or IPC operations. The handoff check uses two actual application instances and pinned TLS on loopback. The relay check runs a real `peerhost-relay` process, parks from one instance, closes it, claims from the other, and reclaims on the first. The browser/friends check uses scratch profiles, downloads Lithium from live Modrinth, checks cancellation/install/persistence, and enrolls two profiles with real relay invites before park/claim. It saves screenshots in the scratch directory it prints and closes its instances automatically.
+The desktop checks open visible Electron windows and log each step. Legacy checks save screenshots under ignored `.test-data` and hold windows for inspection. Their server child is explicitly a **Node process fixture, NOT Minecraft**. QA substitutes native consent dialog answers, not the backend or IPC operations. The handoff check uses two actual application instances and pinned TLS on loopback. The relay check runs a real `seedhost-relay` process, parks from one instance, closes it, claims from the other, and reclaims on the first. The browser/friends check uses scratch profiles, downloads Lithium from live Modrinth, checks cancellation/install/persistence, and enrolls two profiles with real relay invites before park/claim. It saves screenshots in the scratch directory it prints and closes its instances automatically.
 
 Packaging creates a fresh unsigned Windows folder under `release/alpha-*`, checks bundled files and absence of test/private profiles, and prints its exact executable path. Do not distribute or treat a package as release-approved merely because it builds. To run visible handoff verification against that exact binary:
 
 ```sh
-node tools/desktop-handoff-check.mjs --packaged="C:/absolute/path/to/PeerHost.exe"
+node tools/desktop-handoff-check.mjs --packaged="C:/absolute/path/to/SeedHost.exe"
 ```
 
 ## Architecture and license

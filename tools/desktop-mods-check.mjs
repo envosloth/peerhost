@@ -14,7 +14,7 @@ await mkdir('.test-data', { recursive: true });
 const root = await mkdtemp(path.resolve('.test-data/desktop-mods-'));
 const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
 const errors = [];
-const state = (page) => page.evaluate(() => window.peerhost.call('getState'));
+const state = (page) => page.evaluate(() => window.seedhost.call('getState'));
 async function until(page, predicate, label, timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {

@@ -20,7 +20,7 @@ async function renderer(t, state = appState()) {
   await page.route('https://**/*', route => route.abort());
   await page.addInitScript(({ state, versions }) => {
     window.fixture = { state, calls: [] };
-    window.peerhost = { call: async (method, payload) => {
+    window.seedhost = { call: async (method, payload) => {
       const f = window.fixture; f.calls.push({ method, payload });
       if (method === 'getState') return f.state;
       if (method === 'saveOnboarding') f.state.onboarding = { ...payload, version: 1, error: null };

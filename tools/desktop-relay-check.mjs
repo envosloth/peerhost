@@ -38,7 +38,7 @@ async function launch(name) {
   await dismissInitialSetup(page);
   return { app, page };
 }
-const state = (page) => page.evaluate(() => window.peerhost.call('getState'));
+const state = (page) => page.evaluate(() => window.seedhost.call('getState'));
 /** Poll app state from Node. (page.waitForFunction treats an async predicate's Promise as truthy and returns at once.) */
 async function until(page, predicate, label, timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;

@@ -1,4 +1,4 @@
-# PeerHost desktop renderer
+# SeedHost desktop renderer
 
 ## Surface and files
 
@@ -17,7 +17,7 @@ This is an **Operate** surface, not a marketing page or simulated dashboard:
 - **Brand:** the visible name is **Seed Hosting**; the mark (cream seed sprouting two green leaves on a fixed forest-green tile, independent of the accent) is the `#logo` symbol and `tools/generate-icon.mjs` uses the same geometry. Decorative `svg.phyllo` elements are filled at load with a golden-angle (sunflower) seed spiral.
 - **Create a world:** `.world-preview` mirrors the form live (`renderWorldPreview`: name, game type, version, memory, and the missing items before creation). `#setup-random-name` rolls a friendly name.
 - **Page visibility** lives on the page wrappers. Sections the state hides (`#console-section`, `#mods-details`, …) are inside them, so the two never fight over `hidden`. `revealElement` opens the page or category that holds a control before validation focuses it. QA scripts do the same through `reveal()` in `tools/desktop-test-setup.mjs`, by clicking the real tabs.
-- **Appearance** (theme dark / light / system, five accents, surface Soft or Tactile, density, motion, close behavior) lives in `localStorage` under `peerhost.appearance`. It applies instantly and falls back to defaults if storage is unavailable. It is separate from the backend settings form; *Save settings* appears only on the Network and App categories, or while edits are unsaved.
+- **Appearance** (theme dark / light / system, five accents, surface Soft or Tactile, density, motion, close behavior) lives in `localStorage` under `seedhost.appearance`. It applies instantly and falls back to defaults if storage is unavailable. It is separate from the backend settings form; *Save settings* appears only on the Network and App categories, or while edits are unsaved.
 - **Design:** clean and crisp. Depth comes from tonal steps (page → card → raised control), hairline borders and tight shadows; inputs and tracks sit in inset wells. There is deliberately no bloom: no glows, cloud gradients or backdrop blur. The standard dark mode is a deep ink (`#0f1116` page, `#161920` cards). Tactile adds crisp bevels and console scanlines. Affordance never relies on shadow alone: accent colour, borders and focus rings carry it, and text tokens meet WCAG AA in both themes. No external assets, fonts, packages, or build step. Icons are an inline SVG sprite. `tools/generate-icon.mjs` rasterizes the same mark to `icon.png` (window and tray) and `icon-256.png` (Linux launcher).
 - **Layout:** the minimum window is **1000 × 700**. `tests/desktop-window.test.mjs` audits overlap, clipped text and horizontal overflow on every page and settings category, in both themes, compact density and fullscreen.
 
@@ -25,7 +25,7 @@ Runtime files are `apps/desktop/index.html`, `apps/desktop/style.css`, and `apps
 
 ## Bridge contract
 
-The only privileged interface is `window.peerhost.call(method, payload)`, returning a Promise. Rejected promises show the actual error in a dismissible alert. The renderer contains no fallback data or standalone mock mode. Opening its HTML outside the Electron application, without a bridge, shows an honest unavailable error and blocks actions.
+The only privileged interface is `window.seedhost.call(method, payload)`, returning a Promise. Rejected promises show the actual error in a dismissible alert. The renderer contains no fallback data or standalone mock mode. Opening its HTML outside the Electron application, without a bridge, shows an honest unavailable error and blocks actions.
 
 | Method | Payload |
 | --- | --- |

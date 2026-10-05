@@ -9,7 +9,7 @@ test('desktop expected renderer URL preserves Windows spaces and hash as encoded
   const main=await readFile(path.resolve('dist/apps/desktop/main.js'),'utf8');
   const expression=main.match(/const rendererUrl\s*=\s*([^;]+);/)?.[1];
   assert.ok(expression,'exercise the actual emitted main URL expression, not a test implementation');
-  const html=process.platform==='win32'?'C:\\Users\\Fixture User\\PeerHost # alpha\\apps\\desktop\\index.html':'/fixture user/PeerHost # alpha/apps/desktop/index.html';
+  const html=process.platform==='win32'?'C:\\Users\\Fixture User\\SeedHost # alpha\\apps\\desktop\\index.html':'/fixture user/SeedHost # alpha/apps/desktop/index.html';
   const actual=runInNewContext(expression,{html,URL,pathToFileURL});
   assert.equal(actual,pathToFileURL(html).href);
   assert.ok(actual.includes('%20'));assert.ok(actual.includes('%23'));

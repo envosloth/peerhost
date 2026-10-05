@@ -32,7 +32,7 @@ async function renderer(t, state = appState(), friends = { members: [], custody:
   await page.route('https://**/*', route => route.abort());
   await page.addInitScript(({ state, hit, friends }) => {
     window.fixture = { state, friends, calls: [] };
-    window.peerhost = { call: async (method, payload) => {
+    window.seedhost = { call: async (method, payload) => {
       window.fixture.calls.push({ method, payload });
       if (method === 'getState') return window.fixture.state;
       if (method === 'searchMods') return { hits: [hit], total: 1 };
@@ -165,8 +165,8 @@ test('initial metadata failure prevents catalogue requests; failure also fences 
 
   const page = await renderer(t);
   await page.evaluate(() => {
-    const call = window.peerhost.call;
-    window.peerhost.call = (method, payload) => {
+    const call = window.seedhost.call;
+    window.seedhost.call = (method, payload) => {
       if (method !== 'searchMods') return call(method, payload);
       return new Promise(resolve => { window.fixture.completeSearch = resolve; });
     };

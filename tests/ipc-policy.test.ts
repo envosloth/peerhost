@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 const mod:any=await import('../src/core/'+'ipc-policy.js').catch(()=>({}));
-const renderer='file:///C:/peerhost/index.html';
+const renderer='file:///C:/seedhost/index.html';
 const trusted={senderId:7,expectedSenderId:7,isMainFrame:true};
 test('same renderer URL cannot authorize a foreign WebContents or frame',async t=>{
   for(const [label,context] of [

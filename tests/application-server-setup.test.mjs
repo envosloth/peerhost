@@ -4,7 +4,7 @@ import path from 'node:path';
 import { mkdtemp, mkdir, writeFile, chmod, rm, readFile, readdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
-import { PeerHostApplication } from '../dist/src/core/application.js';
+import { SeedHostApplication } from '../dist/src/core/application.js';
 import { ServerSetupClient } from '../dist/src/core/server-setup.js';
 import { createIdentity } from '../dist/src/core/peer-transport.js';
 import { readSnapshot, materializeSnapshot } from '../dist/src/core/snapshots.js';
@@ -32,7 +32,7 @@ async function fixture(t, { tamper = false, delay = 0 } = {}) {
   });
   await new Promise(resolve => http.listen(0, '127.0.0.1', resolve)); origin = `http://127.0.0.1:${http.address().port}`;
   const root = path.join(dir, 'app');
-  const app = new PeerHostApplication(root, await createIdentity(), { serverSetup: new ServerSetupClient({ testOnly: { origin } }) }); await app.open();
+  const app = new SeedHostApplication(root, await createIdentity(), { serverSetup: new ServerSetupClient({ testOnly: { origin } }) }); await app.open();
   t.after(async () => { await app.close(); http.closeAllConnections(); await new Promise(resolve => http.close(resolve)); await rm(dir, { recursive: true, force: true }); });
   return { app, dir, root, requests, jar, input: { name: 'Friends world', loader: 'vanilla', gameVersion: '1.21.1', javaExecutable: java, memoryMiB: 1024, eulaAccepted: true } };
 }
@@ -54,7 +54,7 @@ test('Fabric creation captures its mod target in the adopted first revision', as
   const server = (await f.app.getState()).server;
   assert.equal(server.modTarget.loader, 'fabric'); assert.equal(server.modTarget.gameVersion, '1.21.1');
   const restored = path.join(f.dir, 'restored'); await materializeSnapshot(server.storeDir, server.snapshotId, restored);
-  const index = JSON.parse(await readFile(path.join(restored, 'peerhost-mods.json'), 'utf8'));
+  const index = JSON.parse(await readFile(path.join(restored, 'seedhost-mods.json'), 'utf8'));
   assert.deepEqual(index.target, { loader: 'fabric', gameVersion: '1.21.1' });
   assert.deepEqual(server.profile.args.slice(-3), ['-jar', 'fabric-server-launch.jar', 'nogui']);
 });

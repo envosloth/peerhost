@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';
-import {PeerHostApplication} from '../dist/src/core/application.js';
+import {SeedHostApplication} from '../dist/src/core/application.js';
 import {createIdentity} from '../dist/src/core/peer-transport.js';
 
 async function fixture(t){
  const root=await mkdtemp(path.join(process.env.TMPDIR,'ph-history-'));const source=path.join(root,'world');await mkdir(source);
  await writeFile(path.join(source,'level.txt'),'first');await writeFile(path.join(source,'eula.txt'),'eula=true\n');
- const app=new PeerHostApplication(path.join(root,'profile'),await createIdentity());await app.open();await app.importExisting(source,true);
+ const app=new SeedHostApplication(path.join(root,'profile'),await createIdentity());await app.open();await app.importExisting(source,true);
  t.after(async()=>{await app.close();await rm(root,{recursive:true,force:true});});return {app,root};
 }
 test('real snapshot history lists retained ancestry with current revision',async t=>{
@@ -39,9 +39,9 @@ test('restore refuses running, pending ownership, unknown history and interrupte
  await app.saveProfile({executable:process.execPath,args:[path.resolve('tools/fake-java-server.mjs')]});
  await app.startServer(true);await assert.rejects(app.restoreSnapshot(first.snapshotId),/Stop the server/);await app.stopServer();
  const server=(await app.getState()).server;
- await writeFile(path.join(server.serverDir,'peerhost-mod-install.json'),'{}');
+ await writeFile(path.join(server.serverDir,'seedhost-mod-install.json'),'{}');
  await assert.rejects(app.restoreSnapshot(first.snapshotId),/mod install.*repair/i);
- await rm(path.join(server.serverDir,'peerhost-mod-install.json'));
+ await rm(path.join(server.serverDir,'seedhost-mod-install.json'));
  const {OwnershipLedger}=await import('../dist/src/core/ownership.js');const ledger=new OwnershipLedger(server.ledgerFile,app.identity.fingerprint);
  await ledger.prepareTransfer('a'.repeat(64),server.snapshotId);
  await assert.rejects(app.restoreSnapshot(first.snapshotId),/safely held ownership/);

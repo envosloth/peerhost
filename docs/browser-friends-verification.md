@@ -15,7 +15,7 @@ Working tree: `feature/mod-browser-friends`, uncommitted and unpublished. Public
   - `tools/desktop-handoff-check.mjs`: real pinned loopback two-app handoff, decline restore, fenced retry, return handoff, retention/cleanup and local launch-profile isolation.
   - `tools/desktop-check.mjs`: real Electron identity encryption, native IPC, process fixture lifecycle, explicit ownership recovery and tray behavior.
 
-Logs: `$HOME/.hermes/cache/scratch/peerhost-reviewed-final-suite.log` and `peerhost-reviewed-final-ui.log`. Feature screenshots: `$HOME/.hermes/cache/scratch/peerhost-browser-friends-zAmCD7/`. Logs/screenshots are local evidence, not release assets.
+Logs: `$HOME/.hermes/cache/scratch/seedhost-reviewed-final-suite.log` and `seedhost-reviewed-final-ui.log`. Feature screenshots: `$HOME/.hermes/cache/scratch/seedhost-browser-friends-zAmCD7/`. Logs/screenshots are local evidence, not release assets.
 
 ## Review corrections
 

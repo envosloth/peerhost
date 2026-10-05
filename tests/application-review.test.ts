@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm, readdir } from 'node:fs/promises';
 import path from 'node:path';
-import { PeerHostApplication } from '../src/core/application.js';
+import { SeedHostApplication } from '../src/core/application.js';
 import { createIdentity } from '../src/core/peer-transport.js';
 import { OwnershipLedger } from '../src/core/ownership.js';
 
@@ -10,7 +10,7 @@ const fixture = path.resolve('tools/fake-java-server.mjs');
 for (const state of ['owned','offered','uncertain'] as const) {
   test('reimport preserves '+state+' lineage, ledger and files',async()=>{
     const {root,source}=await workspace('review-'+state+'-');
-    const identity=await createIdentity(), app=new PeerHostApplication(path.join(root,'profile'),identity);
+    const identity=await createIdentity(), app=new SeedHostApplication(path.join(root,'profile'),identity);
     try {
       await app.open(); await app.importExisting(source,true);
       const server=(await app.getState()).server!;
@@ -43,7 +43,7 @@ function deferred<T>() { let resolve!:(value:T)=>void;const promise=new Promise<
 
 test('launch approval reserves backend lock and runs only the captured immutable profile',async()=>{
   const {root,source}=await workspace('review-approval-');
-  const app=new PeerHostApplication(path.join(root,'profile'),await createIdentity());
+  const app=new SeedHostApplication(path.join(root,'profile'),await createIdentity());
   const decision=deferred<boolean>(), waiting=deferred<void>();
   let pending:Promise<void>|undefined;
   try {
@@ -74,7 +74,7 @@ test('launch approval reserves backend lock and runs only the captured immutable
 
 for(const change of ['profile','snapshot'] as const)test('launch consent is revalidated before spawn after '+change+' metadata changes',async()=>{
   const {root,source}=await workspace('review-revalidate-');
-  const app=new PeerHostApplication(path.join(root,'profile'),await createIdentity());
+  const app=new SeedHostApplication(path.join(root,'profile'),await createIdentity());
   const waiting=deferred<void>(),decision=deferred<boolean>();
   let pending:Promise<void>|undefined;
   try{
@@ -93,7 +93,7 @@ for(const change of ['profile','snapshot'] as const)test('launch consent is reva
 
 test('actual child exit during settings persistence fences ownership before lock release and can recover',async()=>{
   const {root,source}=await workspace('review-exit-');
-  const app=new PeerHostApplication(path.join(root,'profile'),await createIdentity());
+  const app=new SeedHostApplication(path.join(root,'profile'),await createIdentity());
   const persistEntered=deferred<void>(), releasePersist=deferred<void>(), exited=deferred<void>();
   let pending:Promise<void>|undefined;
   try{
@@ -124,8 +124,8 @@ test('approval completing after transport timeout cannot overwrite a newly impor
   const {root,source}=await workspace('review-late-');
   const ia=await createIdentity(),ib=await createIdentity();
   const decision=deferred<boolean>(),waiting=deferred<void>();
-  const a=new PeerHostApplication(path.join(root,'a'),ia);
-  const b=new PeerHostApplication(path.join(root,'b'),ib,{confirmIncomingHandoff:async()=>{waiting.resolve();return decision.promise;}});
+  const a=new SeedHostApplication(path.join(root,'a'),ia);
+  const b=new SeedHostApplication(path.join(root,'b'),ib,{confirmIncomingHandoff:async()=>{waiting.resolve();return decision.promise;}});
   let pending:Promise<unknown>|undefined;
   try{
     await a.open();await b.open();await a.importExisting(source,true);
@@ -168,8 +168,8 @@ test('transport timeout cannot release lock while candidate metadata persistence
   const {root,source}=await workspace('review-activation-');
   const ia=await createIdentity(),ib=await createIdentity();
   const entered=deferred<void>(),release=deferred<void>();
-  const a=new PeerHostApplication(path.join(root,'a'),ia);
-  const b=new PeerHostApplication(path.join(root,'b'),ib,{confirmIncomingHandoff:async()=>true});
+  const a=new SeedHostApplication(path.join(root,'a'),ia);
+  const b=new SeedHostApplication(path.join(root,'b'),ib,{confirmIncomingHandoff:async()=>true});
   let pending:Promise<unknown>|undefined;
   try{
     await a.open();await b.open();await a.importExisting(source,true);
@@ -209,8 +209,8 @@ test('closed actual TLS session refuses approval even while its original backend
   const {root,source}=await workspace('review-closed-');
   const ia=await createIdentity(),ib=await createIdentity();
   const waiting=deferred<void>(),decision=deferred<boolean>();
-  const a=new PeerHostApplication(path.join(root,'a'),ia);
-  const b=new PeerHostApplication(path.join(root,'b'),ib,{confirmIncomingHandoff:async()=>{waiting.resolve();return decision.promise;}});
+  const a=new SeedHostApplication(path.join(root,'a'),ia);
+  const b=new SeedHostApplication(path.join(root,'b'),ib,{confirmIncomingHandoff:async()=>{waiting.resolve();return decision.promise;}});
   let incoming:any,pending:Promise<unknown>|undefined;
   const handle=(b as any).handleIncoming.bind(b);
   (b as any).handleIncoming=(socket:any,source:string)=>{incoming=socket;return handle(socket,source);};
@@ -233,8 +233,8 @@ for(const rejectAfterCommit of [false,true])test('lost acknowledgment retains du
   const {root,source}=await workspace('review-committed-');
   const ia=await createIdentity(),ib=await createIdentity();
   const committed=deferred<void>(),release=deferred<void>();
-  const a=new PeerHostApplication(path.join(root,'a'),ia);
-  const b=new PeerHostApplication(path.join(root,'b'),ib,{confirmIncomingHandoff:async()=>true});
+  const a=new SeedHostApplication(path.join(root,'a'),ia);
+  const b=new SeedHostApplication(path.join(root,'b'),ib,{confirmIncomingHandoff:async()=>true});
   let pending:Promise<unknown>|undefined;
   const accept=OwnershipLedger.prototype.acceptTransfer;
   // The actual SQLite commit executes before this deterministic lost-ack barrier.
@@ -257,7 +257,7 @@ for(const rejectAfterCommit of [false,true])test('lost acknowledgment retains du
     assert.equal((await b.getState()).server!.serverDir,durable.serverDir);
     assert.equal((await a.getState()).server!.ownership.state,'offered');
     await b.close();
-    const reopened=new PeerHostApplication(path.join(root,'b'),ib);await reopened.open();
+    const reopened=new SeedHostApplication(path.join(root,'b'),ib);await reopened.open();
     assert.deepEqual((await reopened.getState()).server!.ownership,durable.ownership);await reopened.close();
   }finally{
     t.mock.timers.reset();release.resolve();await pending;await idle(b);
@@ -266,7 +266,7 @@ for(const rejectAfterCommit of [false,true])test('lost acknowledgment retains du
   }
 });
 
-async function idle(app:PeerHostApplication) {
+async function idle(app:SeedHostApplication) {
   for (let i=0;i<500;i++) { if (!(await app.getState()).busy) return; await new Promise(r=>setTimeout(r,10)); }
   throw new Error('Application did not become idle');
 }
@@ -274,8 +274,8 @@ async function idle(app:PeerHostApplication) {
 test('real A to B handoff cannot be undone by reimporting A while B hosts', async()=>{
   const {root,source}=await workspace('review-reimport-');
   const ia=await createIdentity(), ib=await createIdentity();
-  const a=new PeerHostApplication(path.join(root,'a'),ia);
-  const b=new PeerHostApplication(path.join(root,'b'),ib,{confirmIncomingHandoff:async()=>true});
+  const a=new SeedHostApplication(path.join(root,'a'),ia);
+  const b=new SeedHostApplication(path.join(root,'b'),ib,{confirmIncomingHandoff:async()=>true});
   try {
     await a.open(); await b.open(); await a.importExisting(source,true);
     await a.saveProfile({executable:process.execPath,args:[fixture,'--lifetime-ms=30000']});

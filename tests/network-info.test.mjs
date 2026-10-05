@@ -18,7 +18,7 @@ test('only private, non-internal IPv4 addresses are offered as LAN join addresse
 });
 
 test('server port comes from server.properties, defaulting to 25565', async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), 'peerhost-port-'));
+  const dir = await mkdtemp(path.join(tmpdir(), 'seedhost-port-'));
   assert.equal(await readServerPort(dir), 25565);
   await writeFile(path.join(dir, 'server.properties'), '#comment\nmotd=hi\nserver-port=25570\n');
   assert.equal(await readServerPort(dir), 25570);

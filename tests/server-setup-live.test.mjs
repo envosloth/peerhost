@@ -7,10 +7,10 @@ import { ServerSetupClient, probeJava } from '../dist/src/core/server-setup.js';
 
 // Opt-in official network/download exercise, never a Minecraft launch or Java install.
 // Use an already installed/parent-owned runtime selected with an absolute native path.
-const executable = process.env.PEERHOST_SETUP_LIVE_JAVA;
+const executable = process.env.SEEDHOST_SETUP_LIVE_JAVA;
 test('LIVE official Vanilla/Fabric preparation with real Java and checksum-verified upstream jars', { skip: !executable, timeout: 240000 }, async t => {
   assert.ok(process.env.TMPDIR, 'Live artifacts must stay in TMPDIR');
-  const stage = await mkdtemp(path.join(process.env.TMPDIR, 'peerhost-setup-live-'));
+  const stage = await mkdtemp(path.join(process.env.TMPDIR, 'seedhost-setup-live-'));
   t.after(() => rm(stage, { recursive: true, force: true }));
   const runtime = await probeJava(executable);
   const client = new ServerSetupClient();

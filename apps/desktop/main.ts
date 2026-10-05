@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, safeStorage, shell, Tray } from 'electron';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { PeerHostApplication } from '../../src/core/application.js';
+import { SeedHostApplication } from '../../src/core/application.js';
 import { loadIdentity } from '../../src/core/identity-store.js';
 import { validateCall } from '../../src/core/ipc-policy.js';
 import { decodeInvite, previewInvite } from '../../src/core/invites.js';
@@ -11,13 +11,13 @@ const setupLinks: Record<string,string> = Object.freeze({
   eula:'https://www.minecraft.net/en-us/eula',
   java:'https://adoptium.net/temurin/releases/',
   fabric:'https://fabricmc.net/use/server/',
-  relay:'https://github.com/envosloth/peerhost/blob/main/docs/relay.md',
+  relay:'https://github.com/envosloth/seedhost/blob/main/docs/relay.md',
 });
-let window:BrowserWindow;let tray:Tray;let backend:PeerHostApplication;let quitAllowed=false;let quitting=false;
-// Display name only. The profile folder below stays %APPDATA%/PeerHost so existing worlds and identity are kept.
+let window:BrowserWindow;let tray:Tray;let backend:SeedHostApplication;let quitAllowed=false;let quitting=false;
+// Display name; the profile folder below is SeedHost (or --profile-root).
 app.setName('Seed Hosting');
 const profileArgument=process.argv.find(a=>a.startsWith('--profile-root='));
-const root=profileArgument?path.resolve(profileArgument.slice('--profile-root='.length)):path.join(app.getPath('appData'),'PeerHost');
+const root=profileArgument?path.resolve(profileArgument.slice('--profile-root='.length)):path.join(app.getPath('appData'),'SeedHost');
 app.setPath('userData',root);
 const html=fileURLToPath(new URL('../../../apps/desktop/index.html',import.meta.url));
 const rendererUrl=pathToFileURL(html).href;
@@ -43,7 +43,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
   app.whenReady().then(async()=>{
     if(!safeStorage.isEncryptionAvailable())throw new Error('OS protected key storage (Windows DPAPI, macOS Keychain, or a Linux Secret Service) is unavailable. Refusing to store an unencrypted identity.');
     const identity=await loadIdentity(root,{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)});
-    backend=new PeerHostApplication(root,identity,{confirmIncomingHandoff:async(source,snapshot)=>{
+    backend=new SeedHostApplication(root,identity,{confirmIncomingHandoff:async(source,snapshot)=>{
       show();return confirm('Accept hosting ownership from this peer?','Verified peer: '+source+'\nSnapshot: '+snapshot.id+'\nThis copies server files into a new local directory. Old files are retained. It will not start automatically; review the local launch profile and executable/mod trust first.');
     }});await backend.open();
     const image=nativeImage.createFromPath(fileURLToPath(new URL('../../../apps/desktop/icon.png',import.meta.url)));
@@ -52,7 +52,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
     window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
     window.webContents.on('will-navigate',event=>event.preventDefault());
     window.on('close',event=>{if(!quitAllowed){event.preventDefault();window.hide();}});
-    ipcMain.handle('peerhost:call',async(event,method,payload)=>{
+    ipcMain.handle('seedhost:call',async(event,method,payload)=>{
       const sender=new URL(event.senderFrame?.url??'about:blank');sender.hash='';
       const p=validateCall(method,payload,sender.href,rendererUrl,{senderId:event.sender.id,expectedSenderId:window.webContents.id,isMainFrame:event.senderFrame===window.webContents.mainFrame});
       switch(method){

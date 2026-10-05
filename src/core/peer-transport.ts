@@ -11,7 +11,7 @@ export interface PeerIdentity {
 }
 
 export async function createIdentity(): Promise<PeerIdentity> {
-  const pems = await generate([{ name: "commonName", value: "PeerHost" }], {
+  const pems = await generate([{ name: "commonName", value: "SeedHost" }], {
     keyType: "ec",
     curve: "P-256",
     algorithm: "sha256",
@@ -28,7 +28,7 @@ export async function createIdentity(): Promise<PeerIdentity> {
   };
 }
 
-const ACCEPTED = Buffer.from("PeerHost/1\n", "ascii");
+const ACCEPTED = Buffer.from("SeedHost/1\n", "ascii");
 const HANDSHAKE_TIMEOUT_MS = 5000;
 const FRAME_TIMEOUT_MS = 5000;
 const MAX_FRAME_BYTES = 1048576;

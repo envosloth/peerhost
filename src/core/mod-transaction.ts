@@ -5,7 +5,7 @@ import path from 'node:path';
 import { MOD_INDEX_FILE } from './mod-index.js';
 
 /** Travels with the server, not the local profile. Its presence always requires explicit repair. */
-export const MOD_INSTALL_FENCE_FILE = 'peerhost-mod-install.json';
+export const MOD_INSTALL_FENCE_FILE = 'seedhost-mod-install.json';
 const repairMessage = 'Incomplete or uncertain mod install; explicit repair is required before starting or snapshotting this server';
 
 /** Call at start and ordinary snapshot/handoff boundaries, NOT at Stop/graceful shutdown boundaries.

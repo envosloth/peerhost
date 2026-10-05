@@ -9,7 +9,7 @@ import { assertModInstallComplete, beginModInstall, finishModInstall, modIndexFi
 
 export type ModKind = 'server' | 'client';
 /** Client-only mods live here inside the managed server, so they travel with snapshots but are never loaded. */
-export const CLIENT_PACK_DIR = 'peerhost-client-mods';
+export const CLIENT_PACK_DIR = 'seedhost-client-mods';
 export interface ModEntry { name: string; size: number; source?: ModSource }
 
 const MAX_MOD_BYTES = 512 * 1024 ** 2;
@@ -117,7 +117,7 @@ export async function addModBatch(serverDir: string, items: Array<{ kind: ModKin
     for (const mod of inspected) {
       const directory = modsDirectory(serverDir, mod.kind);
       if (!await ordinaryDirectory(directory, false)) { await ordinaryDirectory(directory, true); created.push(directory); }
-      const temporary = path.join(directory, `.peerhost-adding-${randomUUID()}.tmp`);
+      const temporary = path.join(directory, `.seedhost-adding-${randomUUID()}.tmp`);
       const entry: (typeof staged)[number] = { temporary, destination: path.join(directory, mod.name), name: mod.name };
       staged.push(entry);
       await copyFile(mod.source, temporary, constants.COPYFILE_EXCL);
@@ -189,7 +189,7 @@ const README = `Client mods for this server
 3. Start the game and join the server.
 
 Only install mods from people you trust: mods run code on your computer.
-Exported by PeerHost.
+Exported by SeedHost.
 `;
 
 /** Zip the client pack (plus install instructions) for players. The destination must be outside the server folder. */

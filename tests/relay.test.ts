@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { createIdentity, connectPeer, type PeerIdentity } from '../src/core/peer-transport.js';
-import { PeerHostApplication } from '../src/core/application.js';
+import { SeedHostApplication } from '../src/core/application.js';
 import { OwnershipLedger } from '../src/core/ownership.js';
 import { RelayNode } from '../src/core/relay.js';
 import { relayStatus } from '../src/core/relay-client.js';
@@ -33,7 +33,7 @@ async function startRelay(t: TestContext, root: string, identity?: PeerIdentity,
 /** A host app that trusts the relay (and vice versa) and uses it as its relay. */
 async function host(t: TestContext, root: string, name: string, relay: RelayNode, identity?: PeerIdentity, confirm = async () => true) {
   const id = identity ?? await createIdentity();
-  const app = new PeerHostApplication(path.join(root, name), id, { confirmIncomingHandoff: confirm });
+  const app = new SeedHostApplication(path.join(root, name), id, { confirmIncomingHandoff: confirm });
   await app.open();
   t.after(() => app.close().catch(() => {}));
   await relay.trust(name, id.fingerprint);
@@ -43,7 +43,7 @@ async function host(t: TestContext, root: string, name: string, relay: RelayNode
   await app.saveRelay({ fingerprint: relay.identity.fingerprint, parkOnStop: false });
   return { app, identity: id };
 }
-async function profile(app: PeerHostApplication) {
+async function profile(app: SeedHostApplication) {
   await app.saveProfile({ executable: process.execPath, args: [fixture, '--lifetime-ms=30000'] });
 }
 async function closedPort(): Promise<number> {
@@ -53,7 +53,7 @@ async function closedPort(): Promise<number> {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   return port;
 }
-const world = async (app: PeerHostApplication) => readFile(path.join((await app.getState()).server!.serverDir, 'world.bin'), 'utf8');
+const world = async (app: SeedHostApplication) => readFile(path.join((await app.getState()).server!.serverDir, 'world.bin'), 'utf8');
 
 test('a server parked on the relay is claimed by a PC that never had it while the original host is off, and back again', async (t) => {
   const { root, source } = await workspace(t, 'relay-roundtrip-');
@@ -213,14 +213,14 @@ test('the relay declines a different server, even with a higher generation, and 
 test('relay configuration must name a trusted peer and survives restart', async (t) => {
   const { root } = await workspace(t, 'relay-config-');
   const identity = await createIdentity();
-  const app = new PeerHostApplication(path.join(root, 'a'), identity);
+  const app = new SeedHostApplication(path.join(root, 'a'), identity);
   await app.open();
   await assert.rejects(app.saveRelay({ fingerprint: 'a'.repeat(64), parkOnStop: false }), /trusted peer/i);
   await assert.rejects(app.parkAtRelay(), /no relay/i);
   await app.addPeer({ name: 'Mini PC', fingerprint: 'a'.repeat(64), host: '127.0.0.1', port: 47625 });
   await app.saveRelay({ fingerprint: 'a'.repeat(64), parkOnStop: true });
   await app.close();
-  const reopened = new PeerHostApplication(path.join(root, 'a'), identity);
+  const reopened = new SeedHostApplication(path.join(root, 'a'), identity);
   await reopened.open();
   assert.deepEqual((await reopened.getState()).relay, { fingerprint: 'a'.repeat(64), name: 'Mini PC', parkOnStop: true });
   await reopened.saveRelay(null);

@@ -41,7 +41,7 @@ interface ApplicationOptions {
 /** Revisions kept by cleanup: the current one plus this many ancestors. */
 const CLEANUP_ANCESTORS = 2;
 
-export class PeerHostApplication {
+export class SeedHostApplication {
   private saved: SavedState = { version: 1, settings: defaultSettings(), server: null, peers: [], relay: null };
   private gatewayTunnel?: { close: () => Promise<void> };
   private gatewayEpoch = 0;

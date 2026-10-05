@@ -11,7 +11,7 @@ export interface Invite {
   relayName: string;
 }
 export interface CreatedInvite { code: string; expiresAt: number }
-const PREFIX = 'PEERHOST-';
+const PREFIX = 'SEEDHOST-';
 const CHECKSUM_BYTES = 6;
 const HEADER_BYTES = 57;
 
@@ -41,9 +41,9 @@ export function encodeInvite(invite: Invite): string {
 }
 
 export function decodeInvite(code: string): Invite {
-  if (typeof code !== 'string' || !code.trim().startsWith(PREFIX)) throw new Error('Not a PeerHost invite');
+  if (typeof code !== 'string' || !code.trim().startsWith(PREFIX)) throw new Error('Not a SeedHost invite');
   const payload = code.trim().slice(PREFIX.length);
-  const damaged = () => new Error('PeerHost invite is damaged or incomplete');
+  const damaged = () => new Error('SeedHost invite is damaged or incomplete');
   if (!/^[A-Za-z0-9_-]+$/.test(payload) || payload.length > 600) throw damaged();
   const data = Buffer.from(payload, 'base64url');
   if (data.toString('base64url') !== payload || data.length < HEADER_BYTES + CHECKSUM_BYTES) throw damaged();
@@ -58,7 +58,7 @@ export function decodeInvite(code: string): Invite {
       relayName: utf8.decode(body.subarray(HEADER_BYTES + body[55]!)) };
     validate(invite);
   } catch { throw damaged(); }
-  if (invite.expiresAt <= Math.floor(Date.now() / 1000)) throw new Error('PeerHost invite has expired');
+  if (invite.expiresAt <= Math.floor(Date.now() / 1000)) throw new Error('SeedHost invite has expired');
   return invite;
 }
 

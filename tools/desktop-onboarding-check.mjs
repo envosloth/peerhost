@@ -15,7 +15,7 @@ import { createIdentity } from '../dist/src/core/peer-transport.js';
 import { gatewayStatus } from '../dist/src/core/game-gateway.js';
 
 const project = fileURLToPath(new URL('../', import.meta.url));
-const root = await mkdtemp(path.join(process.env.TMPDIR || os.tmpdir(), 'peerhost-onboarding-'));
+const root = await mkdtemp(path.join(process.env.TMPDIR || os.tmpdir(), 'seedhost-onboarding-'));
 const profile = path.join(root, 'profile');
 const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
 let app, page, relay, echo;
@@ -28,7 +28,7 @@ for (const method of requiredSetupMethods) {
   if (!compiledPreload.includes(`'${method}'`) && !compiledPreload.includes(`"${method}"`)) blockers.push(method + ': not exposed in compiled preload');
   else if (!new RegExp(`case ['"]${method}['"]`).test(compiledMain)) blockers.push(method + ': no compiled main handler');
 }
-const state = () => page.evaluate(() => window.peerhost.call('getState'));
+const state = () => page.evaluate(() => window.seedhost.call('getState'));
 const wait = (fn, arg) => page.waitForFunction(fn, arg, { timeout: 30000 });
 const settled = () => wait(() => document.querySelector('#activity-message').textContent.startsWith('Ready'));
 async function launch() {
@@ -70,7 +70,7 @@ try {
   assert.equal(await page.locator('#create-server-empty').textContent(), 'create a server');
   await native(0);
   for (const method of ['listServerVersions', 'discoverJava', 'checkGameGateway']) {
-    const result = await page.evaluate(async method => { try { await window.peerhost.call(method); return null; } catch (e) { return e.message; } }, method);
+    const result = await page.evaluate(async method => { try { await window.seedhost.call(method); return null; } catch (e) { return e.message; } }, method);
     if (result && !blockers.some(b => b.startsWith(method + ':'))) blockers.push(method + ': ' + result);
   }
   assert.equal(await page.locator('#setup-create-form').isVisible(), false, 'first screen is a plain choice');
@@ -121,7 +121,7 @@ try {
   assert.equal(await readFile(path.join(restored.server.serverDir, 'world-marker.txt'), 'utf8'), 'original\n');
   assert.equal(await readFile(path.join(revised.server.serverDir, 'world-marker.txt'), 'utf8'), 'revised\n', 'previous folder retained');
   assert.equal(restored.server.ownership.generation, revised.server.ownership.generation, 'ownership generation not rewound');
-  const history = await page.evaluate(() => window.peerhost.call('listSnapshots'));
+  const history = await page.evaluate(() => window.seedhost.call('listSnapshots'));
   assert.ok(history.some(s => s.id === revised.server.snapshotId), 'safety/revised snapshot retained');
   await page.locator('#profile-details').evaluate(node => { node.open = true; });
   await page.locator('#java-executable').fill(process.execPath);
@@ -148,13 +148,13 @@ try {
   assert.match(await page.locator('#setup-gateway-status').textContent(), /Not ready/); assert.equal((await state()).gateway.enabled, true);
   await click('setup-save-close'); await click('start-server');
   const routeDeadline = Date.now()+20000;
-  while (!(await page.evaluate(() => window.peerhost.call('checkGameGateway'))).ready) { if(Date.now()>routeDeadline) throw new Error('Visible host tunnel not ready'); await new Promise(resolve=>setTimeout(resolve,100)); }
+  while (!(await page.evaluate(() => window.seedhost.call('checkGameGateway'))).ready) { if(Date.now()>routeDeadline) throw new Error('Visible host tunnel not ready'); await new Promise(resolve=>setTimeout(resolve,100)); }
   await click('nav-setup'); await stage('gateway'); await click('setup-gateway-check'); assert.match(await page.locator('#setup-gateway-status').textContent(), /Verified/);
   await page.screenshot({ path:path.join(root,'gateway-verified-visible.png') });
   const bytes = await new Promise((resolve,reject) => { const socket=connect({host:'127.0.0.1',port:relay.gameEndpoint.port}); socket.setTimeout(5000,()=>{socket.destroy();reject(new Error('Gateway echo timeout'));});socket.once('error',reject);socket.once('connect',()=>socket.write('visible gateway fixture'));socket.once('data',data=>{socket.destroy();resolve(data.toString());}); });
   assert.equal(bytes,'visible gateway fixture');
   await click('setup-save-close'); await click('stop-server');
-  assert.equal((await page.evaluate(() => window.peerhost.call('checkGameGateway'))).ready,false);
+  assert.equal((await page.evaluate(() => window.seedhost.call('checkGameGateway'))).ready,false);
   assert.equal((await state()).gateway.state,'off');
   assert.deepEqual(errors, []);
   console.log('PASS: Real Electron durable draft/ESC/skip/relaunch, native import cancel/approve, real snapshot list/native restore cancel/approve/safety folder, Node fixture Start/Stop; visible gateway save/not-ready/verified/stop and real pinned relay echo forwarding. NOT Minecraft.');

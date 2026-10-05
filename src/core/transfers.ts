@@ -232,7 +232,7 @@ export async function receiveSnapshot(socket: TLSSocket, authenticatedFingerprin
     fields(hello, ['type', 'version', 'snapshotId', 'parentId', 'fileCount', 'offer']);
     if (hello.type !== 'snapshot') throw new Error('Invalid snapshot transfer metadata');
     if (hello.version !== PROTOCOL_VERSION) {
-      throw new Error(`Unsupported transfer protocol version ${String(hello.version).slice(0, 32)}; both peers must run the same PeerHost alpha`);
+      throw new Error(`Unsupported transfer protocol version ${String(hello.version).slice(0, 32)}; both peers must run the same SeedHost alpha`);
     }
     hex(hello.snapshotId);
     if (hello.parentId !== null) hex(hello.parentId);

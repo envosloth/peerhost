@@ -11,7 +11,7 @@ import { installMod } from '../dist/src/core/mod-install.js';
 import { addModBatch } from '../dist/src/core/mods.js';
 
 const scratch = process.env.TMPDIR || path.resolve('.test-data');
-const fenceName = 'peerhost-mod-install.json';
+const fenceName = 'seedhost-mod-install.json';
 const childCode = `
 import fs from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
@@ -25,7 +25,7 @@ fs.link = async (...args) => {
 const originalRename = fs.rename;
 fs.rename = async (...args) => {
   await originalRename(...args);
-  if (mode === 'index' && args[1] === path.join(serverDir, 'peerhost-mods.json')) process.exit(74);
+  if (mode === 'index' && args[1] === path.join(serverDir, 'seedhost-mods.json')) process.exit(74);
 };
 syncBuiltinESMExports();
 const { installMod } = await import('./dist/src/core/mod-install.js');
@@ -180,7 +180,7 @@ test('durable barriers precede publish and follow metadata commit, temporary cle
   const commit = events.findIndex(([event]) => event === 'commit');
   const unlink = events.findIndex(([event]) => event === 'unlink');
   assert.ok(events.slice(commit + 1, unlink).some(([event, file]) => event === 'sync' && file === f.serverDir));
-  const cleanup = events.findIndex(([event, file]) => event === 'rm' && file.endsWith('.tmp') && file.includes('.peerhost-adding-'));
+  const cleanup = events.findIndex(([event, file]) => event === 'rm' && file.endsWith('.tmp') && file.includes('.seedhost-adding-'));
   assert.ok(events.slice(cleanup + 1, unlink).some(([event, file]) => event === 'sync' && file === path.join(f.serverDir, 'mods')), 'temporary cleanup must be durable before clearing fence');
   assert.ok(events.slice(unlink + 1).some(([event, file]) => event === 'sync' && file === f.serverDir));
 });

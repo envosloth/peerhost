@@ -1,5 +1,5 @@
 {
-  "name": "peerhost",
+  "name": "seedhost",
   "version": "0.3.0",
   "private": true,
   "type": "module",
@@ -37,6 +37,6 @@
     "selfsigned": "^5.5.0"
   },
   "bin": {
-    "peerhost-relay": "dist/src/relay/cli.js"
+    "seedhost-relay": "dist/src/relay/cli.js"
   }
 }

@@ -5,14 +5,14 @@ import path from 'node:path';
 import { createIdentity } from '../src/core/peer-transport.js';
 const mod:any=await import('../src/core/'+'application.js').catch(()=>({}));
 test('application imports only confirmed-stopped copies and keeps gateway optional',async()=>{
-  assert.equal(typeof mod.PeerHostApplication,'function');
+  assert.equal(typeof mod.SeedHostApplication,'function');
   await mkdir('.test-data',{recursive:true});
   const root=await mkdtemp(path.resolve('.test-data/app-'));
   try{
     const source=path.join(root,'source');await mkdir(path.join(source,'world'),{recursive:true});
     await writeFile(path.join(source,'world','fixture.bin'),Buffer.from([0,1,254,255]));
     await writeFile(path.join(source,'eula.txt'),'eula=true\n');
-    const app=new mod.PeerHostApplication(path.join(root,'managed'),await createIdentity());
+    const app=new mod.SeedHostApplication(path.join(root,'managed'),await createIdentity());
     await app.open();
     assert.equal((await app.getState()).settings.persistentAddress,false);
     await assert.rejects(app.importExisting(source,false),/stopped/i);
@@ -26,7 +26,7 @@ test('application imports only confirmed-stopped copies and keeps gateway option
 });
 test('application actually runs and gracefully stops its owned process without a gateway',async()=>{
   const root=await mkdtemp(path.resolve('.test-data/app-process-'));
-  const app=new mod.PeerHostApplication(path.join(root,'managed'),await createIdentity());
+  const app=new mod.SeedHostApplication(path.join(root,'managed'),await createIdentity());
   try{
     const source=path.join(root,'source');await mkdir(source);
     await writeFile(path.join(source,'eula.txt'),'eula=true\n');
@@ -54,12 +54,12 @@ test('application actually runs and gracefully stops its owned process without a
 test('settings and manually trusted peers survive a fresh application instance',async()=>{
   const root=await mkdtemp(path.resolve('.test-data/app-settings-'));const identity=await createIdentity();
   try{
-    const app=new mod.PeerHostApplication(root,identity);await app.open();
+    const app=new mod.SeedHostApplication(root,identity);await app.open();
     assert.equal(typeof app.saveSettings,'function');
     await app.saveSettings({persistentAddress:true,gatewayAddress:'mini-pc.example:25565',startAtLogin:false});
     const peer={name:'Friend',fingerprint:'a'.repeat(64),host:'127.0.0.1',port:12345};
     await app.addPeer(peer);await app.close();
-    const reopened=new mod.PeerHostApplication(root,identity);await reopened.open();
+    const reopened=new mod.SeedHostApplication(root,identity);await reopened.open();
     assert.equal((await reopened.getState()).settings.persistentAddress,true);
     assert.deepEqual((await reopened.getState()).peers,[peer]);
     await assert.rejects(reopened.addPeer({...peer,fingerprint:identity.fingerprint}),/self|own/i);
@@ -69,7 +69,7 @@ test('settings and manually trusted peers survive a fresh application instance',
   }finally{await rm(root,{recursive:true,force:true});}
 });
 test('application peer listener is real, loopback-only, and closes cleanly',async()=>{
-  const root=await mkdtemp(path.resolve('.test-data/app-peer-'));const app=new mod.PeerHostApplication(root,await createIdentity());
+  const root=await mkdtemp(path.resolve('.test-data/app-peer-'));const app=new mod.SeedHostApplication(root,await createIdentity());
   try{
     await app.open();assert.equal(typeof app.startPeerListener,'function');
     await app.startPeerListener();

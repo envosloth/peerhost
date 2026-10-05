@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { indexedMods, sourceMatches } from '../dist/src/core/mod-index.js';
 import { writeZip } from '../dist/src/core/zip.js';
-import { PeerHostApplication } from '../dist/src/core/application.js';
+import { SeedHostApplication } from '../dist/src/core/application.js';
 import { createIdentity } from '../dist/src/core/peer-transport.js';
 import { writeModIndex } from '../dist/src/core/mod-index.js';
 
@@ -57,7 +57,7 @@ test('application status polling does not rehash an unchanged indexed jar', asyn
   const root = await fs.mkdtemp(path.join(process.env.TMPDIR,'ph-mod-app-cache-'));
   const source = path.join(root,'source');
   await fs.mkdir(source);
-  const app = new PeerHostApplication(path.join(root,'profile'),await createIdentity());
+  const app = new SeedHostApplication(path.join(root,'profile'),await createIdentity());
   t.after(async () => {await app.close();await fs.rm(root,{recursive:true,force:true});});
   await app.open();await app.importExisting(source,true);
   const dir=(await app.getState()).server.serverDir;

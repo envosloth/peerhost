@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { mkdtemp, mkdir, writeFile, chmod, rm } from 'node:fs/promises';
-import { PeerHostApplication } from '../dist/src/core/application.js';
+import { SeedHostApplication } from '../dist/src/core/application.js';
 import { createIdentity } from '../dist/src/core/peer-transport.js';
 async function fixture(t,jars=['server.jar']) {
  const root=await mkdtemp(path.join(process.env.TMPDIR,'ph-simple-')),source=path.join(root,'source'),java=path.join(root,'java');await mkdir(source);
  await writeFile(java,`#!${process.execPath}\nprocess.stderr.write('openjdk version "21.0.4"\\n');`);await chmod(java,0o700);
  for(const name of jars)await writeFile(path.join(source,name),'jar fixture, not Minecraft');await writeFile(path.join(source,'eula.txt'),'eula=true\n');
- const app=new PeerHostApplication(path.join(root,'app'),await createIdentity());await app.open();await app.importExisting(source,true);
+ const app=new SeedHostApplication(path.join(root,'app'),await createIdentity());await app.open();await app.importExisting(source,true);
  t.after(async()=>{await app.close();await rm(root,{recursive:true,force:true});});return{app,root,java};
 }
 test('simple profile preserves existing Java arguments and timeouts while replacing heap flags',async t=>{

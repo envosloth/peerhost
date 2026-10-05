@@ -2,14 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
-import {PeerHostApplication} from '../dist/src/core/application.js';
+import {SeedHostApplication} from '../dist/src/core/application.js';
 import {createIdentity} from '../dist/src/core/peer-transport.js';
 import {MOD_INSTALL_FENCE_FILE} from '../dist/src/core/mod-transaction.js';
 
 async function fixture(t){
  const root=await mkdtemp(path.join(process.env.TMPDIR,'ph-app-install-fence-'));
  const source=path.join(root,'source');await mkdir(source);await writeFile(path.join(source,'eula.txt'),'eula=true\n');
- const app=new PeerHostApplication(path.join(root,'profile'),await createIdentity());
+ const app=new SeedHostApplication(path.join(root,'profile'),await createIdentity());
  t.after(async()=>{await app.close();await rm(root,{recursive:true,force:true});});
  await app.open();await app.importExisting(source,true);
  await app.saveProfile({executable:process.execPath,args:[path.resolve('tools/fake-java-server.mjs')]});

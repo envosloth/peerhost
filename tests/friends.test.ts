@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createIdentity, type PeerIdentity } from '../src/core/peer-transport.js';
-import { PeerHostApplication } from '../src/core/application.js';
+import { SeedHostApplication } from '../src/core/application.js';
 import { RelayNode } from '../src/core/relay.js';
 import { relayStatus } from '../src/core/relay-client.js';
 import { decodeInvite, encodeInvite, type Invite } from '../src/core/invites.js';
@@ -27,12 +27,12 @@ async function relayIn(t: TestContext, dir: string, options = {}) {
   return relay;
 }
 async function pc(t: TestContext, dir: string, name: string, identity?: PeerIdentity) {
-  const app = new PeerHostApplication(path.join(dir, name), identity ?? await createIdentity());
+  const app = new SeedHostApplication(path.join(dir, name), identity ?? await createIdentity());
   t.after(() => app.close().catch(() => {}));
   await app.open();
   return app;
 }
-async function importServer(dir: string, app: PeerHostApplication, marker: string) {
+async function importServer(dir: string, app: SeedHostApplication, marker: string) {
   const source = path.join(dir, `source-${marker}`);
   await mkdir(source, { recursive: true });
   await writeFile(path.join(source, 'eula.txt'), 'eula=true\n');
@@ -46,15 +46,15 @@ const sample = (): Invite => ({ relayFingerprint: 'a'.repeat(64), host: 'relay.t
 test('invite codes round-trip and reject damage, expiry and nonsense', () => {
   const invite = sample();
   const code = encodeInvite(invite);
-  assert.match(code, /^PEERHOST-[A-Za-z0-9_-]+$/);
+  assert.match(code, /^SEEDHOST-[A-Za-z0-9_-]+$/);
   assert.ok(code.length < 160, 'short enough to paste into a chat message');
   assert.deepEqual(decodeInvite(code), invite);
   assert.deepEqual(decodeInvite(`  ${code}\n`), invite, 'surrounding whitespace from chat apps is ignored');
-  const middle = 'PEERHOST-'.length + 20;
+  const middle = 'SEEDHOST-'.length + 20;
   const damaged = code.slice(0, middle) + (code[middle] === 'A' ? 'B' : 'A') + code.slice(middle + 1);
   assert.throws(() => decodeInvite(damaged), /damaged|incomplete/i);
   assert.throws(() => decodeInvite(code.slice(0, -4)), /damaged|incomplete/i);
-  assert.throws(() => decodeInvite('hello'), /not a peerhost invite/i);
+  assert.throws(() => decodeInvite('hello'), /not a seedhost invite/i);
   assert.throws(() => decodeInvite(encodeInvite({ ...invite, expiresAt: Math.floor(Date.now() / 1000) - 1 })), /expired/i);
   assert.throws(() => encodeInvite({ ...invite, host: '0.0.0.0' }), /address/i);
   assert.throws(() => encodeInvite({ ...invite, host: 'bad host!' }), /address/i);
@@ -151,7 +151,7 @@ test('the relay owner can turn off member invites and remove a friend', async (t
 test('trust changes made by the CLI reach a running relay without a restart', async (t) => {
   const dir = await root(t, 'friends-reload-');
   const serving = await relayIn(t, dir);
-  // A second process on the same folder, as `peerhost-relay invite` would be.
+  // A second process on the same folder, as `seedhost-relay invite` would be.
   const cli = new RelayNode(serving.root, serving.identity, quiet);
   await cli.open();
   const host = await createIdentity();
@@ -172,7 +172,7 @@ test('joining refuses to silently replace a different relay or join yourself', a
   await assert.rejects(angel.joinWithInvite({ code: (await second.createInvite({ hours: 1 })).code, name: 'Angel' }), /already uses.*relay/i);
   const self = await pc(t, dir, 'self', relay.identity);
   await assert.rejects(self.joinWithInvite({ code: (await relay.createInvite({ hours: 1 })).code, name: 'Me' }), /own/i);
-  await assert.rejects(angel.joinWithInvite({ code: 'nope', name: 'Angel' }), /not a peerhost invite/i);
+  await assert.rejects(angel.joinWithInvite({ code: 'nope', name: 'Angel' }), /not a seedhost invite/i);
   await assert.rejects(angel.joinWithInvite({ code: (await relay.createInvite({ hours: 1 })).code, name: '  ' }), /name/i);
 });
 

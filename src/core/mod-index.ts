@@ -8,7 +8,7 @@ import { detectModTarget, isGameVersion, isModLoader, isProjectKey, type ModLoad
 export interface ModSource { provider: 'modrinth'; projectId: string; versionId: string; slug: string; title: string; versionNumber: string; sha512: string; loader: ModLoader; gameVersion: string }
 export interface IndexedMod { kind: ModKind; name: string; source: ModSource }
 export interface ModIndex { version: 1; target: ModTarget | null; mods: IndexedMod[] }
-export const MOD_INDEX_FILE = 'peerhost-mods.json';
+export const MOD_INDEX_FILE = 'seedhost-mods.json';
 const LIMIT = 1024 * 1024;
 
 function validateIndex(value: unknown): ModIndex {

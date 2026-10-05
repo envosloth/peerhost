@@ -7,16 +7,16 @@ import { createServer, connect } from 'node:net';
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { ServerSetupClient, probeJava } from '../dist/src/core/server-setup.js';
-import { PeerHostApplication } from '../dist/src/core/application.js';
+import { SeedHostApplication } from '../dist/src/core/application.js';
 import { createIdentity } from '../dist/src/core/peer-transport.js';
 import { RelayNode } from '../dist/src/core/relay.js';
 
 
-const java=process.env.PEERHOST_SMOKE_JAVA;
-assert.ok(java&&path.isAbsolute(java),'Set absolute PEERHOST_SMOKE_JAVA to an explicitly approved disposable runtime');
-assert.equal(process.env.PEERHOST_SMOKE_ACCEPT_EULA,'true','Explicit disposable-test EULA acceptance is required');
+const java=process.env.SEEDHOST_SMOKE_JAVA;
+assert.ok(java&&path.isAbsolute(java),'Set absolute SEEDHOST_SMOKE_JAVA to an explicitly approved disposable runtime');
+assert.equal(process.env.SEEDHOST_SMOKE_ACCEPT_EULA,'true','Explicit disposable-test EULA acceptance is required');
 assert.ok(process.env.TMPDIR,'All artifacts must stay in scratch');
-const root=await mkdtemp(path.join(process.env.TMPDIR,'peerhost-real-minecraft-'));
+const root=await mkdtemp(path.join(process.env.TMPDIR,'seedhost-real-minecraft-'));
 const results={artifactDir:root,java,gameVersion:'1.21.1',loaders:[],limitations:['Loopback only; profiles simulate two hosts on one machine, not physical PCs.','Minecraft status response, not authenticated player login/gameplay.','Application gateway lifecycle exercised; visible UI and authenticated gameplay are separate checks.']};
 console.log('ARTIFACT_DIR='+root);
 function vi(value){const out=[];do{let b=value&127;value>>>=7;if(value)b|=128;out.push(b);}while(value);return Buffer.from(out);}
@@ -42,7 +42,7 @@ async function status(port){
 async function port(){const s=createServer();await new Promise((r,j)=>{s.once('error',j);s.listen(0,'127.0.0.1',r);});const n=s.address().port;await new Promise(r=>s.close(r));return n;}
 async function until(check,timeout=20000){const end=Date.now()+timeout;while(Date.now()<end){if(await check())return;await delay(100);}throw Error('Timed out waiting for verified gateway readiness');}
 async function host(folder,relay){
- const identity=await createIdentity(),app=new PeerHostApplication(folder,identity,{confirmIncomingHandoff:async()=>true});await app.open();
+ const identity=await createIdentity(),app=new SeedHostApplication(folder,identity,{confirmIncomingHandoff:async()=>true});await app.open();
  await relay.trust(path.basename(folder),identity.fingerprint);
  await app.addPeer({name:'Disposable relay',fingerprint:relay.identity.fingerprint,...relay.endpoint});
  await app.saveRelay({fingerprint:relay.identity.fingerprint,parkOnStop:false});
@@ -64,7 +64,7 @@ try{
   try{
    const prepared=await new ServerSetupClient().prepare(work,{name:'Disposable '+loader,loader,gameVersion:'1.21.1',javaExecutable:java,memoryMiB:1024,eulaAccepted:true});
    // Loopback, online-mode remains true; small generated world avoids resource-heavy spawn preparation.
-   await writeFile(path.join(prepared.sourceDir,'server.properties'),`server-ip=127.0.0.1\nserver-port=${localPort}\nonline-mode=true\nlevel-seed=12345\nlevel-type=minecraft:flat\ngenerate-structures=false\nview-distance=2\nsimulation-distance=2\nmax-players=2\nmax-tick-time=120000\nmotd=PeerHost disposable ${loader}\n`);
+   await writeFile(path.join(prepared.sourceDir,'server.properties'),`server-ip=127.0.0.1\nserver-port=${localPort}\nonline-mode=true\nlevel-seed=12345\nlevel-type=minecraft:flat\ngenerate-structures=false\nview-distance=2\nsimulation-distance=2\nmax-players=2\nmax-tick-time=120000\nmotd=SeedHost disposable ${loader}\n`);
    record.steps.push('Official checked downloads and explicit EULA');
    relay=new RelayNode(path.join(work,'relay'),await createIdentity(),{log:line=>{void appendFile(path.join(work,'relay.log'),line+'\n');},game:{host:'127.0.0.1',port:0}});
    await relay.open();await relay.listen();await relay.listenGame();
@@ -72,7 +72,7 @@ try{
    a=await host(path.join(work,'host-a'),relay);b=await host(path.join(work,'host-b'),relay);
    await a.app.importExisting(prepared.sourceDir,true);await configure(a.app,prepared,localPort);
    await a.app.startServer(true);record.directStatus=await status(localPort);
-   a.app.sendCommand('scoreboard objectives add peerhostSmoke dummy');
+   a.app.sendCommand('scoreboard objectives add seedhostSmoke dummy');
    await a.app.stopServer();const saved=(await a.app.getState()).server;
    const marker=path.join('world','data','scoreboard.dat');
    const markerBytes=await readFile(path.join(saved.serverDir,marker));assert.ok(markerBytes.length>0);

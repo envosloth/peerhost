@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {validateCall} from '../dist/src/core/ipc-policy.js';
-const url='file:///trusted/peerhost/index.html';
+const url='file:///trusted/seedhost/index.html';
 const ctx={senderId:9,expectedSenderId:9,isMainFrame:true};
 const call=(method,payload)=>validateCall(method,payload,url,url,ctx);
 test('setup progress and retained-history IPC are narrow and main-frame only',()=>{

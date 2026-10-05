@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createIdentity } from '../src/core/peer-transport.js';
-import { PeerHostApplication } from '../src/core/application.js';
+import { SeedHostApplication } from '../src/core/application.js';
 import { validateCall } from '../src/core/ipc-policy.js';
 import { ModrinthClient, detectModTarget, placementFor } from '../src/core/modrinth.js';
 import { writeZip } from '../src/core/zip.js';
@@ -38,7 +38,7 @@ async function fakeModrinth(t: TestContext, projects: FakeProject[]) {
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
     const url = new URL(request.url!, base);
     requests.push(`${url.pathname}${url.search}`);
-    assert.match(String(request.headers['user-agent']), /^envosloth\/peerhost\//, 'every request identifies the app');
+    assert.match(String(request.headers['user-agent']), /^envosloth\/seedhost\//, 'every request identifies the app');
     const json = (value: unknown, status = 200) => { response.writeHead(status, { 'content-type': 'application/json' }); response.end(JSON.stringify(value)); };
     const byId = (key: string) => projects.find((p) => p.id === key || p.slug === key);
     let match;
@@ -74,7 +74,7 @@ async function fakeModrinth(t: TestContext, projects: FakeProject[]) {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
-  const client = new ModrinthClient({ apiBase: `${base}/v2`, downloadHosts: [new URL(base).host], userAgent: 'envosloth/peerhost/test' });
+  const client = new ModrinthClient({ apiBase: `${base}/v2`, downloadHosts: [new URL(base).host], userAgent: 'envosloth/seedhost/test' });
   return { base, client, requests, jars };
 }
 
@@ -89,7 +89,7 @@ async function setup(t: TestContext, prefix: string, layout: Record<string, stri
   return { root, source };
 }
 async function app(t: TestContext, root: string, source: string, client: ModrinthClient) {
-  const instance = new PeerHostApplication(path.join(root, 'profile'), await createIdentity(), { modrinth: client });
+  const instance = new SeedHostApplication(path.join(root, 'profile'), await createIdentity(), { modrinth: client });
   t.after(() => instance.close().catch(() => {}));
   await instance.open();
   await instance.importExisting(source, true);
@@ -186,7 +186,7 @@ test('tampered, offsite, incompatible or unknown downloads are refused and nothi
   await assert.rejects(host.installMod({ projectId: 'missing' }), /not found|404/i);
   const dir = (await host.getState()).server!.serverDir;
   assert.deepEqual(await readdir(path.join(dir, 'mods')), before);
-  assert.deepEqual((await readdir(dir)).filter((name) => name.startsWith('.peerhost')), [], 'no staging inside the server folder');
+  assert.deepEqual((await readdir(dir)).filter((name) => name.startsWith('.seedhost')), [], 'no staging inside the server folder');
 });
 
 test('the mod target can be set by hand when detection fails, and travels with the server', async (t) => {
@@ -201,7 +201,7 @@ test('the mod target can be set by hand when detection fails, and travels with t
   assert.deepEqual((await host.getState()).server!.modTarget, { loader: 'fabric', gameVersion: '1.21.1', detected: false });
   await host.createSnapshot();
   const serverDir = (await host.getState()).server!.serverDir;
-  assert.equal(JSON.parse(await readFile(path.join(serverDir, 'peerhost-mods.json'), 'utf8')).target.loader, 'fabric');
+  assert.equal(JSON.parse(await readFile(path.join(serverDir, 'seedhost-mods.json'), 'utf8')).target.loader, 'fabric');
 });
 
 test('mod browser IPC payloads are validated', () => {

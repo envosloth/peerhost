@@ -19,7 +19,7 @@ let page;
 try{
   page=await app.firstWindow();await page.bringToFront();const errors=[];page.on('pageerror',e=>errors.push(String(e)));
   await page.waitForFunction(()=>document.querySelector('#app-version')?.textContent?.includes('v0.3.0'));
-  let state=await page.evaluate(()=>window.peerhost.call('getState'));assert.equal(state.settings.persistentAddress,false);assert.match(state.deviceId,/^[a-f0-9]{64}$/);
+  let state=await page.evaluate(()=>window.seedhost.call('getState'));assert.equal(state.settings.persistentAddress,false);assert.match(state.deviceId,/^[a-f0-9]{64}$/);
   assert.equal((await readFile(path.join(root,'profile','identity.json'),'utf8')).includes('PRIVATE KEY'),false);
   await dismissInitialSetup(page);
   await page.screenshot({path:path.join(root,'desktop-empty.png')});
@@ -27,7 +27,7 @@ try{
   await app.evaluate(({dialog},source)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[source]});dialog.showMessageBox=async()=>({response:1,checkboxChecked:false});},source);
   await page.bringToFront();await page.locator('#import-server').click();
   await page.waitForFunction(()=>document.querySelector('#server-name')?.textContent?.includes('NOT Minecraft'));
-  state=await page.evaluate(()=>window.peerhost.call('getState'));assert.equal(state.server.ownership.state,'owned');assert.notEqual(state.server.serverDir,source);
+  state=await page.evaluate(()=>window.seedhost.call('getState'));assert.equal(state.server.ownership.state,'owned');assert.notEqual(state.server.serverDir,source);
   assert.deepEqual(await readFile(path.join(state.server.serverDir,'fixture.bin')),await readFile(path.join(source,'fixture.bin')));
   console.log('STEP 3: Save a structured real Node fixture launch profile via visible UI.');
   await page.bringToFront();await page.locator('#profile-details').evaluate(el=>el.open=true);
@@ -35,14 +35,14 @@ try{
   await page.waitForFunction(()=>!document.querySelector('#start-server').disabled);
   console.log('STEP 4: Start real fixture child, observe stdout, then stop and commit snapshot. This is NOT Minecraft validation.');
   await page.bringToFront();await page.locator('#start-server').click();await page.waitForFunction(()=>document.querySelector('#server-status')?.textContent==='Hosting');
-  assert.ok((await page.evaluate(()=>window.peerhost.call('getState'))).logs.some(l=>l.includes('Done (')));
+  assert.ok((await page.evaluate(()=>window.seedhost.call('getState'))).logs.some(l=>l.includes('Done (')));
   await page.screenshot({path:path.join(root,'desktop-hosting-fixture.png')});
   await page.bringToFront();await page.locator('#stop-server').click();await page.waitForFunction(()=>document.querySelector('#server-status')?.textContent==='Stopped');
   await page.waitForFunction(()=>document.querySelector('#ownership-state')?.textContent?.includes('owned'));
   console.log('STEP 5: Optional persistent address saves as unconnected, not a working gateway.');
   await page.bringToFront();await page.locator('#settings-tab').click();await reveal(page,'#persistent-address');await page.locator('#persistent-address').check();await page.locator('#gateway-address').fill('mini-pc.example:25565');await page.locator('#save-settings').click();
   await page.waitForFunction(()=>document.querySelector('#settings-feedback')?.textContent==='Preferences loaded from this PC.');
-  state=await page.evaluate(()=>window.peerhost.call('getState'));assert.equal(state.settings.persistentAddress,true);assert.equal(await page.locator('#gateway-status').textContent(),'Unconnected');
+  state=await page.evaluate(()=>window.seedhost.call('getState'));assert.equal(state.settings.persistentAddress,true);assert.equal(await page.locator('#gateway-status').textContent(),'Unconnected');
   await page.locator('#persistent-address').uncheck();await page.locator('#save-settings').click();
   await page.waitForFunction(()=>document.querySelector('#settings-feedback')?.textContent==='Preferences loaded from this PC.');
   console.log('STEP 6: Window close hides to tray without exiting; restore it.');
@@ -51,7 +51,7 @@ try{
   await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].show());await page.bringToFront();
   console.log('STEP 7: Inject uncertain ownership ONLY in disposable QA ledger, then recover through the real visible/native-consent action.');
   assert.equal(await page.locator('#recover-ownership').count(),1,'uncertain ownership needs a real recovery control');
-  state=await page.evaluate(()=>window.peerhost.call('getState'));await new OwnershipLedger(state.server.ledgerFile,state.deviceId).markUncertain();
+  state=await page.evaluate(()=>window.seedhost.call('getState'));await new OwnershipLedger(state.server.ledgerFile,state.deviceId).markUncertain();
   await page.waitForFunction(()=>!document.querySelector('#recover-ownership').hidden);await page.bringToFront();await reveal(page,'#recover-ownership');await page.locator('#recover-ownership').click();
   await page.waitForFunction(()=>document.querySelector('#ownership-state').textContent.includes('owned'));
   assert.deepEqual(errors,[]);await page.screenshot({path:path.join(root,'desktop-verified.png')});

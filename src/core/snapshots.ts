@@ -420,7 +420,7 @@ export async function materializeSnapshot(storeDir: string, id: string, destinat
   const destination = path.resolve(destinationDir);
   const parent = path.dirname(destination);
   await mkdir(parent, { recursive: true });
-  const staging = path.join(parent, `.peerhost-staging-${randomUUID()}`);
+  const staging = path.join(parent, `.seedhost-staging-${randomUUID()}`);
   await mkdir(staging);
   try {
     for (const file of manifest.files) {
@@ -442,7 +442,7 @@ export async function materializeSnapshot(storeDir: string, id: string, destinat
       exists = true;
     }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-    const backup = path.join(parent, `.peerhost-previous-${path.basename(destination)}-${randomUUID()}`);
+    const backup = path.join(parent, `.seedhost-previous-${path.basename(destination)}-${randomUUID()}`);
     if (exists) await rename(destination, backup);
     try { await rename(staging, destination); }
     catch (error) {

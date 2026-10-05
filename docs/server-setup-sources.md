@@ -28,7 +28,7 @@ discoverJava(): Promise<Array<{ executable: string; major: number; version: stri
 
 Instantiate production with `new ServerSetupClient()`; URLs and allowlists cannot be supplied as general options. `LaunchProfile` is the existing saved-state type, including 600/180-second start/stop defaults. The caller owns successful `sourceDir` adoption and cleanup, normal managed storage, ownership checks, profile persistence and the initial revision. Preparation does **not** persist application state, start Minecraft, install/run a Fabric installer, install Java, or change system settings.
 
-`stagingParent` must already exist, be absolute and not itself a symlink; it must be a parent/native-owned private managed directory, not a renderer-provided path or a directory another process may replace. Each successful call produces a unique `peerhost-setup-*` child, never a name-derived path or an existing world. Failure removes only that call's private child; sibling files are retained. Names, release identifiers, executable paths, loader, whole-number RAM (256–1048576 MiB) and exact boolean consent are validated before network traffic. Inputs are copied before asynchronous work, so a caller cannot mutate consent mid-download. False consent means **no `eula.txt`**; true writes exactly `eula=true\n`, after verified preparation. The parent must explain and collect consent using the actual [Minecraft EULA](https://www.minecraft.net/en-us/eula).
+`stagingParent` must already exist, be absolute and not itself a symlink; it must be a parent/native-owned private managed directory, not a renderer-provided path or a directory another process may replace. Each successful call produces a unique `seedhost-setup-*` child, never a name-derived path or an existing world. Failure removes only that call's private child; sibling files are retained. Names, release identifiers, executable paths, loader, whole-number RAM (256–1048576 MiB) and exact boolean consent are validated before network traffic. Inputs are copied before asynchronous work, so a caller cannot mutate consent mid-download. False consent means **no `eula.txt`**; true writes exactly `eula=true\n`, after verified preparation. The parent must explain and collect consent using the actual [Minecraft EULA](https://www.minecraft.net/en-us/eula).
 
 ## Official sources and executable trust
 
@@ -98,12 +98,12 @@ Slice 15 initially failed because the test-only deadline option did not exist. A
 
 ```sh
 npm run build
-PEERHOST_SETUP_LIVE_JAVA=/absolute/already-present/java \
+SEEDHOST_SETUP_LIVE_JAVA=/absolute/already-present/java \
   node --test tests/server-setup.test.mjs tests/server-setup-live.test.mjs
 ```
 
 The live test is opt-in and otherwise skipped. A real already-present parent-owned scratch Java runtime was selected:
-`<scratch>/peerhost-java25-runtime/jdk-25.0.4.1+1-jre/bin/java`.
+`<scratch>/seedhost-java25-runtime/jdk-25.0.4.1+1-jre/bin/java`.
 It reported Java major 25, version `25.0.4.1`. No runtime was installed by this module or exercise.
 
 Observed official metadata: latest release `26.3`, 103 release entries. Actual Vanilla and Fabric preparation for **1.21.1** succeeded, without EULA acceptance or Minecraft launch:

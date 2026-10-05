@@ -89,7 +89,7 @@ Materialization copies verified objects into an adjacent private staging directo
 Only after the entire staging tree is verified is an existing ordinary destination directory renamed to a retained sibling:
 
 ```text
-<destination parent>/.peerhost-previous-<destination basename>-<UUID>/
+<destination parent>/.seedhost-previous-<destination basename>-<UUID>/
 ```
 
 Staging is then renamed into place. An ordinary promotion error attempts to restore the backup. Existing files are not replaced with directories. Successful replacements deliberately retain the backup, including files not present in the incoming snapshot. Each import gets a distinct server UUID, so reimporting does not replace a previously imported, modified server.

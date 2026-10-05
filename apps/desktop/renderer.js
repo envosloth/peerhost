@@ -48,7 +48,7 @@
     return ownership?.state === 'offered' && ownership.owner === state.deviceId ? ownership.offer : null;
   };
   const formatEndpoint = (host, port) => `${String(host).includes(':') ? `[${host}]` : host}:${port}`;
-  // Electron wraps main-process errors as "Error invoking remote method 'peerhost:call': Error: <reason>"; show the reason.
+  // Electron wraps main-process errors as "Error invoking remote method 'seedhost:call': Error: <reason>"; show the reason.
   const errorMessage = (error) => (typeof error?.message === 'string' ? error.message : String(error)).replace(/^Error invoking remote method '[^']*': (?:\w*Error: )?/, '');
   const ACTION_FAILURES = {
     createServer: 'Couldn’t create the server', importServer: 'Couldn’t import the server', startServer: 'Couldn’t start the server',
@@ -407,7 +407,7 @@
   async function loadSetupMetadata() {
     if (setupMetadataLoading) return;
     setupMetadataLoading = true; renderSetup();
-    const results = await Promise.allSettled([window.peerhost.call('listServerVersions'), window.peerhost.call('discoverJava')]);
+    const results = await Promise.allSettled([window.seedhost.call('listServerVersions'), window.seedhost.call('discoverJava')]);
     try {
       if (results[0].status === 'fulfilled') {
         const { latest, versions } = results[0].value;
@@ -521,7 +521,7 @@
     const token = ++snapshotRequest, context = snapshotContext;
     snapshotLoading = true; snapshotNotice = ''; renderHistory();
     try {
-      const result = await window.peerhost.call('listSnapshots');
+      const result = await window.seedhost.call('listSnapshots');
       if (token !== snapshotRequest || context !== snapshotContext) return;
       if (!Array.isArray(result) || result.some(item => typeof item.id !== 'string' || typeof item.current !== 'boolean' || !Number.isSafeInteger(item.fileCount) || !Number.isSafeInteger(item.bytes))) throw new Error('Invalid snapshot history.');
       snapshots = result;
@@ -827,7 +827,7 @@
     modNotice = '';
     renderModBrowser();
     try {
-      const result = await window.peerhost.call('searchMods', { query, offset });
+      const result = await window.seedhost.call('searchMods', { query, offset });
       if (token !== modRequest || context !== modContext) return;
       if (!Array.isArray(result?.hits) || !Number.isSafeInteger(result.total) || result.total < 0) throw new Error('Modrinth returned an invalid search result.');
       modHits = result.hits;
@@ -873,7 +873,7 @@
     const button = event.target.closest('button');
     if (!button || button.disabled) return;
     if (button.dataset.slug) {
-      try { await window.peerhost.call('openModPage', { slug: button.dataset.slug }); }
+      try { await window.seedhost.call('openModPage', { slug: button.dataset.slug }); }
       catch (error) { showError(`Could not open Modrinth: ${errorMessage(error)}`); }
     } else if (button.dataset.install) {
       const projectId = button.dataset.install;
@@ -923,7 +923,7 @@
     const name = $('friend-name').value, code = $('friend-code').value;
     const errors = [
       ['friend-name', !name.trim() || name.length > 60 || /[\p{Cc}]/u.test(name), 'Enter your own display name (up to 60 characters).'],
-      ['friend-code', !/^PEERHOST-[A-Za-z0-9_-]+$/.test(code.trim()) || code.length > 1500, 'Copy the complete PEERHOST- invitation code, then paste it here.'],
+      ['friend-code', !/^SEEDHOST-[A-Za-z0-9_-]+$/.test(code.trim()) || code.length > 1500, 'Copy the complete SEEDHOST- invitation code, then paste it here.'],
     ];
     for (const [id, bad, message] of errors) {
       $(id).toggleAttribute('aria-invalid', bad);
@@ -942,7 +942,7 @@
     const token = invitationRequest;
     checkingInvitation = true; renderFriends();
     try {
-      const details = await window.peerhost.call('previewInvite', { code });
+      const details = await window.seedhost.call('previewInvite', { code });
       if (typeof details?.relayName !== 'string' || typeof details.host !== 'string' || !Number.isInteger(details.port) || details.port < 1 || details.port > 65535 || !/^[a-f0-9]{64}$/.test(details.relayFingerprint) || !Number.isFinite(details.expiresAt) || details.expiresAt <= Date.now()) throw new Error('Invalid or expired invitation.');
       if (token !== invitationRequest || code !== $('friend-code').value || name !== $('friend-name').value) return;
       checkedInvitation = { code, name, details };
@@ -1034,7 +1034,7 @@
     const context = friendContext;
     friendsLoading = true; friendError = ''; renderFriends();
     try {
-      const result = await window.peerhost.call('listFriends');
+      const result = await window.seedhost.call('listFriends');
       if (token !== friendRequest || context !== friendContext) return;
       if (!Array.isArray(result?.members) || !['unknown', 'parked', 'pending', 'held'].includes(result.custody) ||
           (result.custody === 'held' ? typeof result.holder !== 'string' || !result.holder.trim() : result.holder !== null)) throw new Error('Relay returned invalid members.');
@@ -1051,7 +1051,7 @@
     if ($('create-invite').disabled) return;
     return runAction('createInvite', undefined, (result) => {
       if (result === undefined) return; // Native consent was cancelled.
-      if (typeof result?.code !== 'string' || !result.code.startsWith('PEERHOST-') || !Number.isFinite(result.expiresAt)) throw new Error('Relay did not return a valid invitation.');
+      if (typeof result?.code !== 'string' || !result.code.startsWith('SEEDHOST-') || !Number.isFinite(result.expiresAt)) throw new Error('Relay did not return a valid invitation.');
       invitation = result; inviteCopyStatus = 'Ready to copy. Send privately to one friend.'; $('copy-invite').textContent = 'Copy invitation'; $('invite-code').value = result.code;
       $('friend-feedback').textContent = 'Invitation created. Share it privately with one trusted friend.';
       renderFriends(); $('invite-code').focus(); $('invite-code').select();
@@ -1080,7 +1080,7 @@
     const name = $('friend-name').value;
     const code = $('friend-code').value;
     if (!name.trim() || name.length > 60 || /[\0\r\n]/.test(name)) return invalid('friend-name', 'Enter your name on the relay (up to 60 characters).');
-    if (!/^PEERHOST-[A-Za-z0-9_-]+$/.test(code.trim()) || code.length > 2000) return invalid('friend-code', 'Paste the complete PEERHOST- invitation code.');
+    if (!/^SEEDHOST-[A-Za-z0-9_-]+$/.test(code.trim()) || code.length > 2000) return invalid('friend-code', 'Paste the complete SEEDHOST- invitation code.');
     const expected = checkedInvitation.details;
     return runAction('joinWithInvite', { code, name }, async (result) => {
       if (result === undefined) { joinNotice = 'Not joined. Your invitation is kept.'; return; }
@@ -1180,7 +1180,7 @@
     $('error-banner').hidden = true;
     render();
     try {
-      const result = await window.peerhost.call(method, payload);
+      const result = await window.seedhost.call(method, payload);
       // A polling read begun before the mutation must finish before the read-back.
       if (refreshInFlight) await refreshInFlight;
       const verified = await refresh();
@@ -1223,12 +1223,12 @@
   async function checkRelay() {
     if (!state?.relay || !bridgeReady) return;
     try {
-      const status = await window.peerhost.call('checkRelay');
+      const status = await window.seedhost.call('checkRelay');
       relayStatus = status === null ? undefined : status;
       relayStatusError = null;
     } catch (error) {
       relayStatus = null;
-      relayStatusError = errorMessage(error).replace(/^Error invoking remote method 'peerhost:call': (Error: )?/, '');
+      relayStatusError = errorMessage(error).replace(/^Error invoking remote method 'seedhost:call': (Error: )?/, '');
     }
     render();
   }
@@ -1454,8 +1454,8 @@
     if (refreshInFlight) return refreshInFlight;
     refreshInFlight = Promise.resolve().then(async () => {
       try {
-        if (typeof window.peerhost?.call !== 'function') throw new Error('The Seed Hosting desktop bridge is unavailable. Open this window from the desktop app.');
-        const next = await window.peerhost.call('getState');
+        if (typeof window.seedhost?.call !== 'function') throw new Error('The Seed Hosting desktop bridge is unavailable. Open this window from the desktop app.');
+        const next = await window.seedhost.call('getState');
         if (!next || typeof next !== 'object' || !next.settings || !Array.isArray(next.peers) || !Array.isArray(next.logs)) throw new Error('The app returned an invalid state.');
         state = next;
         bridgeReady = true;
@@ -1485,7 +1485,7 @@
   }
 
   // Appearance is a renderer-only preference remembered on this PC. Storage can be unavailable; defaults then apply.
-  const APPEARANCE_KEY = 'peerhost.appearance';
+  const APPEARANCE_KEY = 'seedhost.appearance';
   const appearanceChoices = {
     theme: ['dark', 'light', 'system'], accent: ['sprout', 'teal', 'ocean', 'violet', 'amber', 'rose'], depth: ['soft', 'tactile'],
     density: ['comfortable', 'compact'], motion: ['full', 'reduced'], close: ['tray', 'quit'],
@@ -1533,7 +1533,7 @@
   applyAppearance();
 
   // Window chrome. Borderless offers only fullscreen; fullscreen offers only borderless.
-  const hasBridge = () => typeof window.peerhost?.call === 'function';
+  const hasBridge = () => typeof window.seedhost?.call === 'function';
   let fullScreen = false;
   function renderWindowState(windowState) {
     if (!windowState || typeof windowState.fullScreen !== 'boolean') return;
@@ -1546,7 +1546,7 @@
   async function windowCall(method) {
     if (!hasBridge()) return showError('Window controls need the Seed Hosting desktop app.');
     try {
-      renderWindowState(await window.peerhost.call(method));
+      renderWindowState(await window.seedhost.call(method));
     } catch (error) {
       showError(`Window control failed: ${errorMessage(error)}`);
     }

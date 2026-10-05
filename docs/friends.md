@@ -1,6 +1,6 @@
 # Add friends through a hosting relay
 
-Invitations simplify enrollment into an existing PeerHost relay. They do not create an always-on relay, discover friends, open ports, tunnel Minecraft connections, or start a server.
+Invitations simplify enrollment into an existing SeedHost relay. They do not create an always-on relay, discover friends, open ports, tunnel Minecraft connections, or start a server.
 
 ## First member
 
@@ -23,7 +23,7 @@ In another terminal on the relay PC:
 node dist/src/relay/cli.js invite --root /absolute/path/to/relay-data --hours 24
 ```
 
-Copy the complete `PEERHOST-…` line privately to the first member. In Seed Hosting they open **Friends → I have an invitation**, paste the code, enter their own display name, and choose **Check invitation**. Review the group, always-on PC address and expiry; expand **Verify details with your friend** to compare the full certificate fingerprint through a trusted channel. These are details from the code, not proof of authenticity or a successful connection.
+Copy the complete `SEEDHOST-…` line privately to the first member. In Seed Hosting they open **Friends → I have an invitation**, paste the code, enter their own display name, and choose **Check invitation**. Review the group, always-on PC address and expiry; expand **Verify details with your friend** to compare the full certificate fingerprint through a trusted channel. These are details from the code, not proof of authenticity or a successful connection. Codes from a pre-rename build are not accepted; ask for a fresh invitation.
 
 **Review & join group** requests native confirmation displaying independently decoded details before any enrollment. The relay becomes trusted and park-on-stop is enabled only after joining and saving its settings. Nothing is downloaded or started; use **Take over hosting** once a server has been parked there. Stop any running local server before joining. A different configured relay is never silently replaced.
 

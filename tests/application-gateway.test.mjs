@@ -6,12 +6,12 @@ import { createServer, connect } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { RelayNode } from '../dist/src/core/relay.js';
 import { gatewayStatus, startHostGameGateway } from '../dist/src/core/game-gateway.js';
-import { PeerHostApplication } from '../dist/src/core/application.js';
+import { SeedHostApplication } from '../dist/src/core/application.js';
 import { createIdentity } from '../dist/src/core/peer-transport.js';
 async function fixture(t){
  const root=await mkdtemp(path.join(process.env.TMPDIR,'ph-runtime-gateway-')),source=path.join(root,'source');await mkdir(source);await writeFile(path.join(source,'eula.txt'),'eula=true\n');await writeFile(path.join(source,'world.bin'),'fixture');
  const relay=new RelayNode(path.join(root,'relay'),await createIdentity(),{log:()=>{},game:{host:'127.0.0.1',port:0}});await relay.open();await relay.listen();await relay.listenGame();
- const app=new PeerHostApplication(path.join(root,'app'),await createIdentity());await app.open();await relay.trust('Host',app.identity.fingerprint);await app.addPeer({name:'Relay',fingerprint:relay.identity.fingerprint,...relay.endpoint});await app.saveRelay({fingerprint:relay.identity.fingerprint,parkOnStop:false});await app.importExisting(source,true);await app.parkAtRelay();await app.claimFromRelay();
+ const app=new SeedHostApplication(path.join(root,'app'),await createIdentity());await app.open();await relay.trust('Host',app.identity.fingerprint);await app.addPeer({name:'Relay',fingerprint:relay.identity.fingerprint,...relay.endpoint});await app.saveRelay({fingerprint:relay.identity.fingerprint,parkOnStop:false});await app.importExisting(source,true);await app.parkAtRelay();await app.claimFromRelay();
  await app.saveProfile({executable:process.execPath,args:[path.resolve('tools/fake-java-server.mjs'),'--lifetime-ms=30000']});
  const sockets=new Set(),echo=createServer(s=>{sockets.add(s);s.once('close',()=>sockets.delete(s));s.on('error',()=>{});s.pipe(s);});await new Promise(r=>echo.listen(0,'127.0.0.1',r));
  t.after(async()=>{await app.close();await relay.close();for(const s of sockets)s.destroy();await new Promise(r=>echo.close(r));await rm(root,{recursive:true,force:true});});return{root,app,relay,localPort:echo.address().port};
@@ -45,7 +45,7 @@ test('unexpected process exit closes forwarding and fences ownership',async t=>{
 });
 test('gateway is opt-in and refuses enabling without configured relay',async t=>{
  const root=await mkdtemp(path.join(process.env.TMPDIR,'ph-app-gateway-'));
- const app=new PeerHostApplication(root,await createIdentity());await app.open();t.after(async()=>{await app.close();await rm(root,{recursive:true,force:true});});
+ const app=new SeedHostApplication(root,await createIdentity());await app.open();t.after(async()=>{await app.close();await rm(root,{recursive:true,force:true});});
  assert.equal((await app.getState()).gateway.enabled,false);
  await assert.rejects(app.saveGameGateway({enabled:true,localPort:25565}),/relay/i);
  assert.equal((await app.checkGameGateway()).ready,false);

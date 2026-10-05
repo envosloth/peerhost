@@ -1,17 +1,17 @@
 #!/usr/bin/env node
-// Headless PeerHost relay: an always-on custodian that stores the latest server revision between hosts.
+// Headless SeedHost relay: an always-on custodian that stores the latest server revision between hosts.
 import { parseArgs } from 'node:util';
 import { RelayNode, loadOrCreateRelayIdentity, DEFAULT_RELAY_PORT } from '../core/relay.js';
 import { isValidEndpointHost } from '../core/endpoints.js';
 
 const USAGE = `Usage:
-  peerhost-relay init   --root <dir>
-  peerhost-relay trust  --root <dir> --name <name> --fingerprint <64 hex>
-  peerhost-relay untrust --root <dir> --fingerprint <64 hex>
-  peerhost-relay invite --root <dir> [--hours 24] [--advertise <reachable host>] [--advertise-port <port>]
-  peerhost-relay member-invites --root <dir> --enabled <on|off>
-  peerhost-relay serve  --root <dir> [--name <relay name>] [--host 127.0.0.1] [--port ${DEFAULT_RELAY_PORT}] [--advertise <reachable host>] [--keep 10] [--game-port <port>] [--game-host 127.0.0.1]
-  peerhost-relay status --root <dir>
+  seedhost-relay init   --root <dir>
+  seedhost-relay trust  --root <dir> --name <name> --fingerprint <64 hex>
+  seedhost-relay untrust --root <dir> --fingerprint <64 hex>
+  seedhost-relay invite --root <dir> [--hours 24] [--advertise <reachable host>] [--advertise-port <port>]
+  seedhost-relay member-invites --root <dir> --enabled <on|off>
+  seedhost-relay serve  --root <dir> [--name <relay name>] [--host 127.0.0.1] [--port ${DEFAULT_RELAY_PORT}] [--advertise <reachable host>] [--keep 10] [--game-port <port>] [--game-host 127.0.0.1]
+  seedhost-relay status --root <dir>
 
 serve binds 127.0.0.1 unless --host is given. To reach it from other PCs, pass your LAN or
 Tailscale address (for example --host 0.0.0.0) and allow the port in your firewall yourself.

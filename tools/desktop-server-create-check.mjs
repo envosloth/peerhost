@@ -7,15 +7,15 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { _electron as electron } from 'playwright';
 
-const java=process.env.PEERHOST_SMOKE_JAVA;
-if(!java || !path.isAbsolute(java) || process.env.PEERHOST_SMOKE_ACCEPT_EULA!=='true')throw new Error('Set absolute PEERHOST_SMOKE_JAVA and explicit PEERHOST_SMOKE_ACCEPT_EULA=true for disposable test-server creation.');
+const java=process.env.SEEDHOST_SMOKE_JAVA;
+if(!java || !path.isAbsolute(java) || process.env.SEEDHOST_SMOKE_ACCEPT_EULA!=='true')throw new Error('Set absolute SEEDHOST_SMOKE_JAVA and explicit SEEDHOST_SMOKE_ACCEPT_EULA=true for disposable test-server creation.');
 assert.ok(process.env.TMPDIR,'Artifacts must stay in scratch');
 const project=fileURLToPath(new URL('../',import.meta.url));
-const root=await mkdtemp(path.join(process.env.TMPDIR,'peerhost-desktop-create-'));
+const root=await mkdtemp(path.join(process.env.TMPDIR,'seedhost-desktop-create-'));
 const profile=path.join(root,'profile');
 const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
 let app,page;const errors=[];const dialogs=[];
-const state=()=>page.evaluate(()=>window.peerhost.call('getState'));
+const state=()=>page.evaluate(()=>window.seedhost.call('getState'));
 const settled=()=>page.waitForFunction(()=>document.querySelector('#activity-message').textContent.startsWith('Ready'),undefined,{timeout:240000});
 async function click(id){await page.locator('#'+id).click();await settled();}
 async function native(response,pick=java){

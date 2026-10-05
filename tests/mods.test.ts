@@ -4,7 +4,7 @@ import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } fro
 import path from 'node:path';
 import { inflateRawSync, crc32 } from 'node:zlib';
 import { createIdentity } from '../src/core/peer-transport.js';
-import { PeerHostApplication } from '../src/core/application.js';
+import { SeedHostApplication } from '../src/core/application.js';
 import { OwnershipLedger } from '../src/core/ownership.js';
 import { RelayNode } from '../src/core/relay.js';
 import { validateCall } from '../src/core/ipc-policy.js';
@@ -53,13 +53,13 @@ async function setup(t: TestContext, prefix: string) {
   await writeFile(path.join(source, 'eula.txt'), 'eula=true\n');
   await writeFile(path.join(source, 'mods', 'existing-mod.jar'), (await readFile(await jar(downloads, 'seed.jar'))));
   const identity = await createIdentity();
-  const app = new PeerHostApplication(path.join(root, 'profile'), identity);
+  const app = new SeedHostApplication(path.join(root, 'profile'), identity);
   t.after(() => app.close().catch(() => {}));
   await app.open();
   await app.importExisting(source, true);
   return { root, source, downloads, identity, app };
 }
-const serverDir = async (app: PeerHostApplication) => (await app.getState()).server!.serverDir;
+const serverDir = async (app: SeedHostApplication) => (await app.getState()).server!.serverDir;
 
 test('server mods are installed into mods/, listed, and travel with the next snapshot', async (t) => {
   const { downloads, app } = await setup(t, 'mods-server-');
@@ -153,7 +153,7 @@ test('both mod lists travel with a relay claim to another PC', async (t) => {
   await relay.open(); await relay.listen();
   t.after(() => relay.close());
   const ib = await createIdentity();
-  const b = new PeerHostApplication(path.join(root, 'b'), ib);
+  const b = new SeedHostApplication(path.join(root, 'b'), ib);
   t.after(() => b.close().catch(() => {}));
   await b.open();
   for (const [app, id] of [[a, identity], [b, ib]] as const) {

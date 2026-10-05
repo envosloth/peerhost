@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createIdentity } from '../src/core/peer-transport.js';
-import { PeerHostApplication } from '../src/core/application.js';
+import { SeedHostApplication } from '../src/core/application.js';
 import { OwnershipLedger } from '../src/core/ownership.js';
 import { validateCall } from '../src/core/ipc-policy.js';
 import { materializeSnapshot } from '../src/core/snapshots.js';
@@ -17,7 +17,7 @@ async function setup(prefix: string) {
   await writeFile(path.join(source, 'eula.txt'), 'eula=true\n');
   await writeFile(path.join(source, 'world.bin'), 'original');
   const identity = await createIdentity();
-  const app = new PeerHostApplication(path.join(root, 'profile'), identity);
+  const app = new SeedHostApplication(path.join(root, 'profile'), identity);
   await app.open(); await app.importExisting(source, true);
   return { root, identity, app };
 }
@@ -50,7 +50,7 @@ test('custom launch timeouts persist and reach the process, and invalid budgets 
     assert.deepEqual(validateCall('saveProfile', { executable: 'java', args: [], startTimeoutSeconds: 900, stopTimeoutSeconds: 120 }, renderer, renderer, trusted),
       { executable: 'java', args: [], startTimeoutSeconds: 900, stopTimeoutSeconds: 120 });
     await app.close();
-    const reopened = new PeerHostApplication((app as any).root, identity);
+    const reopened = new SeedHostApplication((app as any).root, identity);
     await reopened.open();
     try {
       await reopened.startServer(true);
@@ -69,7 +69,7 @@ test('saved state written by the first alpha loads with default timeouts', async
     const saved = JSON.parse(await readFile(file, 'utf8'));
     saved.server.profile = { executable: process.execPath, args: [fixture] };
     await writeFile(file, JSON.stringify(saved));
-    const reopened = new PeerHostApplication(path.join(root, 'profile'), identity);
+    const reopened = new SeedHostApplication(path.join(root, 'profile'), identity);
     await reopened.open();
     assert.equal((await reopened.getState()).server!.profile.startTimeoutSeconds, 600);
     await reopened.close();
@@ -92,7 +92,7 @@ test('corrupt saved state is refused without being rewritten', async () => {
     ]) {
       const bytes = JSON.stringify(corrupt);
       await writeFile(file, bytes);
-      await assert.rejects(new PeerHostApplication(path.join(root, 'profile'), identity).open(), /saved application state/i);
+      await assert.rejects(new SeedHostApplication(path.join(root, 'profile'), identity).open(), /saved application state/i);
       assert.equal(await readFile(file, 'utf8'), bytes);
     }
   } finally { await rm(root, { recursive: true, force: true }); }

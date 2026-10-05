@@ -42,7 +42,7 @@ export class RelayNode {
     this.keepRevisions = options.keepRevisions ?? 10;
     if (!Number.isInteger(this.keepRevisions) || this.keepRevisions < 1) throw new RangeError('keepRevisions must be a positive integer');
     this.log = options.log ?? ((line) => console.log(line));
-    this.defaultName = friendName(options.name ?? 'PeerHost relay', 100);
+    this.defaultName = friendName(options.name ?? 'SeedHost relay', 100);
     if (Buffer.byteLength(this.defaultName) > 100) throw new Error('Relay name must fit in 100 UTF-8 bytes');
   }
 
@@ -260,7 +260,7 @@ export class RelayNode {
       const request = await readInviteFrame(socket, 4096, REQUEST_TIMEOUT_MS) as Record<string, unknown>;
       if (!request || request.type !== 'relay' || request.version !== RELAY_PROTOCOL_VERSION || !['status', 'park', 'claim', 'join', 'invite', 'friends', 'gateway-status', 'game-tunnel'].includes(request.op as string) ||
           Object.keys(request).length !== (request.op === 'join' || request.op === 'game-tunnel' ? 5 : 3)) {
-        throw new Error('Unsupported relay request; both ends must run the same PeerHost alpha');
+        throw new Error('Unsupported relay request; both ends must run the same SeedHost alpha');
       }
       if (request.op === 'join') {
         await this.redeemInvite(request.token, request.name, source);

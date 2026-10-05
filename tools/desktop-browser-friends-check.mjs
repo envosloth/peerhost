@@ -25,7 +25,7 @@ if (process.argv.includes('--static')) {
   const { _electron: electron } = await import('playwright');
   const { RelayNode } = await import('../dist/src/core/relay.js');
   const { createIdentity } = await import('../dist/src/core/peer-transport.js');
-  const root = await mkdtemp(path.join(process.env.TMPDIR || os.tmpdir(), 'peerhost-browser-friends-'));
+  const root = await mkdtemp(path.join(process.env.TMPDIR || os.tmpdir(), 'seedhost-browser-friends-'));
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
   const executablePath = createRequire(import.meta.url)('electron');
   const apps = [];
@@ -35,7 +35,7 @@ if (process.argv.includes('--static')) {
   assert.ok(!(modsOnly && friendsOnly), 'choose --mods-only or --friends-only, not both');
   let relay;
   let clipboard;
-  const getState = (page) => page.evaluate(() => window.peerhost.call('getState'));
+  const getState = (page) => page.evaluate(() => window.seedhost.call('getState'));
   const wait = (page, expression, arg, timeout = 60000) => page.waitForFunction(expression, arg, { timeout });
   async function click(page, selector) { await page.bringToFront(); await reveal(page, selector); await page.locator(selector).click(); }
   async function settled(page) { await wait(page, () => document.querySelector('#activity-message').textContent.startsWith('Ready')); }
@@ -74,7 +74,7 @@ if (process.argv.includes('--static')) {
     await join(a.page, (await relay.createInvite({ hours: 1 })).code, 'Angel <QA>');
     assert.equal((await getState(a.page)).relay.parkOnStop, true);
     await click(a.page, '#create-invite');
-    await wait(a.page, () => document.querySelector('#invite-code').value.startsWith('PEERHOST-'));
+    await wait(a.page, () => document.querySelector('#invite-code').value.startsWith('SEEDHOST-'));
     const invitation = await a.page.locator('#invite-code').inputValue();
     await click(a.page, '#copy-invite');
     await wait(a.page, () => document.querySelector('#copy-invite').textContent === 'Copied');
@@ -107,7 +107,7 @@ if (process.argv.includes('--static')) {
     await wait(a.page, (first) => document.querySelector('#mod-results .mod-project')?.dataset.projectId !== first && document.querySelector('#mod-results').getAttribute('aria-busy') === 'false', first);
     await click(a.page, '#mod-previous');
     await wait(a.page, (first) => document.querySelector('#mod-results .mod-project')?.dataset.projectId === first && document.querySelector('#mod-results').getAttribute('aria-busy') === 'false', first);
-    await a.page.locator('#mod-query').fill('peerhost-qa-no-such-mod-9f13c726');
+    await a.page.locator('#mod-query').fill('seedhost-qa-no-such-mod-9f13c726');
     await a.page.locator('#mod-query').press('Enter');
     await wait(a.page, () => document.querySelector('#mod-search-status').textContent.includes('No compatible mods found'));
     assert.equal(await a.page.locator('#mod-next').isDisabled(), true);
@@ -130,7 +130,7 @@ if (process.argv.includes('--static')) {
     assert.equal(await a.page.locator(install).isDisabled(), false, 'existing projects keep the repair action reachable');
     // Seed a second supported destination through real, consented IPC, then remove
     // the server copy through its visible button: the client copy keeps Repair visible.
-    await a.page.evaluate(() => window.peerhost.call('installMod', { projectId: 'gvQqBUqZ', targets: ['server', 'client'] }));
+    await a.page.evaluate(() => window.seedhost.call('installMod', { projectId: 'gvQqBUqZ', targets: ['server', 'client'] }));
     await wait(a.page, () => document.querySelector('#client-mods').textContent.toLowerCase().includes('lithium'));
     await click(a.page, '#server-mods button[data-kind="server"]'); await settled(a.page);
     assert.equal((await getState(a.page)).server.mods.server.length, 0);

@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { createIdentity } from '../src/core/peer-transport.js';
-import { PeerHostApplication } from '../src/core/application.js';
+import { SeedHostApplication } from '../src/core/application.js';
 import { OwnershipLedger } from '../src/core/ownership.js';
 
 const fixture = path.resolve('tools/fake-java-server.mjs');
@@ -16,8 +16,8 @@ async function setup(prefix: string, confirm: () => Promise<boolean>) {
   await writeFile(path.join(source, 'eula.txt'), 'eula=true\n');
   await writeFile(path.join(source, 'world.bin'), 'original');
   const ia = await createIdentity(), ib = await createIdentity();
-  const a = new PeerHostApplication(path.join(root, 'a'), ia);
-  const b = new PeerHostApplication(path.join(root, 'b'), ib, { confirmIncomingHandoff: confirm });
+  const a = new SeedHostApplication(path.join(root, 'a'), ia);
+  const b = new SeedHostApplication(path.join(root, 'b'), ib, { confirmIncomingHandoff: confirm });
   await a.open(); await b.open(); await a.importExisting(source, true);
   await a.saveProfile({ executable: process.execPath, args: [fixture, '--lifetime-ms=30000'] });
   return { root, ia, ib, a, b };
@@ -27,7 +27,7 @@ async function connect(s: Awaited<ReturnType<typeof setup>>) {
   await s.a.addPeer({ name: 'B', fingerprint: s.ib.fingerprint, ...(await s.b.getState()).peerEndpoint! });
   await s.b.addPeer({ name: 'A', fingerprint: s.ia.fingerprint, ...(await s.a.getState()).peerEndpoint! });
 }
-async function a_listen(app: PeerHostApplication) { if (!(await app.getState()).peerEndpoint) await app.startPeerListener(); }
+async function a_listen(app: SeedHostApplication) { if (!(await app.getState()).peerEndpoint) await app.startPeerListener(); }
 async function closedPort(): Promise<number> {
   const server = createServer();
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -35,7 +35,7 @@ async function closedPort(): Promise<number> {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   return port;
 }
-async function idle(app: PeerHostApplication) {
+async function idle(app: SeedHostApplication) {
   for (let i = 0; i < 500; i++) { if (!(await app.getState()).busy) return; await new Promise((r) => setTimeout(r, 10)); }
   throw new Error('Application did not become idle');
 }

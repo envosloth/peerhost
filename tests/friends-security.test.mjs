@@ -113,7 +113,7 @@ test('real CLI invite/trust/untrust updates a running listener without dropping 
     serving.once('error',reject);
   });
   const {stdout}=await run('invite','--hours','1');
-  const code=stdout.split('\n').find(line=>line.startsWith('PEERHOST-'));
+  const code=stdout.split('\n').find(line=>line.startsWith('SEEDHOST-'));
   const a=await createIdentity(),b=await createIdentity();
   assert.equal((await joinRelayInvite(a,code,'A')).relayName,"Angel's relay");
   const socket=await connectPeer(a,endpoint.fingerprint,endpoint.host,endpoint.port);

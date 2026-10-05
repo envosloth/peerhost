@@ -20,9 +20,9 @@ One approved checkpoint remains blocked: the independent reviewer exhausted its 
 | Packaging / authenticated player login / physical-PC Internet test | **Not performed** |
 | Independent third-party review | **Blocked by provider usage limit** |
 
-Full-suite log: `<scratch>/peerhost-final-suite-live.log`. It was run with the explicitly approved disposable runtime selected through `PEERHOST_SETUP_LIVE_JAVA`; the normally opt-in official Vanilla/Fabric preparation test was not skipped.
+Full-suite log: `<scratch>/seedhost-final-suite-live.log`. It was run with the explicitly approved disposable runtime selected through `SEEDHOST_SETUP_LIVE_JAVA`; the normally opt-in official Vanilla/Fabric preparation test was not skipped.
 
-Visible checks ran serially against the built application, with isolated profiles and genuine production IPC/backend operations. Native picker/consent answers were automated, not backend operations. Latest named checks: `desktop`, `handoff`, `relay`, `mods`, `browser-friends`, `mod-recovery`, `onboarding`, `server-create`. Per-tool final logs are `scratch/peerhost-final-<name>.log`; exact aggregate is `<scratch>/peerhost-final-visible-all.json`.
+Visible checks ran serially against the built application, with isolated profiles and genuine production IPC/backend operations. Native picker/consent answers were automated, not backend operations. Latest named checks: `desktop`, `handoff`, `relay`, `mods`, `browser-friends`, `mod-recovery`, `onboarding`, `server-create`. Per-tool final logs are `scratch/seedhost-final-<name>.log`; exact aggregate is `<scratch>/seedhost-final-visible-all.json`.
 
 ## Acceptance trace
 
@@ -41,7 +41,7 @@ Visible checks ran serially against the built application, with isolated profile
 
 The final `tools/real-minecraft-check.mjs` run used actual official Vanilla/Fabric 1.21.1 servers with disposable Temurin 25.0.4.1. It exercised application-managed gateway opt-in and automatic Start/Stop, decoded genuine Minecraft protocol-767 status replies, created a scoreboard through the console, stopped/saved/captured revisions, Parked/Claimed between profiles A and B, verified the saved scoreboard hash, and served the same relay player port after switching hosts. A was fenced and closed before B hosted; B held generation 4. Stopped routes refused new connections.
 
-Final result: `<scratch>/peerhost-real-minecraft-WpDetk/result.json`; log: `<scratch>/peerhost-final-minecraft.log`. Vanilla player port `41869`, Fabric `42045`—ephemeral loopback addresses, not deployment endpoints. See [real-server verification](real-minecraft-verification.md).
+Final result: `<scratch>/seedhost-real-minecraft-WpDetk/result.json`; log: `<scratch>/seedhost-final-minecraft.log`. Vanilla player port `41869`, Fabric `42045`—ephemeral loopback addresses, not deployment endpoints. See [real-server verification](real-minecraft-verification.md).
 
 This proves real JVM/status/world-save transfer on one computer with simulated host profiles. **It does not prove authenticated player login/gameplay, arbitrary modpack compatibility, physical multi-PC/public connectivity or power-loss survival.** Most desktop lifecycle checks deliberately use a labeled Node process or echo fixture and are not counted as Minecraft tests.
 
@@ -55,6 +55,6 @@ Parent direct review is not an independent security audit. Keep the independent-
 
 ## Visual and scope checks
 
-Actual screenshots reviewed from `<scratch>/peerhost-onboarding-zG9H6B`: `fresh-server-1000.png` and `gateway-verified-visible.png`. The modal is centered, controls/readable text and fixed navigation stay within the viewport, longer content scrolls, and the verified-route warning explicitly separates tunnel readiness from Internet access. Geometry assertions cover 1000×700 and 1240×860.
+Actual screenshots reviewed from `<scratch>/seedhost-onboarding-zG9H6B`: `fresh-server-1000.png` and `gateway-verified-visible.png`. The modal is centered, controls/readable text and fixed navigation stay within the viewport, longer content scrolls, and the verified-route warning explicitly separates tunnel readiness from Internet access. Geometry assertions cover 1000×700 and 1240×860.
 
 All test runtime/server/profile artifacts stayed in approved scratch or ignored `.test-data`. The original import source remained untouched. No system Java install/PATH change, real world/settings migration, router/firewall/startup change, remote deployment, git commit or publishing occurred. Scratch evidence is temporary and may be pruned; the checked-in test tools recreate it.

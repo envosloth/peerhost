@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — renamed to `seedhost`
+
+The repository, npm package, Windows executable, relay binary, IPC channel, invite code prefix and the `%APPDATA%/SeedHost` profile folder all use the `seedhost` name now, completing the Seed Hosting rename.
+
+- Invitation codes created before the rename are not accepted; ask your friend for a fresh invitation.
+- A leftover profile from an earlier alpha under the old folder name is not read or moved automatically; finish or hand off anything you still need with the old build first.
+
 ## 0.3.0-alpha
 
 **Still an alpha. Keep your own world backups.** The app is now presented as **Seed Hosting**; your existing profile, worlds and identity are kept.
@@ -9,7 +16,7 @@
 - Error messages read as plain sentences ("Couldn’t create the server: …") instead of internal method names and Electron IPC wrapper text.
 
 ### Changed
-- **Seed Hosting.** The app's display name, logo and marquee are now Seed Hosting, with a cream seed sprouting two green leaves on a forest-green tile as the mark. Internal names are unchanged (the `peerhost` package, the IPC channel and the `%APPDATA%/PeerHost` profile folder), so existing worlds, identity and settings stay where they are.
+- **Seed Hosting.** The app's display name, logo and marquee are now Seed Hosting, with a cream seed sprouting two green leaves on a forest-green tile as the mark. Internal names were left unchanged at the time so existing worlds, identity and settings stayed where they are; everything was later renamed to `seedhost`.
 - **Forest-night dark theme** with **Sprout** green as the standard accent (Lagoon and the others remain). Decorations use a sunflower seed-spiral pattern instead of a grid.
 - **Creating a world is more interactive:** a live "Your new world" preview follows every choice and lists what's still needed, a dice button suggests world names, and picks animate.
 - **New look.** A clean, crisp theme with a new deep-ink standard dark mode (no glows, haze or blur), soft tonal surfaces (or skeuomorphic "Tactile" ones, with crisp bevels and a CRT-style console), a new logo and app icon, and an animated splash screen.

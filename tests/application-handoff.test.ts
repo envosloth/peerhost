@@ -9,8 +9,8 @@ test('two application instances replicate without authority, then explicitly han
   await mkdir('.test-data',{recursive:true});
   const root=await mkdtemp(path.resolve('.test-data/app-handoff-'));
   const ia=await createIdentity(),ib=await createIdentity();let allow=false;let approvals=0;
-  const a=new mod.PeerHostApplication(path.join(root,'a'),ia,{confirmIncomingHandoff:async()=>true});
-  const b=new mod.PeerHostApplication(path.join(root,'b'),ib,{confirmIncomingHandoff:async()=>{approvals++;return allow;}});
+  const a=new mod.SeedHostApplication(path.join(root,'a'),ia,{confirmIncomingHandoff:async()=>true});
+  const b=new mod.SeedHostApplication(path.join(root,'b'),ib,{confirmIncomingHandoff:async()=>{approvals++;return allow;}});
   try{
     const source=path.join(root,'source');await mkdir(source);await writeFile(path.join(source,'eula.txt'),'eula=true\n');await writeFile(path.join(source,'world.bin'),'initial');
     await a.open();await b.open();await a.importExisting(source,true);
@@ -40,7 +40,7 @@ test('two application instances replicate without authority, then explicitly han
     assert.equal(await readFile(path.join(sa.server.serverDir,'world.bin'),'utf8'),'stopped edits','old execution directory retained');
     await a.startServer(true);await a.stopServer();
     const previousOwnership=await a.getState();await a.close();await b.close();
-    const reopenedA=new mod.PeerHostApplication(path.join(root,'a'),ia);await reopenedA.open();
+    const reopenedA=new mod.SeedHostApplication(path.join(root,'a'),ia);await reopenedA.open();
     assert.equal((await reopenedA.getState()).server.ownership.generation,previousOwnership.server.ownership.generation);await reopenedA.close();
     assert.equal(await readFile(path.join(source,'world.bin'),'utf8'),'initial');
   }finally{await a.close();await b.close();await rm(root,{recursive:true,force:true});}

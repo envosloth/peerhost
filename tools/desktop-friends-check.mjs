@@ -21,7 +21,7 @@ const root = await mkdtemp(path.join(scratch, 'seed-friends-'));
 const apps = [], relays = [], pageErrors = [];
 let previousClipboard;
 const wait = (page, expression, arg) => page.waitForFunction(expression, arg, { timeout: 12000 });
-const state = page => page.evaluate(() => window.peerhost.call('getState'));
+const state = page => page.evaluate(() => window.seedhost.call('getState'));
 async function click(page, selector) {
   console.log('ACTION click ' + selector);
   await page.bringToFront(); await page.locator(selector).click({ timeout: 12000 });
@@ -62,9 +62,9 @@ async function check(page, code, name = 'Sam') {
 async function holdMutationResult(app, method) {
   console.log('TEST-ONLY IPC scheduling: hold real ' + method + ' result after backend completion.');
   await app.evaluate(({ ipcMain }, method) => {
-    const original = ipcMain._invokeHandlers.get('peerhost:call'); globalThis.__heldMutation = null;
-    ipcMain.removeHandler('peerhost:call');
-    ipcMain.handle('peerhost:call', async (event, called, payload) => {
+    const original = ipcMain._invokeHandlers.get('seedhost:call'); globalThis.__heldMutation = null;
+    ipcMain.removeHandler('seedhost:call');
+    ipcMain.handle('seedhost:call', async (event, called, payload) => {
       const result = await original(event, called, payload);
       if (called !== method) return result;
       return new Promise(resolve => { globalThis.__heldMutation = { release: () => resolve(result) }; });
@@ -100,11 +100,11 @@ const cases = {
     console.log('STEP pending create: real approval/backend plus TEST-ONLY result scheduling; all guide exits pause and private fields stay until completion.');
     const { app, page } = await launch('pending-create'), node = await relay('Pending Create Garden');
     await node.setMemberInvites(true); await node.trust('Host', (await state(page)).deviceId);
-    await page.evaluate(async peer => { await window.peerhost.call('addPeer', peer); await window.peerhost.call('saveRelay', { fingerprint: peer.fingerprint, parkOnStop: true }); }, { fingerprint: node.identity.fingerprint, name: node.name, ...node.endpoint });
+    await page.evaluate(async peer => { await window.seedhost.call('addPeer', peer); await window.seedhost.call('saveRelay', { fingerprint: peer.fingerprint, parkOnStop: true }); }, { fingerprint: node.identity.fingerprint, name: node.name, ...node.endpoint });
     await page.reload(); await idle(page); await click(page, '#peers-tab');
     await click(page, '#nav-setup'); await click(page, '[data-setup-step="friends"]'); await idle(page);
     await click(page, '#create-invite');
-    await wait(page, () => document.querySelector('#invite-code').value.startsWith('PEERHOST-'));
+    await wait(page, () => document.querySelector('#invite-code').value.startsWith('SEEDHOST-'));
     const previousCode = await page.locator('#invite-code').inputValue();
     await holdMutationResult(app, 'createInvite');
     await click(page, '#create-invite'); await waitForHeldMutation(app);
@@ -117,7 +117,7 @@ const cases = {
     await app.evaluate(() => globalThis.__heldMutation.release()); await idle(page);
     assert.equal(await page.locator('#setup-dialog').evaluate(dialog => dialog.open), true);
     const nextCode = await page.locator('#invite-code').inputValue();
-    assert.ok(nextCode.startsWith('PEERHOST-') && nextCode !== previousCode, 'real creation result is shown in the still-open guide');
+    assert.ok(nextCode.startsWith('SEEDHOST-') && nextCode !== previousCode, 'real creation result is shown in the still-open guide');
     assert.equal(node.trusted.length, 1, 'creating invitations does not enroll another member');
     assert.equal(await page.locator('#friends-play-only').isEnabled(), true);
     await shot(page, 'pending-create-resolved-open-guide');
@@ -191,9 +191,9 @@ const cases = {
     assert.equal(await page.locator('#join-friend').isDisabled(), true);
     // This controls timing only. Results still come from the real local decoder/main handler.
     await app.evaluate(({ ipcMain }) => {
-      const original = ipcMain._invokeHandlers.get('peerhost:call'); globalThis.__previewQueue = [];
-      ipcMain.removeHandler('peerhost:call');
-      ipcMain.handle('peerhost:call', (event, method, payload) => method !== 'previewInvite' ? original(event, method, payload) : new Promise((resolve, reject) => {
+      const original = ipcMain._invokeHandlers.get('seedhost:call'); globalThis.__previewQueue = [];
+      ipcMain.removeHandler('seedhost:call');
+      ipcMain.handle('seedhost:call', (event, method, payload) => method !== 'previewInvite' ? original(event, method, payload) : new Promise((resolve, reject) => {
         globalThis.__previewQueue.push(() => Promise.resolve(original(event, method, payload)).then(resolve, reject));
       }));
     });
@@ -250,10 +250,10 @@ const cases = {
     const { app, page } = await launch('invitation'); const node = await relay('Seed Garden');
     await node.setMemberInvites(true);
     const deviceId = (await state(page)).deviceId; await node.trust('Host', deviceId);
-    await page.evaluate(async peer => { await window.peerhost.call('addPeer', peer); await window.peerhost.call('saveRelay', { fingerprint: peer.fingerprint, parkOnStop: true }); }, { fingerprint: node.identity.fingerprint, name: node.name, ...node.endpoint });
+    await page.evaluate(async peer => { await window.seedhost.call('addPeer', peer); await window.seedhost.call('saveRelay', { fingerprint: peer.fingerprint, parkOnStop: true }); }, { fingerprint: node.identity.fingerprint, name: node.name, ...node.endpoint });
     await page.reload(); await idle(page); await click(page, '#peers-tab');
     await click(page, '#create-invite');
-    await wait(page, () => document.querySelector('#invite-code').value.startsWith('PEERHOST-'));
+    await wait(page, () => document.querySelector('#invite-code').value.startsWith('SEEDHOST-'));
     assert.equal(await page.locator('#invite-next-steps li').count(), 3, 'ready invitation needs three concise sharing steps');
     assert.match(await page.locator('#invite-next-steps').textContent(), /privately.*I have an invitation.*name.*review.*join/is);
     assert.match(await page.locator('#invite-warning').textContent(), /new.*does not revoke.*previous/is);
@@ -276,7 +276,7 @@ const cases = {
     assert.match(await page.locator('#group-status').textContent(), /No group/);
     const node = await relay('Seed Members'), deviceId = (await state(page)).deviceId;
     await node.trust('You <literal>', deviceId); await node.trust('Other host', (await createIdentity()).fingerprint);
-    await page.evaluate(async peer => { await window.peerhost.call('addPeer', peer); await window.peerhost.call('saveRelay', { fingerprint: peer.fingerprint, parkOnStop: true }); }, { fingerprint: node.identity.fingerprint, name: node.name, ...node.endpoint });
+    await page.evaluate(async peer => { await window.seedhost.call('addPeer', peer); await window.seedhost.call('saveRelay', { fingerprint: peer.fingerprint, parkOnStop: true }); }, { fingerprint: node.identity.fingerprint, name: node.name, ...node.endpoint });
     await page.reload(); await idle(page); await click(page, '#peers-tab');
     await wait(page, () => document.querySelectorAll('#friend-list li').length === 2);
     assert.match(await page.locator('#group-status').textContent(), /Members confirmed/);
@@ -400,8 +400,8 @@ const cases = {
       const { app, page } = await launch('readback-' + field); const node = await relay('Readback Garden');
       const invite = await node.createInvite({ hours: 1 }); await check(page, invite.code); await wait(page, () => !document.querySelector('#join-friend').disabled);
       await app.evaluate(({ ipcMain }, field) => {
-        const original = ipcMain._invokeHandlers.get('peerhost:call'); let joined = false;
-        ipcMain.removeHandler('peerhost:call'); ipcMain.handle('peerhost:call', async (event, method, payload) => {
+        const original = ipcMain._invokeHandlers.get('seedhost:call'); let joined = false;
+        ipcMain.removeHandler('seedhost:call'); ipcMain.handle('seedhost:call', async (event, method, payload) => {
           const result = await original(event, method, payload);
           if (method === 'joinWithInvite' && result) joined = true;
           if (method === 'getState' && joined && result.relay) {
@@ -431,7 +431,7 @@ const cases = {
     await wait(a.page, () => document.querySelector('#friend-feedback').textContent.startsWith('Joined'));
     assert.match(await a.page.locator('#friend-feedback').textContent(), /Nothing was downloaded or started.*Next.*review.*start.*ready/is);
     assert.equal(await a.page.locator('#preview-fingerprint').textContent(), '', 'successful join clears preview secret context');
-    await click(a.page, '#create-invite'); await wait(a.page, () => document.querySelector('#invite-code').value.startsWith('PEERHOST-'));
+    await click(a.page, '#create-invite'); await wait(a.page, () => document.querySelector('#invite-code').value.startsWith('SEEDHOST-'));
     const invitation = await a.page.locator('#invite-code').inputValue(); await click(a.page, '#copy-invite');
     assert.ok(await a.app.evaluate(({ clipboard }) => clipboard.readText()) === invitation, 'actual clipboard contains invitation');
     await check(b.page, invitation, 'Sam'); await wait(b.page, () => !document.querySelector('#join-friend').disabled);
@@ -486,7 +486,7 @@ const cases = {
     const source = path.join(root, 'Stopped-guard fixture NOT Minecraft'); await mkdir(source); await writeFile(path.join(source, 'eula.txt'), 'eula=true\n');
     await app.evaluate(({ dialog }, source) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [source] }); }, source);
     await click(page, '#operate-tab'); await click(page, '#import-server'); await idle(page);
-    await page.evaluate(profile => window.peerhost.call('saveProfile', profile), { executable: process.execPath, args: [path.join(project, 'tools/fake-java-server.mjs')], startTimeoutSeconds: 10, stopTimeoutSeconds: 10 });
+    await page.evaluate(profile => window.seedhost.call('saveProfile', profile), { executable: process.execPath, args: [path.join(project, 'tools/fake-java-server.mjs')], startTimeoutSeconds: 10, stopTimeoutSeconds: 10 });
     await page.reload(); await idle(page);
     try {
       await click(page, '#start-server'); await wait(page, () => document.querySelector('#server-status').textContent === 'Hosting');
@@ -495,7 +495,7 @@ const cases = {
       assert.match(await page.locator('#join-friend-feedback').textContent(), /Stop.*server.*join/i);
       assert.equal(node.trusted.length, 0); await shot(page, 'running-fixture-join-blocked');
     } finally {
-      if (['running', 'starting'].includes((await state(page)).server?.state)) await page.evaluate(() => window.peerhost.call('stopServer'));
+      if (['running', 'starting'].includes((await state(page)).server?.state)) await page.evaluate(() => window.seedhost.call('stopServer'));
       await idle(page);
     }
     await wait(page, () => !document.querySelector('#join-friend').disabled);

@@ -7,7 +7,7 @@ The parent directly executed `tools/real-minecraft-check.mjs` after the delegate
 For each loader the runner observed:
 
 - Real JVM stdout readiness and a decoded Minecraft status response identifying version 1.21.1/protocol 767, first directly and then through the opt-in gateway core.
-- A console-created `peerhostSmoke` scoreboard objective, graceful Stop, a saved `world/data/scoreboard.dat`, and an actual captured snapshot.
+- A console-created `seedhostSmoke` scoreboard objective, graceful Stop, a saved `world/data/scoreboard.dat`, and an actual captured snapshot.
 - Park/Claim custody with pinned TLS, then host A serving Minecraft through the relay player listener.
 - Closing A's tunnel and stopping its server removes readiness and refuses a new player/status connection.
 - Park fences A against a new Start. A's application profile closes before B claims the verified saved world.
@@ -18,15 +18,15 @@ Final integrated run: Vanilla's player port was `41869`; Fabric's was `42045`. T
 
 ## Evidence
 
-Scratch log: `<scratch>/peerhost-final-minecraft.log`
+Scratch log: `<scratch>/seedhost-final-minecraft.log`
 
-Parent-read result: `<scratch>/peerhost-real-minecraft-WpDetk/result.json`
+Parent-read result: `<scratch>/seedhost-real-minecraft-WpDetk/result.json`
 
 Artifact root contains separate stopped Vanilla/Fabric sources, two managed host profiles each, and relay stores. Scratch artifacts are temporary and can be pruned; the runner recreates them.
 
 ## Repeat
 
-After a clean build, set an absolute, explicitly approved disposable Java executable in `PEERHOST_SMOKE_JAVA`, explicitly set `PEERHOST_SMOKE_ACCEPT_EULA=true`, and run `npm run check:minecraft`. `TMPDIR` must point to the approved scratch directory. Official network downloads and several real JVM starts are required. The runner only binds loopback and does not change firewall/router/startup services.
+After a clean build, set an absolute, explicitly approved disposable Java executable in `SEEDHOST_SMOKE_JAVA`, explicitly set `SEEDHOST_SMOKE_ACCEPT_EULA=true`, and run `npm run check:minecraft`. `TMPDIR` must point to the approved scratch directory. Official network downloads and several real JVM starts are required. The runner only binds loopback and does not change firewall/router/startup services.
 
 ## Boundaries and remaining work
 

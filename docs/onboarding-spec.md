@@ -1,4 +1,4 @@
-# Spec: beginner-friendly PeerHost setup
+# Spec: beginner-friendly SeedHost setup
 
 Status: user approved scope, implementation plan and autonomous scoped task execution in chat. Disposable scratch-only Java download for a real-server test also approved. Implementation in progress; no commit, deployment or publishing authorized.
 

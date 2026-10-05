@@ -13,7 +13,7 @@ const packaged=process.argv.find(v=>v.startsWith('--packaged='))?.slice('--packa
 async function launch(name){return electron.launch({executablePath:packaged||electronPath,args:packaged?[...linuxKeyring,'--profile-root='+path.join(root,name)]:[...linuxKeyring,path.join(project,'dist/apps/desktop/main.js'),'--profile-root='+path.join(root,name)],env});}
 let a,b,pa,pb;const errors=[];
 // page.waitForFunction treats an async predicate's Promise as truthy, so poll from Node instead.
-async function idle(page){const deadline=Date.now()+30000;while((await page.evaluate(()=>window.peerhost.call('getState'))).busy){if(Date.now()>deadline)throw new Error('Timed out waiting for idle');await new Promise(r=>setTimeout(r,100));}}
+async function idle(page){const deadline=Date.now()+30000;while((await page.evaluate(()=>window.seedhost.call('getState'))).busy){if(Date.now()>deadline)throw new Error('Timed out waiting for idle');await new Promise(r=>setTimeout(r,100));}}
 async function action(page,selector){await page.bringToFront();await page.locator('#advanced-peers').evaluate(el=>el.open=true);await reveal(page,selector);await page.locator(selector).click();}
 async function trust(page,name,state){await page.bringToFront();await page.locator('#advanced-peers').evaluate(el=>el.open=true);await page.locator('#add-peer-details').evaluate(el=>el.open=true);await reveal(page,'#peer-name');await page.locator('#peer-name').fill(name);await page.locator('#peer-fingerprint').fill(state.deviceId);await page.locator('#peer-host').fill(state.peerEndpoint.host);await page.locator('#peer-port').fill(String(state.peerEndpoint.port));await action(page,'#add-peer');await idle(page);await page.waitForFunction(()=>document.querySelector('#peer-count').textContent==='1 SAVED');}
 async function closedPort(){const server=createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r));const {port}=server.address();await new Promise(r=>server.close(r));return port;}
@@ -28,17 +28,17 @@ try{
   console.log('STEP 2: Import A through its visible control. Start real pinned loopback listeners and pair via visible peer forms.');
   await action(pa,'#import-server');await pa.waitForFunction(()=>document.querySelector('#server-name').textContent.includes('NOT Minecraft'));await profile(pa);
   await action(pa,'#start-listener');await action(pb,'#start-listener');await idle(pa);await idle(pb);
-  const sa=await pa.evaluate(()=>window.peerhost.call('getState')),sb=await pb.evaluate(()=>window.peerhost.call('getState'));
+  const sa=await pa.evaluate(()=>window.seedhost.call('getState')),sb=await pb.evaluate(()=>window.seedhost.call('getState'));
   await trust(pa,'B',sb);await trust(pb,'A',sa);
   assert.equal(await pa.locator('[data-method="handoff"]').count(),1,'the UI must expose real handoff, not just replication');
   console.log('STEP 3: Send snapshot through visible confirmation dialog; B must NOT gain a server or authority.');
-  await action(pa,'[data-method="sendSnapshot"]');await action(pa,'#confirm-send');await idle(pa);assert.equal((await pb.evaluate(()=>window.peerhost.call('getState'))).server,null);
+  await action(pa,'[data-method="sendSnapshot"]');await action(pa,'#confirm-send');await idle(pa);assert.equal((await pb.evaluate(()=>window.seedhost.call('getState'))).server,null);
   console.log('STEP 4: B declines through its native dialog; A must get ownership back and be able to host.');
   await b.evaluate(({dialog})=>{dialog.showMessageBox=async()=>({response:0});});
   await action(pa,'[data-method="handoff"]');await action(pa,'#confirm-send');
   await pa.waitForFunction(()=>!document.querySelector('#error-banner').hidden&&document.querySelector('#error-text').textContent.includes('declined'));
   await ownership(pa,'owned');await idle(pa);await idle(pb);assert.equal(await pa.locator('#start-server').isDisabled(),false,'decline restores hosting');
-  assert.equal((await pb.evaluate(()=>window.peerhost.call('getState'))).server,null);
+  assert.equal((await pb.evaluate(()=>window.seedhost.call('getState'))).server,null);
   await b.evaluate(({dialog})=>{dialog.showMessageBox=async()=>({response:1});});
   console.log('STEP 5: B unreachable: A stays fenced and offers Retry; after fixing the endpoint, Retry completes the SAME offer.');
   await trust(pa,'B',{...sb,peerEndpoint:{host:'127.0.0.1',port:await closedPort()}});
@@ -47,22 +47,22 @@ try{
   await ownership(pa,'offered');await idle(pa);
   assert.equal(await pa.locator('#start-server').isDisabled(),true,'an unanswered offer keeps the source fenced');
   assert.equal(await pa.locator('[data-method="handoff"]').textContent(),'Retry handoff');
-  const pendingOffer=(await pa.evaluate(()=>window.peerhost.call('getState'))).server.ownership.offer;
+  const pendingOffer=(await pa.evaluate(()=>window.seedhost.call('getState'))).server.ownership.offer;
   await pa.screenshot({path:path.join(root,'A-retry-pending.png')});
   await trust(pa,'B',sb);
   await action(pa,'[data-method="handoff"]');await action(pa,'#confirm-send');
   await ownership(pa,'transferred');await ownership(pb,'owned');await idle(pb);
-  assert.equal((await pb.evaluate(()=>window.peerhost.call('getState'))).server.ownership.acceptedOfferId,pendingOffer.id,'retry delivered the original offer');
+  assert.equal((await pb.evaluate(()=>window.seedhost.call('getState'))).server.ownership.acceptedOfferId,pendingOffer.id,'retry delivered the original offer');
   assert.equal(await pa.locator('#start-server').isDisabled(),true);assert.equal(await pb.locator('#java-executable').inputValue(),'');
-  const received=await pb.evaluate(()=>window.peerhost.call('getState'));assert.equal(await readFile(path.join(received.server.serverDir,'world.bin'),'utf8'),'original');
+  const received=await pb.evaluate(()=>window.seedhost.call('getState'));assert.equal(await readFile(path.join(received.server.serverDir,'world.bin'),'utf8'),'original');
   await profile(pb);await action(pb,'#start-server');await pb.waitForFunction(()=>document.querySelector('#server-status').textContent==='Hosting');await pb.screenshot({path:path.join(root,'B-hosting-fixture.png')});await action(pb,'#stop-server');await pb.waitForFunction(()=>document.querySelector('#ownership-state').textContent.includes('owned'));await idle(pb);
   console.log('STEP 6: Handoff back. Verify durable counters and retained source bytes.');
   await action(pb,'[data-method="handoff"]');await action(pb,'#confirm-send');await pa.waitForFunction(()=>document.querySelector('#ownership-state').textContent.includes('owned'));await idle(pa);
-  const returned=await pa.evaluate(()=>window.peerhost.call('getState'));assert.equal(returned.server.ownership.generation,2);assert.equal(returned.server.ownership.owner,sa.deviceId);assert.equal(await readFile(path.join(source,'world.bin'),'utf8'),'original');
+  const returned=await pa.evaluate(()=>window.seedhost.call('getState'));assert.equal(returned.server.ownership.generation,2);assert.equal(returned.server.ownership.owner,sa.deviceId);assert.equal(await readFile(path.join(source,'world.bin'),'utf8'),'original');
   console.log('STEP 7: Clean up storage on A through its visible control; the current revision must stay usable.');
   await action(pa,'#clean-up');
   await idle(pa);
-  const cleaned=await pa.evaluate(()=>window.peerhost.call('getState'));console.log('  '+cleaned.logs.find(l=>l.startsWith('Cleanup removed')));
+  const cleaned=await pa.evaluate(()=>window.seedhost.call('getState'));console.log('  '+cleaned.logs.find(l=>l.startsWith('Cleanup removed')));
   assert.equal(await readFile(path.join(cleaned.server.serverDir,'world.bin'),'utf8'),'original');
   await action(pa,'#start-server');await pa.waitForFunction(()=>document.querySelector('#server-status').textContent==='Hosting');await action(pa,'#stop-server');await ownership(pa,'owned');await idle(pa);
   await pa.screenshot({path:path.join(root,'A-returned-ownership.png')});assert.deepEqual(errors,[]);

@@ -2,7 +2,7 @@
 // its visible control. Production defaults and saved progress are not bypassed.
 export async function dismissInitialSetup(page) {
   if (!await page.locator('#setup-dialog').count()) return; // Older packaged alpha.
-  const progress = await page.evaluate(async () => (await window.peerhost.call('getState')).onboarding);
+  const progress = await page.evaluate(async () => (await window.seedhost.call('getState')).onboarding);
   if (progress?.dismissed || progress?.completed || progress?.error) return; // Returning profiles do not auto-open setup.
   await page.waitForFunction(() => document.querySelector('#setup-dialog').open, undefined, { timeout: 15000 });
   await page.locator('#setup-later').click();

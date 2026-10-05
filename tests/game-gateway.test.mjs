@@ -77,10 +77,10 @@ test('opt-in gateway forwards early binary bytes to a pinned outbound holder tun
 
 test('one stable endpoint changes A to B after real park/claim and disconnects old players', async t => {
   const f = await fixture(t);
-  const { PeerHostApplication } = await import('../dist/src/core/application.js');
+  const { SeedHostApplication } = await import('../dist/src/core/application.js');
   const { startHostGameGateway, gatewayStatus } = await import('../dist/src/core/game-gateway.js');
   async function app(identity, name) {
-    const app = new PeerHostApplication(path.join(f.root, name), identity);
+    const app = new SeedHostApplication(path.join(f.root, name), identity);
     await app.open(); t.after(() => app.close());
     await f.relay.trust(name, identity.fingerprint);
     await app.addPeer({ name: 'Relay', ...f.peer });

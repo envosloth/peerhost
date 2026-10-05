@@ -19,7 +19,7 @@ async function renderer(t, state = appState()) {
   await page.route('https://**/*', route => route.abort());
   await page.addInitScript(({ state }) => {
     window.fixture = { state, calls: [], failure: null, snapshots: [{ id: 's1', parentId: null, fileCount: 2, bytes: 32, current: true }, { id: 's0', parentId: null, fileCount: 1, bytes: 16, current: false }] };
-    window.peerhost = { call: async (method, payload) => {
+    window.seedhost = { call: async (method, payload) => {
       const f = window.fixture; f.calls.push({ method, payload });
       if (f.failure === method) throw Error('Fixture refusal: ' + method);
       if (method === 'getState') return f.state;
@@ -74,7 +74,7 @@ test('creation uses explicit EULA, release loader RAM and selected Java; cancell
   await page.evaluate(() => { window.fixture.failure = 'createServer'; });
   await page.locator('#setup-create').click(); await settled(page);
   assert.equal(await page.locator('#setup-error').isVisible(), true, 'backend refusal is in the modal');
-  await page.evaluate(s => { const call = window.peerhost.call; window.peerhost.call = async (method, payload) => { if (method === 'createServer') { window.fixture.calls.push({ method, payload }); window.fixture.state.server = s; return {}; } return call(method, payload); }; }, server());
+  await page.evaluate(s => { const call = window.seedhost.call; window.seedhost.call = async (method, payload) => { if (method === 'createServer') { window.fixture.calls.push({ method, payload }); window.fixture.state.server = s; return {}; } return call(method, payload); }; }, server());
   await page.locator('#setup-create').click(); await settled(page);
   await page.waitForFunction(() => !document.querySelector('#setup-runtime').hidden);
   assert.equal(await page.locator('#setup-runtime-java').inputValue(), '/fixture/java', 'created Java selection is already in runtime help');
@@ -92,13 +92,13 @@ test('existing profiles are not interrupted; simple Java help preserves argument
   await page.locator('#setup-runtime-pick').click(); await settled(page);
   assert.equal(await page.locator('#setup-runtime-java').inputValue(), '/fixture/java', 'cancel preserves selection');
   await page.locator('#setup-runtime-memory').selectOption('3072');
-  await page.evaluate(() => { const call = window.peerhost.call; window.peerhost.call = async (method, payload) => { if (method === 'configureSimpleProfile') { window.fixture.calls.push({ method, payload }); window.fixture.state.server.profile = { executable: payload.javaExecutable, args: ['-Xmx3072M', '@args.txt', 'nogui'] }; return {}; } return call(method, payload); }; });
+  await page.evaluate(() => { const call = window.seedhost.call; window.seedhost.call = async (method, payload) => { if (method === 'configureSimpleProfile') { window.fixture.calls.push({ method, payload }); window.fixture.state.server.profile = { executable: payload.javaExecutable, args: ['-Xmx3072M', '@args.txt', 'nogui'] }; return {}; } return call(method, payload); }; });
   await page.locator('#setup-profile-save').click(); await settled(page);
   assert.deepEqual(await page.evaluate(() => window.fixture.calls.find(c => c.method === 'configureSimpleProfile').payload), { javaExecutable: '/fixture/java', memoryMiB: 3072 });
   assert.match(await page.locator('#setup-runtime-feedback').textContent(), /Saved/);
   assert.deepEqual(await page.evaluate(() => window.fixture.state.server.profile.args), ['-Xmx3072M', '@args.txt', 'nogui']);
   await page.locator('#setup-runtime-memory').selectOption('4096');
-  await page.evaluate(() => { const call = window.peerhost.call; window.peerhost.call = async (method, payload) => method === 'configureSimpleProfile' ? undefined : call(method, payload); });
+  await page.evaluate(() => { const call = window.seedhost.call; window.seedhost.call = async (method, payload) => method === 'configureSimpleProfile' ? undefined : call(method, payload); });
   await page.locator('#setup-profile-save').click(); await settled(page);
   assert.match(await page.locator('#setup-error').textContent(), /could not be confirmed/);
 });
@@ -107,7 +107,7 @@ test('optional friends are real existing controls in wizard, never saved as draf
   const page = await renderer(t);
   await page.locator('[data-setup-step="friends"]').click(); await settled(page);
   assert.equal(await page.locator('#setup-friends #join-friend-form').count(), 1, 'wizard exposes invitation controls');
-  await page.locator('#friend-code').fill('PEERHOST-private-secret');
+  await page.locator('#friend-code').fill('SEEDHOST-private-secret');
   await page.locator('#setup-skip').click(); await settled(page);
   assert.equal(await page.locator('#setup-gateway').isVisible(), true);
   await page.locator('#setup-skip').click(); await settled(page);
@@ -126,17 +126,17 @@ test('gateway uses actual tunnel opt-in and explicit connectivity checks, not pr
   assert.equal(await page.locator('#setup-gateway-check').count(), 1, 'real gateway check control exists');
   assert.match(await page.locator('#setup-gateway-status').textContent(), /Not checked/);
   assert.match(await page.locator('#setup-relay-command').textContent(), /--game-host 0\.0\.0\.0 --game-port 25565/);
-  await page.evaluate(() => { const call = window.peerhost.call; window.peerhost.call = async (method, payload) => { if (method === 'saveGameGateway') { window.fixture.calls.push({ method, payload }); window.fixture.state.gateway = { ...payload, state: 'connecting', detail: 'Waiting for hosting' }; return {}; } if (method === 'checkGameGateway') return { enabled: true, host: 'relay.example', port: 25565, ready: false, detail: 'No confirmed host tunnel' }; return call(method, payload); }; });
+  await page.evaluate(() => { const call = window.seedhost.call; window.seedhost.call = async (method, payload) => { if (method === 'saveGameGateway') { window.fixture.calls.push({ method, payload }); window.fixture.state.gateway = { ...payload, state: 'connecting', detail: 'Waiting for hosting' }; return {}; } if (method === 'checkGameGateway') return { enabled: true, host: 'relay.example', port: 25565, ready: false, detail: 'No confirmed host tunnel' }; return call(method, payload); }; });
   await page.locator('#setup-gateway-enabled').check();
   await page.locator('#setup-gateway-save').click(); await settled(page);
   assert.deepEqual(await page.evaluate(() => window.fixture.calls.find(c => c.method === 'saveGameGateway').payload), { enabled: true, localPort: 25565 });
   assert.equal(await page.evaluate(() => window.fixture.calls.some(c => c.method === 'saveSettings')), false);
   await page.locator('#setup-gateway-check').click(); await settled(page);
   assert.match(await page.locator('#setup-gateway-status').textContent(), /Not ready.*No confirmed host tunnel/);
-  await page.evaluate(() => { const call = window.peerhost.call; window.peerhost.call = async (m, p) => m === 'checkGameGateway' ? { enabled: true, host: 'relay.example', port: 25565, ready: true, detail: 'Confirmed tunnel' } : call(m, p); });
+  await page.evaluate(() => { const call = window.seedhost.call; window.seedhost.call = async (m, p) => m === 'checkGameGateway' ? { enabled: true, host: 'relay.example', port: 25565, ready: true, detail: 'Confirmed tunnel' } : call(m, p); });
   await page.locator('#setup-gateway-check').click(); await settled(page);
   assert.match(await page.locator('#setup-gateway-status').textContent(), /Verified.*relay.example:25565/);
-  await page.evaluate(() => { const call = window.peerhost.call; window.peerhost.call = async (m, p) => { if (m === 'checkGameGateway') throw Error('Relay went offline'); return call(m, p); }; });
+  await page.evaluate(() => { const call = window.seedhost.call; window.seedhost.call = async (m, p) => { if (m === 'checkGameGateway') throw Error('Relay went offline'); return call(m, p); }; });
   await page.locator('#setup-gateway-check').click(); await settled(page);
   assert.match(await page.locator('#setup-gateway-status').textContent(), /Unreachable/);
   assert.doesNotMatch(await page.locator('#setup-gateway-status').textContent(), /Verified/);

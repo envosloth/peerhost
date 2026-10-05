@@ -3,13 +3,13 @@
 Direct handoff needs both PCs online at the same moment. A relay removes that requirement: the PC that last hosted
 **parks** the server on the relay, and any trusted PC can later **claim** it, even while the first PC is switched off.
 
-The relay is a small headless Node program (`peerhost-relay`). It never runs Minecraft, never unpacks the world, and
+The relay is a small headless Node program (`seedhost-relay`). It never runs Minecraft, never unpacks the world, and
 needs no Java. A mini PC, NAS, Raspberry Pi-class box or an always-on desktop all work; storage is roughly one copy of
 the server plus changed files from the last ten parks.
 
 ## How it works
 
-Parking and claiming are ordinary PeerHost handoffs, so every existing guarantee carries over: pinned mutual TLS,
+Parking and claiming are ordinary SeedHost handoffs, so every existing guarantee carries over: pinned mutual TLS,
 SHA256-verified head-only transfers, and exactly one owner at a time.
 
 | Step | Ownership |
@@ -29,7 +29,7 @@ What keeps this safe:
 - **Lost acknowledgments.** If a claim's reply is lost, the claim stays pending for *that PC only*, and claiming again
   finishes it without a second copy or a second owner. If that PC parks again instead, the relay treats the new park as
   proof that the claim landed.
-- **An unreachable relay changes nothing.** Before fencing, PeerHost checks that the relay answers. If it doesn't,
+- **An unreachable relay changes nothing.** Before fencing, SeedHost checks that the relay answers. If it doesn't,
   the server simply stays on this PC.
 - **A newer copy wins.** The relay declines a park that isn't newer than what it has seen, so a stale PC gets its
   ownership restored with an explanation instead of overwriting newer work.
@@ -41,32 +41,32 @@ The relay keeps the last ten parked revisions (`--keep`) and never prunes the on
 On the always-on PC (needs Node 22.5+ with `node:sqlite`; development used Node 26):
 
 ```sh
-git clone https://github.com/envosloth/peerhost && cd peerhost
+git clone https://github.com/envosloth/seedhost && cd seedhost
 npm ci --ignore-scripts && npm run build
-node dist/src/relay/cli.js init --root ~/peerhost-relay
+node dist/src/relay/cli.js init --root ~/seedhost-relay
 # prints FINGERPRINT=<64 hex>
 ```
 
 On each host PC, copy **Your device fingerprint** from the Peers panel, then on the relay:
 
 ```sh
-node dist/src/relay/cli.js trust --root ~/peerhost-relay --name "Desktop" --fingerprint <host fingerprint>
+node dist/src/relay/cli.js trust --root ~/seedhost-relay --name "Desktop" --fingerprint <host fingerprint>
 ```
 
 Start it. It binds `127.0.0.1` unless you choose an address, so reaching it from other PCs is an explicit decision:
 
 ```sh
-node dist/src/relay/cli.js serve --root ~/peerhost-relay --host 0.0.0.0 --port 47625
+node dist/src/relay/cli.js serve --root ~/seedhost-relay --host 0.0.0.0 --port 47625
 ```
 
-PeerHost does not open firewall ports or change routers. Allow TCP 47625 yourself on the relay's firewall, or bind the
+SeedHost does not open firewall ports or change routers. Allow TCP 47625 yourself on the relay's firewall, or bind the
 relay's Tailscale address and skip the LAN entirely. Run `serve` under systemd, a Windows service wrapper or similar
 to keep it up; `SIGTERM` is a clean shutdown.
 
-In PeerHost on each host PC: **Peers → Trust a peer** with the relay's fingerprint and `host:47625`, then
+In SeedHost on each host PC: **Peers → Trust a peer** with the relay's fingerprint and `host:47625`, then
 **Settings → Relay**, pick it, and optionally enable **Park on the relay after every clean stop**.
 
-`node dist/src/relay/cli.js status --root ~/peerhost-relay` shows what the relay holds and whom it trusts.
+`node dist/src/relay/cli.js status --root ~/seedhost-relay` shows what the relay holds and whom it trusts.
 
 ## Day to day
 
