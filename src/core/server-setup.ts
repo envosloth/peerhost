@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import path from 'node:path';
-import { realpath, stat, lstat, mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { realpath, stat, lstat, mkdtemp, mkdir, writeFile, rm, rename, readFile, symlink, readdir } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { writeZip } from './zip.js';
 import { createHash } from 'node:crypto';
 import { validateLaunchProfile, type LaunchProfile } from './saved-state.js';
@@ -42,7 +43,28 @@ function validateCreateInput(input: CreateServerInput): void {
   if (Object.keys(input).sort().join(',') !== 'eulaAccepted,gameVersion,javaExecutable,loader,memoryMiB,name' ||
       typeof input.name !== 'string' || !input.name.trim() || input.name.length > 100 || /[\x00-\x1f\x7f<>:"/\\|?*]/.test(input.name) || /[ .]$/.test(input.name) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(input.name) ||
       !versionId(input.gameVersion) || !['vanilla', 'fabric'].includes(input.loader) || !Number.isInteger(input.memoryMiB) || input.memoryMiB < 256 || input.memoryMiB > 1048576 || typeof input.eulaAccepted !== 'boolean') throw new Error('Invalid new-server input');
-  validateJavaExecutable(input.javaExecutable);
+  // An empty Java choice means "automatic": Seed Hosting finds or installs a matching official runtime.
+  if (input.javaExecutable !== '') validateJavaExecutable(input.javaExecutable);
+}
+
+/** Mojang's launcher platform key for the official Java runtime manifests (the same runtimes the Minecraft launcher installs). */
+export function mojangRuntimePlatform(platform: string = process.platform, arch: string = process.arch): string {
+  if (platform === 'win32') return arch === 'arm64' ? 'windows-arm64' : arch === 'ia32' ? 'windows-x86' : 'windows-x64';
+  if (platform === 'darwin') return arch === 'arm64' ? 'mac-os-arm64' : 'mac-os';
+  if (platform === 'linux') return arch === 'ia32' ? 'linux-i386' : arch === 'x64' ? 'linux' : '';
+  return '';
+}
+const RUNTIME_LIST = '/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json';
+const RUNTIME_MARKER = '.seedhost-runtime.json';
+const MAX_RUNTIME_BYTES = 768 * 1024 ** 2;
+const runtimeComponent = (value: unknown): value is string => typeof value === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(value);
+function runtimeJavaPath(platform: string): string {
+  return platform.startsWith('windows') ? 'bin/java.exe' : platform.startsWith('mac') ? 'jre.bundle/Contents/Home/bin/java' : 'bin/java';
+}
+/** A manifest entry name must stay inside the runtime folder: relative, forward-slash, no `.`/`..` segments. */
+function runtimeEntryPath(name: string): string {
+  if (typeof name !== 'string' || !name || name.length > 512 || name.startsWith('/') || /[\0\\:]/.test(name) || name.split('/').some(part => !part || part === '.' || part === '..')) throw new Error('Unsafe Java runtime manifest entry');
+  return name;
 }
 const UNOBFUSCATED_INTERMEDIARY = 'net.fabricmc:intermediary:0.0.0';
 /** Requires exactly the mappings Fabric's loader metadata declares. Releases from Minecraft 26.1 on are
@@ -186,9 +208,12 @@ export class ServerSetupClient {
       { name: 'fabric-server-launch.properties', data: Buffer.from(`launch.mainClass=${profile.mainClass}\n`) },
     ]);
   }
-  async prepare(stagingParent: string, input: CreateServerInput): Promise<PreparedServer> {
+  async prepare(stagingParent: string, input: CreateServerInput, options: { runtimeRoot?: string } = {}): Promise<PreparedServer> {
     validateCreateInput(input);
     input = { ...input }; // Consent and selected runtime/version cannot change while downloads await.
+    const runtimeRoot = options?.runtimeRoot;
+    if (runtimeRoot !== undefined && (typeof runtimeRoot !== 'string' || !path.isAbsolute(runtimeRoot) || /[\0\r\n]/.test(runtimeRoot) || runtimeRoot.length > 4096)) throw new Error('Invalid trusted Java runtime folder');
+    if (!input.javaExecutable && !runtimeRoot) throw new Error('Choose a Java runtime, or let Seed Hosting set up Java automatically');
     const operation = AbortSignal.timeout(this.operationTimeoutMs);
     if (typeof stagingParent !== 'string' || !path.isAbsolute(stagingParent) || /[\0\r\n]/.test(stagingParent) || stagingParent.length > 4096) throw new Error('Invalid trusted staging parent');
     const stage = await lstat(stagingParent).catch(() => null);
@@ -199,11 +224,14 @@ export class ServerSetupClient {
     if (createHash('sha1').update(raw).digest('hex') !== release.sha1) throw new Error('Version metadata integrity check failed');
     const metadata = object(JSON.parse(raw.toString('utf8')));
     if (metadata.id !== input.gameVersion) throw new Error('Version metadata does not match selected release');
-    let required: unknown;
-    try { required = object(metadata.javaVersion).majorVersion; } catch { throw new Error('Official Java requirement is missing or unsupported; use Import for this release'); }
+    let required: unknown; let component: unknown;
+    try { ({ majorVersion: required, component } = object(metadata.javaVersion)); } catch { throw new Error('Official Java requirement is missing or unsupported; use Import for this release'); }
     if (typeof required !== 'number' || !Number.isInteger(required) || required < 8 || required > 100) throw new Error('Official Java requirement is missing or unsupported');
-    const java = await probeJava(input.javaExecutable);
-    if (java.major < required) throw new Error(`Minecraft ${input.gameVersion} requires Java ${required} or newer; selected Java is ${java.major}`);
+    let java: JavaRuntime;
+    if (input.javaExecutable) {
+      java = await probeJava(input.javaExecutable);
+      if (java.major < required) throw new Error(`Minecraft ${input.gameVersion} requires Java ${required} or newer; selected Java is ${java.major}`);
+    } else java = await this.ensureJava(runtimeRoot!, required, component, operation);
     const download = object(object(metadata.downloads).server);
     if (!Number.isSafeInteger(download.size) || (download.size as number) < 1 || (download.size as number) > this.maxArtifactBytes || !isHash(download.sha1, 40)) throw new Error('Missing verifiable official server download');
     const bytes = await this.bytes(download.url, ['piston-data.mojang.com', 'launcher.mojang.com'], download.size as number, operation);
@@ -225,13 +253,108 @@ export class ServerSetupClient {
     const manifest = await this.releases();
     return { latest: manifest.latest, versions: manifest.versions.map(({ id }) => ({ id })) };
   }
+  /** Automatic Java: reuse an installed managed runtime, else a compatible Java already on this PC, else
+   * download Mojang's official runtime (the one the Minecraft launcher uses), verifying every file's SHA-1
+   * against its SHA-1-pinned manifest. Installs atomically into `runtimeRoot/<component>`; never system-wide. */
+  private async ensureJava(runtimeRoot: string, required: number, component: unknown, operation: AbortSignal): Promise<JavaRuntime> {
+    // Servers older than Java 17 (Minecraft 1.16 and earlier) can break on newer Java; require an exact match there.
+    const fits = (java: JavaRuntime) => required < 17 ? java.major === required : java.major >= required;
+    if (runtimeComponent(component)) {
+      const managed = await readManagedRuntime(runtimeRoot, component);
+      if (managed && fits(managed)) return managed;
+    }
+    const system = (await discoverJava()).filter(fits).sort((a, b) => a.major - b.major);
+    if (system[0]) return system[0];
+    if (!runtimeComponent(component)) throw new Error(`Minecraft needs Java ${required}, and no official runtime is published for this release`);
+    const platform = mojangRuntimePlatform();
+    if (!platform) throw new Error(`Automatic Java isn’t available for this computer; install Java ${required} and choose it`);
+    const list = object(JSON.parse((await this.bytes(this.origin + RUNTIME_LIST, ['piston-meta.mojang.com', 'launchermeta.mojang.com'], this.maxMetadataBytes, operation)).toString('utf8')));
+    const offers = object(list[platform] ?? {})[component];
+    if (!Array.isArray(offers) || !offers.length) throw new Error(`No official Java ${required} runtime is published for this computer`);
+    const offer = object(object(offers[0]).manifest);
+    if (!isHash(offer.sha1, 40)) throw new Error('Invalid Java runtime list');
+    const manifestBytes = await this.bytes(offer.url, ['piston-meta.mojang.com', 'launchermeta.mojang.com'], this.maxMetadataBytes, operation);
+    if (createHash('sha1').update(manifestBytes).digest('hex') !== offer.sha1) throw new Error('Java runtime manifest integrity check failed');
+    const files = object(object(JSON.parse(manifestBytes.toString('utf8'))).files);
+    // Validate the whole manifest before writing anything.
+    const entries = Object.entries(files).map(([name, raw]) => {
+      const entry = object(raw); runtimeEntryPath(name);
+      if (entry.type === 'directory') return { name, type: 'directory' as const };
+      if (entry.type === 'link') {
+        const target = entry.target;
+        if (typeof target !== 'string' || !target || target.length > 512 || /[\0\\:]/.test(target) || target.startsWith('/')) throw new Error('Unsafe Java runtime manifest entry');
+        const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(name), target));
+        if (resolved === '..' || resolved.startsWith('../') || resolved.startsWith('/')) throw new Error('Unsafe Java runtime manifest entry');
+        return { name, type: 'link' as const, target };
+      }
+      if (entry.type !== 'file') throw new Error('Unsupported Java runtime manifest entry');
+      const download = object(object(entry.downloads).raw);
+      if (!isHash(download.sha1, 40) || !Number.isSafeInteger(download.size) || (download.size as number) < 0 || (download.size as number) > MAX_RUNTIME_BYTES) throw new Error('Invalid Java runtime file metadata');
+      return { name, type: 'file' as const, url: this.allowed(download.url, ['piston-data.mojang.com', 'launcher.mojang.com']), sha1: download.sha1 as string, size: download.size as number, executable: entry.executable === true };
+    });
+    const javaPath = runtimeJavaPath(platform);
+    if (!entries.some(entry => entry.type === 'file' && entry.name === javaPath)) throw new Error('Official Java runtime has no Java executable');
+    if (entries.reduce((total, entry) => total + (entry.type === 'file' ? entry.size : 0), 0) > MAX_RUNTIME_BYTES) throw new Error('Official Java runtime is too large');
+    await mkdir(runtimeRoot, { recursive: true });
+    const temporary = path.join(runtimeRoot, `.download-${randomUUID()}`);
+    const final = path.join(runtimeRoot, component);
+    try {
+      await mkdir(temporary);
+      for (const entry of entries) if (entry.type === 'directory') await mkdir(path.join(temporary, ...entry.name.split('/')), { recursive: true });
+      const queue = entries.filter(entry => entry.type === 'file');
+      const worker = async () => {
+        for (let entry = queue.shift(); entry; entry = queue.shift()) {
+          if (entry.type !== 'file') continue;
+          const bytes = entry.size ? await this.bytes(entry.url, ['piston-data.mojang.com', 'launcher.mojang.com'], entry.size, operation) : Buffer.alloc(0);
+          if (bytes.length !== entry.size || createHash('sha1').update(bytes).digest('hex') !== entry.sha1) throw new Error('Java runtime integrity check failed');
+          const target = path.join(temporary, ...entry.name.split('/'));
+          await mkdir(path.dirname(target), { recursive: true });
+          await writeFile(target, bytes, { flag: 'wx', mode: entry.executable ? 0o755 : 0o644 });
+        }
+      };
+      await Promise.all(Array.from({ length: 6 }, worker));
+      if (process.platform !== 'win32') for (const entry of entries) if (entry.type === 'link') {
+        const target = path.join(temporary, ...entry.name.split('/'));
+        await mkdir(path.dirname(target), { recursive: true });
+        await symlink(entry.target, target);
+      }
+      const java = await probeJava(path.join(temporary, ...javaPath.split('/')));
+      if (!fits(java)) throw new Error(`Official runtime reports Java ${java.major}; Minecraft needs Java ${required}`);
+      await writeFile(path.join(temporary, RUNTIME_MARKER), JSON.stringify({ version: 1, component, platform, java: javaPath }) + '\n', { flag: 'wx', mode: 0o644 });
+      operation.throwIfAborted();
+      await rm(final, { recursive: true, force: true }); // Only an unmarked/incompatible leftover of our own runtime folder can be here.
+      await rename(temporary, final);
+    } catch (error) {
+      await rm(temporary, { recursive: true, force: true });
+      throw error;
+    }
+    const installed = await readManagedRuntime(runtimeRoot, component);
+    if (!installed || !fits(installed)) throw new Error('Installed Java runtime could not be verified');
+    return installed;
+  }
+}
+
+async function readManagedRuntime(runtimeRoot: string, component: string): Promise<JavaRuntime | null> {
+  try {
+    const marker = object(JSON.parse(await readFile(path.join(runtimeRoot, component, RUNTIME_MARKER), 'utf8')));
+    if (marker.component !== component || typeof marker.java !== 'string') return null;
+    return await probeJava(path.join(runtimeRoot, component, ...runtimeEntryPath(marker.java).split('/')));
+  } catch { return null; }
 }
 
 /** Bounded environment discovery; no recursive disk scan, shell, registry or Java installation.
  * At most 32 directories, 16 unique executables, four concurrent three-second probes.
  * An unlisted runtime can be selected by the parent's native file picker.
  */
-export async function discoverJava(): Promise<JavaRuntime[]> {
+export async function discoverJava(runtimeRoot?: string): Promise<JavaRuntime[]> {
+  const managed: JavaRuntime[] = [];
+  if (runtimeRoot && path.isAbsolute(runtimeRoot)) {
+    const names = await readdir(runtimeRoot).catch(() => [] as string[]);
+    for (const name of names.filter(runtimeComponent).slice(0, 16)) {
+      const runtime = await readManagedRuntime(runtimeRoot, name);
+      if (runtime) managed.push(runtime);
+    }
+  }
   const filename = process.platform === 'win32' ? 'java.exe' : 'java';
   const home = process.env.JAVA_HOME;
   const directories = [home && path.isAbsolute(home) ? path.join(home, 'bin') : '', ...(process.env.PATH ?? '').slice(0, 32768).split(path.delimiter)].filter(dir => dir && path.isAbsolute(dir)).slice(0, 32);
@@ -243,8 +366,8 @@ export async function discoverJava(): Promise<JavaRuntime[]> {
     } catch { /* Missing/unreadable entries do not block a native selection. */ }
     if (candidates.size >= 16) break;
   }
-  const paths = [...candidates.values()];
-  const found: JavaRuntime[] = [];
+  const paths = [...candidates.values()].filter(executable => !managed.some(runtime => runtime.executable === executable));
+  const found: JavaRuntime[] = [...managed];
   for (let index = 0; index < paths.length; index += 4) {
     const batch = await Promise.all(paths.slice(index, index + 4).map(executable => probeJava(executable).catch(() => null)));
     found.push(...batch.filter((runtime): runtime is JavaRuntime => runtime !== null));
