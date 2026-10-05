@@ -108,7 +108,7 @@ export class SeedHostApplication {
     const gateway = await readGameGateway(this.root);
     if (gateway.error && this.gatewayTunnel) await this.closeGameGateway();
     return {
-      version: '0.3.0',
+      version: '0.4.0',
       deviceId: this.identity.fingerprint,
       settings: { ...this.saved.settings },
       server,

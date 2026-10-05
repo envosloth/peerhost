@@ -1,11 +1,16 @@
 # Changelog
 
-## Unreleased — renamed to `seedhost`
+## 0.4.0-alpha
 
-The repository, npm package, Windows executable, relay binary, IPC channel, invite code prefix and the `%APPDATA%/SeedHost` profile folder all use the `seedhost` name now, completing the Seed Hosting rename.
+**Alpha. Keep your own world backups.** Everything is renamed to **seedhost**: the repository, package, Windows executable (`SeedHost.exe`), relay binary, IPC channel, profile folder (`%APPDATA%/SeedHost`) and invitation code prefix (`SEEDHOST-…`).
 
-- Invitation codes created before the rename are not accepted; ask your friend for a fresh invitation.
-- A leftover profile from an earlier alpha under the old folder name is not read or moved automatically; finish or hand off anything you still need with the old build first.
+### Added
+- **Guided friend invitations.** Friends offers two clear paths — **Invite a friend** and **I have an invitation**. **Check invitation** reviews the group, address, expiry and full relay fingerprint from the code itself, locally: it never contacts the relay, consumes the invitation or proves connectivity. **Review & join group** shows a native confirmation built from the independently decoded code, re-checks it after consent, and verifies the saved relay and endpoint before reporting success. Nothing is downloaded or started.
+- **Clear recovery.** Cancelling keeps your entries for a retry; a used code asks for a fresh invitation; damaged or expired codes explain the next step; a different configured group is never silently replaced, and joining requires a stopped server. Codes that only work on the same PC say so and explain how to get one for another PC.
+
+### Changed
+- **Renamed to `seedhost`** (see above). Invitation codes created before the rename are not accepted; ask for a fresh invitation. A leftover profile from an earlier alpha under the old folder name is not read or moved automatically.
+- **Honest membership wording.** "Members confirmed" is a successful read of the relay's membership, not who is online; failed refreshes show *Unreachable · retry* and clear stale members.
 
 ## 0.3.0-alpha
 

@@ -38,7 +38,7 @@ try {
   app = await electron.launch({ executablePath: electronPath, args: [...linuxKeyring, path.join(project, 'dist/apps/desktop/main.js'), '--profile-root=' + path.join(root, 'profile')], env });
   const page = await app.firstWindow();
   page.on('pageerror', (error) => errors.push(String(error)));
-  await page.waitForFunction(() => document.querySelector('#app-version').textContent.includes('v0.3.0'));
+  await page.waitForFunction(() => document.querySelector('#app-version').textContent.includes('v0.4.0'));
   await app.evaluate(({ dialog }, source) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [source] });
     dialog.showMessageBox = async () => ({ response: 1 });
