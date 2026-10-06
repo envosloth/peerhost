@@ -55,7 +55,8 @@ test('fresh empty state has exact centered create action and resumable optional 
   await reopened.locator('#nav-setup').click();
   assert.equal(await reopened.locator('#setup-name').inputValue(), 'Saved draft');
   assert.equal(await page.locator('#mod-search-form').count(), 1);
-  assert.equal(await page.locator('#join-friend-form').count(), 1);
+  assert.equal(await page.locator('#username-friend-form').count(), 1);
+  assert.equal(await page.locator('#join-friend-form').count(), 0);
 });
 
 test('creation needs no Java choice or EULA checkbox: Java is automatic and Create states the EULA agreement', async t => {
@@ -115,7 +116,7 @@ async function closeAutoSignIn(page) {
 }
 const signedOutAccount = { configured: true, signedIn: false, online: true, username: null, detail: 'Create an account or sign in to this account directory.' };
 
-test('optional friends stage uses the username account flow; code controls stay on the Friends page; skip persists', async t => {
+test('optional friends stage uses username enrollment without retired code controls; skip persists', async t => {
   const page = await renderer(t, { ...appState(), account: { status: signedOutAccount, requests: [] } });
   await closeAutoSignIn(page);
   await page.locator('[data-setup-step="friends"]').click(); await settled(page);
@@ -132,7 +133,8 @@ test('optional friends stage uses the username account flow; code controls stay 
   assert.equal(saved.completed, false, 'no server is not completion');
   assert.doesNotMatch(JSON.stringify(saved), /SEEDHOST-private-secret|friend-code|invitation/);
   await page.locator('#setup-next').click(); await settled(page);
-  assert.equal(await page.locator('#friends-panel #join-friend-form').count(), 1, 'existing friends inspector stays usable');
+  assert.equal(await page.locator('#join-friend-form, #friend-code, #invite-code').count(), 0, 'manual enrollment is absent everywhere');
+  assert.equal(await page.locator('#friends-panel #refresh-friends').count(), 1, 'membership inspector stays usable');
   assert.equal(await page.locator('#friends-panel #account-card').count(), 1, 'account card is restored to the Friends page');
   assert.equal(await page.locator('#setup-friends #account-card').count(), 0);
 });

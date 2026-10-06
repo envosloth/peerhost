@@ -36,6 +36,21 @@
   };
   let relayStatus = null;
   let relayStatusError = null;
+  let relayContext = null;
+  let relayRequest = 0;
+  function currentRelayContext() {
+    const relay = state?.relay;
+    const peer = state?.peers?.find(p => p.fingerprint === relay?.fingerprint);
+    return relay ? JSON.stringify([state.deviceId, state.server?.id ?? null, relay, peer ?? null]) : null;
+  }
+  function syncRelayContext() {
+    const context = currentRelayContext();
+    if (context !== relayContext) {
+      relayContext = context; relayRequest++;
+      relayStatus = null; relayStatusError = null;
+    }
+    return context;
+  }
   const TIMEOUT_MIN = 5, TIMEOUT_MAX = 3600;
   const isBusy = () => Boolean(pendingMethod || state?.busy);
   const isStopped = () => !state?.server || ['offline', 'failed'].includes(state.server.state);
@@ -87,9 +102,9 @@
     $('marquee-server').textContent = serverText;
     setLed('nav-server-led', server?.state === 'running' ? 'ok' : ['starting', 'stopping'].includes(server?.state) ? 'work' : server?.state === 'failed' ? 'bad' : '');
     const mine = ownership?.owner === state?.deviceId;
-    const atRelay = Boolean(state?.relay) && ownership?.owner === state.relay.fingerprint;
-    const hostText = !server ? '—' : !ownership || typeof ownership !== 'object' ? 'Unknown' : ownership.state === 'uncertain' ? 'Needs checking' : ownership.state === 'offered' ? 'Handing over' : mine ? 'This PC' : atRelay ? 'Always-on PC' : server.ownerName || 'Another PC';
-    setLed('marquee-host-led', !server ? '' : hostText === 'Unknown' ? 'bad' : ['Needs checking', 'Handing over'].includes(hostText) ? 'work' : mine ? 'ok' : 'info');
+
+    const hostText = !server ? '—' : !ownership || typeof ownership !== 'object' ? 'Unknown' : ownership.state === 'uncertain' ? mine && isStopped() ? 'Needs local recovery' : 'Needs checking' : ownership.state === 'offered' ? 'Handing over · not observed' : mine && ownership.state === 'hosting' && server.state === 'running' ? 'This PC' : mine && ownership.state === 'owned' && isStopped() ? 'Nobody · stopped' : 'Not observed';
+    setLed('marquee-host-led', !server ? '' : hostText === 'Unknown' ? 'bad' : ['Needs checking', 'Needs local recovery', 'Handing over · not observed'].includes(hostText) ? 'work' : mine ? 'ok' : 'info');
     $('marquee-host').textContent = hostText;
     setLed('marquee-group-led', state?.relay ? 'info' : '');
     $('marquee-group').textContent = state?.relay ? state.relay.name : 'No group';
@@ -319,6 +334,10 @@
     $('setup-ready-list').replaceChildren(...rows.map(([done, text]) => { const item = element('li', done ? 'is-done' : '', text); return item; }));
     $('setup-ready-copy').textContent = state?.onboarding?.completed && optional.every(check => check === 'complete' || check === 'skipped') ? 'Setup is complete. You can reopen this guide any time from the sidebar.' : 'Finish your server and memory, then either set up Friends and the always-on PC or skip those optional steps. Nothing is falsely marked done.';
   }
+  function restoreAccountCard() {
+    const anchor = $('peers-tab').getAttribute('aria-selected') === 'true' ? $('relay-card') : $('friends-home');
+    anchor.before($('account-card'));
+  }
   function renderSetup() {
     const blocked = !bridgeReady || isBusy();
     $('nav-setup').disabled = !bridgeReady;
@@ -330,9 +349,9 @@
     if (!$('setup-dialog').open || !setupDraft) return;
     const step = setupDraft.step, server = state.server;
     // The guide's Friends stage hosts the username account flow (accounts.js binds by element id, so the node is safe to
-    // move). The invitation-code controls stay on the Friends page and are never moved into the guide.
+    // move). Group membership controls stay in their workspace; enrollment is username-only.
     if (step === 'friends') { if ($('account-card').parentElement !== $('setup-friends-slot')) $('setup-friends-slot').append($('account-card')); }
-    else if ($('account-card').parentElement !== $('friends-home').parentElement) $('friends-home').before($('account-card'));
+    else if ($('account-card').parentElement === $('setup-friends-slot')) restoreAccountCard();
     for (const panel of document.querySelectorAll('[data-setup-panel]')) panel.hidden = panel.dataset.setupPanel !== step;
     for (const button of document.querySelectorAll('[data-setup-step]')) {
       button.setAttribute('aria-current', button.dataset.setupStep === step ? 'step' : 'false');
@@ -362,7 +381,7 @@
     $('setup-choose-join').disabled = blocked;
     // Runtime stage.
     for (const id of ['setup-runtime-java', 'setup-runtime-memory', 'setup-custom-java-args', 'setup-runtime-pick', 'setup-profile-save']) $(id).disabled = blocked || !server || !isStopped() || !ownsServer() || Boolean(server.modInstallError);
-    $('setup-runtime-feedback').textContent = !server ? 'Create or import a server first.' : !isStopped() ? 'Stop the server before changing Java or memory.' : !ownsServer() ? 'Another PC is hosting this world right now, so its settings can’t be changed here.' : server.modInstallError ? server.modInstallError : $('setup-runtime-feedback').textContent || '';
+    $('setup-runtime-feedback').textContent = !server ? 'Create or import a server first.' : !isStopped() ? 'Stop the server before changing Java or memory.' : !ownsServer() ? 'Ownership is not confirmed on this PC. Recover local ownership or check the group before changing settings.' : server.modInstallError ? server.modInstallError : $('setup-runtime-feedback').textContent || '';
     // Always-on PC stage.
     renderAlwaysOn(blocked);
     renderSetupMods(blocked, server);
@@ -455,10 +474,8 @@
   $('setup-dialog').addEventListener('cancel', event => { event.preventDefault(); void saveSetup(setupDraft.step, true); });
   $('setup-close-unsaved').addEventListener('click', () => closeSetup());
   $('setup-dialog').addEventListener('close', () => {
-    $('friends-home').before($('account-card'));
-    invitation = null; inviteCopyStatus = ''; joinNotice = ''; $('invite-code').value = ''; $('friend-code').value = ''; $('friend-name').value = '';
-    for (const id of ['friend-name', 'friend-code']) { $(id).removeAttribute('aria-invalid'); $(`${id}-error`).hidden = true; $(`${id}-error`).textContent = ''; }
-    invalidateInvitation(); renderFriends();
+    restoreAccountCard();
+    renderFriends();
   });
   $('setup-back').addEventListener('click', () => {
     if (setupDraft.step === 'server' && setupMode === 'create') { setupMode = 'choose'; return renderSetup(); }
@@ -933,6 +950,7 @@
     $('clean-up').disabled = blocked || !cleanable;
     const recoverable = ownership?.owner === state?.deviceId && ownership?.state === 'uncertain' && !ownership?.offer && isStopped();
     $('recover-ownership').hidden = !recoverable;
+    $('server-recovery-reminder').hidden = !recoverable;
     $('recover-ownership').disabled = blocked || !recoverable || Boolean(server?.modInstallError);
     $('java-executable').disabled = !profileEditable;
     $('java-args').disabled = !profileEditable;
@@ -946,7 +964,7 @@
       $('stop-timeout').value = server?.profile?.stopTimeoutSeconds ?? '';
     }
     $('profile-feedback').textContent = !server ? 'Create or import a server first.' : profileDirty ? 'Unsaved changes · save before starting.' : active ? 'Stop the server to edit these settings.' : 'Saved.';
-    const hint = !server ? '' : !bridgeReady ? 'Seed Hosting can’t reach its background service; buttons are paused.' : isBusy() ? '' : active ? '' : server.modInstallError ? `${server.modInstallError}. Repair the mod files before starting.` : pendingOffer() ? 'Your world is being handed to another PC. Use Retry on that PC if it didn’t finish; if they decline, it comes back here.' : !ownsServer() ? `${server.ownerName || 'Another PC'} is hosting this world right now. Use Take over hosting once they’ve stopped.` : profileDirty ? 'Save your launch settings before starting.' : '';
+    const hint = !server ? '' : !bridgeReady ? 'Seed Hosting can’t reach its background service; buttons are paused.' : isBusy() ? '' : active ? '' : server.modInstallError ? `${server.modInstallError}. Repair the mod files before starting.` : pendingOffer() ? 'Your world is being handed to another PC. Use Retry on that PC if it didn’t finish; if they decline, it comes back here.' : !ownsServer() ? ownership?.state === 'uncertain' && ownership.owner === state.deviceId ? 'No server process is tracked here. Confirm previous processes are stopped & recover local ownership before starting.' : 'Hosting authority is not confirmed on this PC. Check the group and hand-over status before starting.' : profileDirty ? 'Save your launch settings before starting.' : '';
     const needsJava = Boolean(server) && !hint && !active && (!server.profile?.executable || !server.profile?.args?.length);
     $('server-action-hint').textContent = needsJava ? 'Choose Java before starting: open the Setup guide → Memory → Advanced: change Java.' : hint; $('server-action-hint').hidden = !needsJava && !hint;
     $('server-toolbar').hidden = !server;
@@ -1206,125 +1224,24 @@
     }
   });
 
-  let friendIntent = null;
-  function selectFriendIntent(intent) {
-    if (friendIntent !== intent) invalidateInvitation();
-    friendIntent = intent; renderFriends();
-  }
-  $('friends-intent-invite').addEventListener('click', () => selectFriendIntent('invite'));
-  $('friends-intent-join').addEventListener('click', () => selectFriendIntent('join'));
-  $('friends-use-invitation').addEventListener('click', () => { selectFriendIntent('join'); $('friend-code').focus(); });
-  $('friends-setup-hosting').addEventListener('click', () => openSetup('gateway'));
-  $('friends-play-only').addEventListener('click', () => {
-    if (!bridgeReady || isBusy()) return;
-    if ($('setup-dialog').open && !closeSetup()) return;
-    playHelpRequested = true;
-    selectPage(state?.server ? 'operate' : 'home'); renderJoinHelp();
-    $('join-help').scrollIntoView({ block: 'center' });
-  });
-  let checkedInvitation = null;
-  let checkingInvitation = false;
-  let invitationRequest = 0;
-  let invitationTimer = null;
-  function invalidateInvitation() {
-    invitationRequest++; checkedInvitation = null; checkingInvitation = false;
-    clearTimeout(invitationTimer); $('invitation-verify').open = false;
-  }
-  const currentInvitation = () => checkedInvitation && checkedInvitation.code === $('friend-code').value && checkedInvitation.name === $('friend-name').value && checkedInvitation.details.expiresAt > Date.now();
-  let joinNotice = '';
-  function invitationProblem(error, method = 'previewInvite') {
-    const reason = errorMessage(error);
-    if (/could not be confirmed/i.test(reason)) return 'Couldn’t confirm the saved group details. Your invitation is kept. This PC may already be enrolled; retry the same code on this PC or ask your friend to check its members.';
-    if (/already used/i.test(reason)) return /expired|not valid/i.test(reason) ? 'This invitation may be expired or already used. Ask your friend for a new code.' : 'This invitation was already used. Ask your friend for a new code.';
-    if (/expired/i.test(reason)) return 'This invitation has expired. Ask your friend for a new code.';
-    if (/damaged|incomplete|not a .*invite|invalid.*invitation/i.test(reason)) return 'This invitation is damaged or incomplete. Copy the complete code from your friend and paste it again.';
-    if (method === 'joinWithInvite') return 'Couldn’t confirm joining. Your invitation is kept. Retry the same code on this PC. Check that you’re on the same network / VPN and that the always-on PC is running.';
-    return 'Couldn’t check this invitation. Ask your friend for a complete, unexpired code and try again.';
-  }
-  function invitationFieldsValid() {
-    const name = $('friend-name').value, code = $('friend-code').value;
-    const errors = [
-      ['friend-name', !name.trim() || name.length > 60 || /[\p{Cc}]/u.test(name), 'Enter your own display name (up to 60 characters).'],
-      ['friend-code', !/^SEEDHOST-[A-Za-z0-9_-]+$/.test(code.trim()) || code.length > 1500, 'Copy the complete SEEDHOST- invitation code, then paste it here.'],
-    ];
-    for (const [id, bad, message] of errors) {
-      $(id).toggleAttribute('aria-invalid', bad);
-      if (bad) $(id).setAttribute('aria-invalid', 'true');
-      $(`${id}-error`).textContent = bad ? message : ''; $(`${id}-error`).hidden = !bad;
-    }
-    const first = errors.find(([, bad]) => bad);
-    if (first) { $(first[0]).focus(); return false; }
-    return true;
-  }
-  $('check-invitation').addEventListener('click', async () => {
-    if ($('check-invitation').disabled) return;
-    const code = $('friend-code').value, name = $('friend-name').value;
-    if (!invitationFieldsValid()) return;
-    invalidateInvitation();
-    const token = invitationRequest;
-    checkingInvitation = true; renderFriends();
-    try {
-      const details = await window.seedhost.call('previewInvite', { code });
-      if (typeof details?.relayName !== 'string' || typeof details.host !== 'string' || !Number.isInteger(details.port) || details.port < 1 || details.port > 65535 || !/^[a-f0-9]{64}$/.test(details.relayFingerprint) || !Number.isFinite(details.expiresAt) || details.expiresAt <= Date.now()) throw new Error('Invalid or expired invitation.');
-      if (token !== invitationRequest || code !== $('friend-code').value || name !== $('friend-name').value) return;
-      checkedInvitation = { code, name, details };
-      invitationTimer = setTimeout(() => { invalidateInvitation(); renderFriends(); }, Math.min(details.expiresAt - Date.now(), 2147483647));
-    } catch (error) {
-      if (token === invitationRequest) {
-        const message = invitationProblem(error);
-        $('friend-code-error').textContent = message; $('friend-code-error').hidden = false; $('friend-code').setAttribute('aria-invalid', 'true');
-        showError(message);
-      }
-    } finally { if (token === invitationRequest) { checkingInvitation = false; renderFriends(); } }
-  });
+
   let friendContext = null;
   let friends = null;
   let friendRequest = 0;
   let friendsLoading = false;
   let friendError = '';
   let friendCheckedAt = 0;
-  let invitation = null;
-  let inviteCopyStatus = '';
+
   let renderedFriends = null;
   function renderFriends() {
     const context = state?.relay?.fingerprint || null;
     if (context !== friendContext) {
       friendContext = context;
       friendRequest++; friends = null; friendsLoading = false; friendError = '';
-      invitation = null; renderedFriends = null; friendCheckedAt = 0;
-      $('invite-code').value = '';
-      friendIntent = context ? 'invite' : 'join';
+      renderedFriends = null; friendCheckedAt = 0;
       $('friend-feedback').textContent = context ? `You’re in the group on ${state.relay.name}.` : 'Not in a group yet.';
     }
-    if (!friendIntent) friendIntent = context ? 'invite' : 'join';
-    $('friends-intent-invite').setAttribute('aria-pressed', String(friendIntent === 'invite'));
-    $('friends-intent-join').setAttribute('aria-pressed', String(friendIntent === 'join'));
-    $('invite-panel').hidden = friendIntent !== 'invite';
-    $('join-friend-details').hidden = friendIntent !== 'join';
-    $('invite-no-group').hidden = Boolean(context);
-    $('create-invite').hidden = !context;
-    const blocked = !bridgeReady || isBusy();
-    for (const id of ['friend-name', 'friend-code']) $(id).disabled = blocked;
-    $('friends-play-only').disabled = blocked;
-    $('check-invitation').disabled = blocked || checkingInvitation;
-    $('check-invitation').textContent = checkingInvitation ? 'Checking invitation…' : 'Check invitation';
-    const differentGroup = checkedInvitation && state?.relay && state.relay.fingerprint !== checkedInvitation.details.relayFingerprint;
-    $('join-friend').disabled = blocked || !currentInvitation() || Boolean(differentGroup) || !isStopped();
-    $('invitation-preview').hidden = !checkedInvitation;
-    const preview = checkedInvitation?.details;
-    $('preview-group').textContent = preview?.relayName || '';
-    $('preview-address').textContent = preview ? formatEndpoint(preview.host, preview.port) : '';
-    $('preview-local-warning').hidden = !preview || !/^(?:localhost|127(?:\.\d{1,3}){3})$/i.test(preview.host);
-    $('preview-expiry').textContent = preview ? `Expires ${new Date(preview.expiresAt).toLocaleString()}` : '';
-    $('preview-fingerprint').textContent = preview?.relayFingerprint || '';
-    $('join-friend-feedback').textContent = joinNotice || (differentGroup ? 'This invitation is for a different group. To switch deliberately, open Settings → Network → Relay, choose None, and Save settings first. Nothing has been cleared automatically.' : !isStopped() ? 'Stop your server before joining a hosting group. Your invitation is kept.' : '');
-    $('create-invite').disabled = blocked || !context;
-    $('invite-help').textContent = context ? `Creates a one-time code for one friend. It expires in 24 hours.` : 'Join a group first, then create an invitation code to send privately.';
-    $('invite-result').hidden = !invitation;
-    $('invite-status').textContent = invitation ? inviteCopyStatus : '';
-    const expired = invitation && invitation.expiresAt <= Date.now();
-    $('copy-invite').disabled = !bridgeReady || !invitation || expired;
-    $('invite-expiry').textContent = invitation ? expired ? 'Expired · create a new invitation.' : `Expires ${new Date(invitation.expiresAt).toLocaleString()}` : '';
+
     $('refresh-friends').disabled = !bridgeReady || !context || friendsLoading;
     $('refresh-friends').textContent = friendsLoading ? 'Refreshing…' : 'Refresh members';
     $('friend-list').setAttribute('aria-busy', String(friendsLoading));
@@ -1334,7 +1251,7 @@
       unknown: 'Hosting: unknown · the always-on PC hasn’t stored this world yet.',
       parked: 'Hosting: nobody · the world is waiting on the always-on PC.',
       pending: 'Hosting: a hand-over is in progress.',
-      held: `Hosting: ${friends?.holder}`,
+      held: `World held by ${friends?.holder} · hosting not observed`,
     };
     $('friend-holder').textContent = !context ? 'Join a group to see its members.' : friendError ? `Members unavailable: ${friendError} Refresh to try again.` : friendsLoading ? 'Checking members…' : friends ? custodyLabels[friends.custody] || custodyLabels.unknown : 'Not checked yet';
     $('nav-friend-count').hidden = !friends?.members?.length;
@@ -1355,7 +1272,7 @@
           }));
           item.append(remove);
         }
-        item.title = `Fingerprint: ${member.fingerprint}`;
+
         return item;
       }));
     }
@@ -1384,54 +1301,9 @@
     }
   }
   $('refresh-friends').addEventListener('click', () => { if (!$('refresh-friends').disabled) void refreshFriends(); });
-  $('create-invite').addEventListener('click', () => {
-    if ($('create-invite').disabled) return;
-    return runAction('createInvite', undefined, (result) => {
-      if (result === undefined) return; // Native consent was cancelled.
-      if (typeof result?.code !== 'string' || !result.code.startsWith('SEEDHOST-') || !Number.isFinite(result.expiresAt)) throw new Error('Relay did not return a valid invitation.');
-      invitation = result; inviteCopyStatus = 'Ready to copy. Send privately to one friend.'; $('copy-invite').textContent = 'Copy invitation'; $('invite-code').value = result.code;
-      $('friend-feedback').textContent = 'Invitation created. Share it privately with one trusted friend.';
-      renderFriends(); $('invite-code').focus(); $('invite-code').select();
-    });
-  });
-  $('copy-invite').addEventListener('click', async () => {
-    if ($('copy-invite').disabled || !invitation) return;
-    const current = invitation;
-    try {
-      await navigator.clipboard.writeText(current.code);
-      if (invitation !== current) return;
-      inviteCopyStatus = 'Copied. Send the code privately to your friend.';
-      $('copy-invite').textContent = 'Copied'; renderFriends();
-    } catch {
-      if (invitation !== current) return;
-      inviteCopyStatus = 'Couldn’t copy. Select the complete code above and copy it manually.'; renderFriends();
-    }
-  });
-  for (const id of ['friend-name', 'friend-code']) $(id).addEventListener('input', () => {
-    $(id).removeAttribute('aria-invalid'); $(`${id}-error`).textContent = ''; $(`${id}-error`).hidden = true;
-    invalidateInvitation(); joinNotice = ''; renderFriends();
-  });
-  $('join-friend-form').addEventListener('submit', (event) => {
-    event.preventDefault();
-    if ($('join-friend').disabled || !currentInvitation() || !isStopped() || state?.relay && state.relay.fingerprint !== checkedInvitation.details.relayFingerprint) return;
-    const name = $('friend-name').value;
-    const code = $('friend-code').value;
-    if (!name.trim() || name.length > 60 || /[\0\r\n]/.test(name)) return invalid('friend-name', 'Enter your name on the relay (up to 60 characters).');
-    if (!/^SEEDHOST-[A-Za-z0-9_-]+$/.test(code.trim()) || code.length > 2000) return invalid('friend-code', 'Paste the complete SEEDHOST- invitation code.');
-    const expected = checkedInvitation.details;
-    return runAction('joinWithInvite', { code, name }, async (result) => {
-      if (result === undefined) { joinNotice = 'Not joined. Your invitation is kept.'; return; }
-      const peer = state.peers.find(entry => entry.fingerprint === expected.relayFingerprint);
-      if (!state.relay || state.relay.fingerprint !== expected.relayFingerprint || state.relay.parkOnStop !== true || state.relay.name !== result?.relayName || peer?.host !== expected.host || peer?.port !== expected.port) throw new Error('The joined relay could not be confirmed. Your entries have been kept.');
-      $('friend-code').value = ''; invalidateInvitation(); joinNotice = '';
-      $('friend-feedback').textContent = state.server && ownsServer()
-        ? `Joined the group on ${result.relayName}. Your world “${state.server.name}” stays on this PC. Each time you stop the server, it’s handed to the always-on PC so friends can take over hosting.`
-        : `Joined the group on ${result.relayName}. Nothing was downloaded or started. Next: use Take over hosting on My server to get the world, then press Start server.`;
-      await refreshFriends(); void checkRelay();
-    });
-  });
 
   function renderRelay() {
+    syncRelayContext();
     const relay = state?.relay;
     const server = state?.server;
     const ownership = server?.ownership;
@@ -1440,7 +1312,7 @@
     if (relay) {
       $('relay-name').textContent = relay.name;
       const atRelay = ownership?.owner === relay.fingerprint;
-      const here = ownership?.owner === state.deviceId && ['owned', 'offered'].includes(ownership.state);
+      const here = ownership?.owner === state.deviceId;
       $('relay-holder').textContent = relayStatusError ? 'UNREACHABLE' : relayStatus === undefined ? 'EMPTY'
         : relayStatus ? (relayStatus.state === 'transferred' ? `WITH ${String(relayStatus.ownerName || 'ANOTHER PC').toUpperCase()}` : relayStatus.state === 'offered' ? 'HAND-OVER IN PROGRESS' : 'WAITING ON ALWAYS-ON PC')
         : 'NOT CHECKED';
@@ -1452,8 +1324,10 @@
       $('relay-help').textContent = relayStatusError ? `Couldn’t reach the always-on PC: ${relayStatusError}`
         : !server ? 'No world on this PC yet. Use Take over hosting to get it from the always-on PC.'
         : atRelay ? 'The world is waiting on the always-on PC. Anyone in the group can take over hosting, including you.'
-        : here ? 'You’re the host. When you’re done, stop the server and hand it off so a friend can host while this PC is off.'
-        : `${server.ownerName || 'Another PC'} is hosting. Once they stop and hand it off, you can take over.`;
+        : here && ownership?.state === 'uncertain' ? 'No server process is tracked here. Confirm previous processes are stopped & recover local ownership on Performance before starting.'
+        : ownership?.state === 'offered' ? 'A hand-over is pending. Hosting has not been confirmed; check its status before retrying.'
+        : here && ['owned', 'hosting'].includes(ownership?.state) ? server.state === 'running' ? 'This PC is running the server. Stop it before handing the world off.' : 'This PC owns the stopped world. Start it here, or hand it off to the always-on PC.'
+        : 'Hosting is not observed here. Check the group’s world status before requesting a hand-over.';
     }
     const select = $('relay-peer');
     const options = [['', 'None: hand off directly between PCs'], ...(state?.peers || []).map((peer) => [peer.fingerprint, `${peer.name} · ${formatEndpoint(peer.host, peer.port)}`])];
@@ -1529,8 +1403,7 @@
       if (state?.relay) void refreshFriends();
       return true;
     } catch (error) {
-      const reason = method === 'joinWithInvite' ? invitationProblem(error, method) : method === 'createInvite' ? 'Couldn’t create an invitation. Check the same network / VPN and that the always-on PC is running, then try again.' : errorMessage(error);
-      if (method === 'joinWithInvite') { joinNotice = reason; friendIntent = 'join'; }
+      const reason = errorMessage(error);
       const message = `${ACTION_FAILURES[method] || `${method} failed`}: ${reason}`;
       if (refreshInFlight) await refreshInFlight;
       await refresh(); // Failed operations can still alter process / ownership state.
@@ -1562,15 +1435,22 @@
   });
   async function checkRelay() {
     if (!state?.relay || !bridgeReady) return;
+    const context = syncRelayContext();
+    const token = ++relayRequest;
+    // Generation rejects A → B → A and older requests to the same endpoint.
+    const current = () => context === syncRelayContext() && token === relayRequest;
     try {
       const status = await window.seedhost.call('checkRelay');
+      if (!current()) return;
       relayStatus = status === null ? undefined : status;
       relayStatusError = null;
     } catch (error) {
+      if (!current()) return;
       relayStatus = null;
       relayStatusError = errorMessage(error).replace(/^Error invoking remote method 'seedhost:call': (Error: )?/, '');
+    } finally {
+      if (current()) render();
     }
-    render();
   }
   $('check-relay').addEventListener('click', () => { if (!$('check-relay').disabled) void checkRelay(); });
   for (const [id, method] of [['park-relay', 'parkAtRelay'], ['claim-relay', 'claimFromRelay']]) {

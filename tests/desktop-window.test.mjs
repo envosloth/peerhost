@@ -194,7 +194,9 @@ test('splash, borderless/fullscreen toggle, page tabs, appearance, minimize, clo
     for (const name of serverTabs) assert.equal(await page.locator('#' + name + '-tab').isVisible(), true, name + ' is exposed by Open server');
     await page.screenshot({ path: path.join(root, 'opened-server.png') });
     // Status lights follow real state: a loopback-only peer listener lights the listener LED.
-    await page.locator('#peers-tab').click(); await page.locator('#advanced-peers').evaluate((el) => { el.open = true; });
+    await page.locator('#home-tab').click();
+    await page.locator('#settings-tab').click(); await page.locator('#advanced-peers').evaluate((el) => { el.open = true; });
+    assert.equal(await page.locator('#settings-panel #advanced-peers').isVisible(), true, 'direct listener is an advanced app setting, not username enrollment');
     assert.equal(await page.locator('#listener-led').getAttribute('class'), 'led');
     await page.locator('#start-listener').click();
     await page.waitForFunction(() => document.querySelector('#listener-status').textContent === 'LISTENING');
@@ -222,9 +224,14 @@ test('splash, borderless/fullscreen toggle, page tabs, appearance, minimize, clo
       }
       await openSelectedServer(page);
       await page.locator('#peers-tab').click();
+      assert.equal(await page.locator('#advanced-peers').isVisible(), false, 'Multi-host does not expose fingerprint enrollment');
+      assert.deepEqual(await layoutProblems(page), [], theme + ' username Multi-host page at minimum size');
+      await page.locator('#home-tab').click();
+      await page.locator('#settings-tab').click();
       await page.locator('#advanced-peers').evaluate((el) => { el.open = true; });
       await page.locator('#add-peer-details').evaluate((el) => { el.open = true; });
-      assert.deepEqual(await layoutProblems(page), [], theme + ' friends page at minimum size');
+      assert.equal(await page.locator('#settings-panel #add-peer-details').isVisible(), true, 'direct peer trust is only in app settings');
+      assert.deepEqual(await layoutProblems(page), [], theme + ' advanced app settings at minimum size');
       await page.locator('#home-tab').click();
       assert.deepEqual(await layoutProblems(page), [], theme + ' home page at minimum size');
     }

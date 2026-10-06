@@ -27,6 +27,68 @@ const fixture = () => page.evaluate(() => window.dashboardFixture.read());
 const settle = () => page.waitForFunction(() => document.querySelector('#activity-message').textContent === 'Ready');
 async function set(value) { await page.evaluate(v => window.dashboardFixture.set(v), value); await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange'))); await settle(); }
 
+test('Friends and Multi-host expose only one movable username enrollment card even without a directory', async () => {
+  await reset(); await click('#friends-tab');
+  assert.equal(await page.locator('#friend-code, #invite-code, #create-invite, #friends-intent-join, #friends-intent-invite').count(), 0, 'manual enrollment is removed, not hidden');
+  assert.match(await page.locator('#account-directory-note').textContent(), /shared directory.*usernames/i);
+  assert.equal(await page.locator('#account-open').isDisabled(), true);
+  await click('#home-tab'); await click('#server-list [data-action="open"][data-id="alpha"]'); await click('#peers-tab');
+  assert.equal(await page.locator('#peers-panel #account-card').isVisible(), true);
+  assert.equal(await page.locator('#peers-panel #friends-controls').isVisible(), true);
+  assert.equal(await page.locator('#account-card').count(), 1);
+  await click('#home-tab'); await click('#friends-tab');
+  assert.equal(await page.locator('#friends-panel #account-card').isVisible(), true);
+  assert.deepEqual(errors, []);
+});
+
+test('failed local uncertain ownership requires recovery, never self-takeover or invented hosting', async () => {
+  await reset(); const f = await fixture();
+  f.state.server.state = 'failed'; f.state.server.ownerName = 'This PC';
+  f.state.server.ownership = { state: 'uncertain', owner: f.state.deviceId };
+  f.state.relay = { name: 'Group', fingerprint: 'c'.repeat(64), parkOnStop: true };
+  await set({state:f.state}); await click('#server-list [data-action="open"][data-id="alpha"]');
+  assert.doesNotMatch(await page.locator('#server-action-hint').textContent(), /hosting.*right now|take over/i);
+  assert.match(await page.locator('#server-action-hint').textContent(), /No server process is tracked here\. Confirm previous processes are stopped & recover local ownership/i);
+  assert.doesNotMatch(await page.locator('#server-action-hint').textContent(), /This server is stopped/i);
+  assert.match(await page.locator('#marquee-host').textContent(), /local recovery/i);
+  assert.equal(await page.locator('#recover-ownership').isVisible(), true);
+  assert.equal(await page.locator('#recover-ownership').isEnabled(), true);
+  await click('#peers-tab');
+  assert.equal(await page.locator('#claim-relay').isDisabled(), true);
+  assert.doesNotMatch(await page.locator('#relay-help').textContent(), /is hosting|take over/i);
+  assert.match(await page.locator('#relay-help').textContent(), /No server process is tracked here.*Confirm previous processes are stopped.*recover/i);
+  for (const state of ['unknown', 'transferred', 'offered']) {
+    f.state.server.ownership = {state,owner:'d'.repeat(64)};
+    await set({state:f.state});
+    assert.doesNotMatch(await page.locator('#relay-help').textContent(), /is hosting/i, state);
+    assert.doesNotMatch(await page.locator('#server-action-hint').textContent(), /hosting.*right now/i, state);
+  }
+});
+
+test('Friends guide returns the single account card to its originating Multi-host workspace', async () => {
+  await reset(); const f = await fixture(); f.state.onboarding.step = 'friends'; await set({state:f.state});
+  await click('#server-list [data-action="open"][data-id="alpha"]'); await click('#peers-tab');
+  await click('#nav-setup');
+  await page.locator('#setup-friends-slot #account-card').waitFor({state:'visible'});
+  assert.equal(await page.locator('#setup-friends-slot #account-card').isVisible(), true);
+  await click('#setup-save-close');
+  await page.waitForFunction(() => !document.querySelector('#setup-dialog').open);
+  assert.equal(await page.locator('#peers-panel #account-card').isVisible(), true);
+  assert.equal(await page.locator('#account-card').count(), 1);
+  await click('#home-tab'); await click('#friends-tab');
+  assert.equal(await page.locator('#friends-panel #account-card').isVisible(), true);
+});
+
+test('Start and stopped recovery explain trust inline without another consent control', async () => {
+  await reset(); await click('#server-list [data-action="open"][data-id="alpha"]');
+  assert.match(await page.locator('#server-start-trust').textContent(), /Start.*executes.*configured Java.*server.*mods/i);
+  assert.equal(await page.locator('#server-start-trust').isVisible(), true);
+  const f = await fixture(); f.state.server.state = 'failed'; f.state.server.ownership = {state:'uncertain',owner:f.state.deviceId};
+  await set({state:f.state});
+  assert.match(await page.locator('#server-recovery-reminder').textContent(), /previous.*Java.*server processes.*stopped/i);
+  assert.equal(await page.locator('#server-recovery-reminder').isVisible(), true);
+});
+
 // Each feature below is added and run RED before its implementation.
 test('global Friends and Settings sit below Home, outside server-only navigation', async () => {
   await reset();
@@ -323,12 +385,12 @@ test('Multi-host reuses group/relay controls, explicitly distinguishes app-wide 
   assert.equal(await page.locator('#peers-tab .nav-text').textContent(), 'Multi-host'); await click('#peers-tab');
   assert.match(await page.locator('#multi-host-scope').textContent(), /app-wide.*group/i);
   assert.equal(await page.locator('#peers-panel #relay-card').count(), 1);
-  assert.equal(await page.locator('#peers-panel #friends-controls').count(), 0);
-  assert.equal(await page.locator('#peers-panel #account-card').count(), 0);
+  assert.equal(await page.locator('#peers-panel #friends-controls').count(), 1);
+  assert.equal(await page.locator('#peers-panel #account-card').count(), 1);
   await click('#home-tab'); await click('#friends-tab');
   assert.equal(await page.locator('#friends-panel #friends-controls').count(), 1);
   assert.equal(await page.locator('#friends-panel #account-card').count(), 1);
-  await click('#friends-intent-join'); assert.equal(await page.locator('#friend-code').isVisible(), true);
+  assert.equal(await page.locator('#friend-code, #invite-code').count(), 0);
   await click('#home-tab'); await click('#server-list [data-action="open"][data-id="alpha"]'); await click('#peers-tab');
   const f = await fixture(); f.state.relay = { name: 'Shared relay', fingerprint: 'c'.repeat(64), parkOnStop: false }; f.state.peers = [{ name: 'Shared relay', fingerprint: 'c'.repeat(64), host: '127.0.0.1', port: 1234 }];
   await set({ state: f.state });

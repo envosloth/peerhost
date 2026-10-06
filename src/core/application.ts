@@ -145,7 +145,7 @@ export class SeedHostApplication {
           ownerName = this.nameOf(ownership.owner);
           state = entry.id === active?.id ? this.process?.state ?? 'offline' : 'offline';
         } catch { /* An unreadable ledger is unknown, not proof of local ownership. */ }
-        return { id: entry.id, name: entry.name, active: entry.id === this.saved.activeServerId, state, ownerName, configured: Boolean(entry.profile.executable && entry.profile.args.length) };
+        return { id: entry.id, name: entry.name, active: entry.id === this.saved.activeServerId, state, ownerName, configured: Boolean(entry.profile.executable && entry.profile.args.length), playerPort: await readServerPort(entry.serverDir) };
       })),
       relay: relay ? { ...relay, name: this.relayPeer()?.name ?? 'Relay' } : null,
       peers: this.saved.peers.map((peer) => ({ ...peer })),

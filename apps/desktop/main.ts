@@ -7,6 +7,7 @@ import { PlayitIntegration } from '../../src/core/playit.js';
 import { playitApi, probeMinecraft } from '../../src/core/playit-network.js';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { SeedHostApplication } from '../../src/core/application.js';
+import { readServerPort } from '../../src/core/network-info.js';
 import { loadIdentity } from '../../src/core/identity-store.js';
 import { validateCall } from '../../src/core/ipc-policy.js';
 import { decodeInvite, previewInvite } from '../../src/core/invites.js';
@@ -34,7 +35,7 @@ const rendererUrl=pathToFileURL(html).href;
 function show(){if(window&&!window.isDestroyed()){if(window.isMinimized())window.restore();window.show();window.focus();}}
 // Borderless = the frameless window; fullscreen = the window owning the whole display, taskbar hidden.
 function windowState(){return {fullScreen:window.isFullScreen(),maximized:window.isMaximized()};}
-async function confirm(message:string,detail:string):Promise<boolean>{return (await dialog.showMessageBox(window,{type:'warning',message,detail,buttons:['Cancel','Continue'],defaultId:0,cancelId:0,noLink:true})).response===1;}
+async function confirm(message:string,detail:string,action='Continue'):Promise<boolean>{return (await dialog.showMessageBox(window,{type:'question',message,detail,buttons:['Cancel',action],defaultId:0,cancelId:0,noLink:true})).response===1;}
 async function quit(){
   if(quitting)return;quitting=true;
   try{
@@ -65,7 +66,9 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
     const accounts=new AccountIntegration(root,identity,{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)},backend,accountConfig);
     // The always-on PC role runs inside this app: no Node.js install, terminal or commands. Its relay data and
     // OS-encrypted-at-rest identity live under the profile; it restarts with the app when it was turned on.
-    alwaysOn=new AlwaysOnHost(path.join(root,'always-on'),await loadIdentity(path.join(root,'always-on'),{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)}), profileArgument && process.env.SEEDHOST_TEST_LOOPBACK==='1' ? {host:'127.0.0.1',port:0,gamePorts:[0],discoveryPort:0} : {});
+    const reservedGamePorts=(await backend.getState()).servers.map(server=>server.playerPort);
+    const roleOptions=profileArgument && process.env.SEEDHOST_TEST_LOOPBACK==='1' ? {host:'127.0.0.1',port:0,gamePorts:[0],discoveryPort:0,reservedGamePorts} : {reservedGamePorts};
+    alwaysOn=new AlwaysOnHost(path.join(root,'always-on'),await loadIdentity(path.join(root,'always-on'),{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)}),roleOptions);
     await alwaysOn.restore();
     // One-click public address: playit.gg's official agent, downloaded (pinned + SHA-256), approved in the browser
     // and run hidden by this app, forwarding to this always-on PC's player port.
@@ -97,7 +100,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         case 'accountStartGroup':{
           const a=await accounts.status();if(!a.signedIn||!a.online||!a.username)throw new Error('Sign in first');
           if((await backend.getState()).relay)throw new Error('This PC already belongs to a group');
-          await alwaysOn.enable(a.username+'’s group');
+          await alwaysOn.enable(a.username+'’s group',(await backend.getState()).servers.map(server=>server.playerPort));
           const invite=await alwaysOn.ownerInvite(a.username,identity.fingerprint);
           await backend.joinWithInvite({code:invite.code,name:a.username});
           return {created:true};
@@ -133,7 +136,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
           const state=await backend.getState();
           const target=state.servers.find(entry=>entry.id===p.id);
           if(!target)throw new Error('That server is no longer in the library. Refresh and try again.');
-          if(!await confirm('Delete “'+target.name+'” from this PC?','This permanently deletes this app’s managed copy of that server, its saved backups and its ownership record on this PC. Other servers, your group, your playit tunnel and the folder you originally imported are not touched. This cannot be undone.'))return null;
+          if(!await confirm('Delete “'+target.name+'” from this PC?','This permanently deletes this app’s managed copy of that server, its saved backups and its ownership record on this PC. Other servers, your group, your playit tunnel and the folder you originally imported are not touched. This cannot be undone.','Delete server'))return null;
           return backend.deleteServer(p.id);
         }
         case 'getServerDashboard':return backend.getServerDashboard(p.id);
@@ -168,8 +171,8 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         case 'alwaysOnStatus':return alwaysOn.status();
         case 'alwaysOnEnable':{
           const status=await alwaysOn.status();
-          if(!status.running&&!await confirm('Make this PC the always-on PC?','Seed Hosting will keep your friends’ world here between play sessions and give players one address to join. It listens on this network (ports 47625 and 25565) while the app is open; only PCs you pair with a code can store or take the world. Keep this PC on and Seed Hosting open (it can sit in the tray). Nothing else on this PC is changed.'))return status;
-          return alwaysOn.enable(p.name);
+          if(!status.running&&!await confirm('Make this PC the always-on PC?','Seed Hosting will keep your friends’ world here between play sessions and give players one address to join. It listens on this network (control port 47625 and a separate player gateway port, normally 25566) while the app is open; managed Minecraft server ports are kept separate. Only PCs you approve for the group can store or take the world. Keep this PC on and Seed Hosting open (it can sit in the tray). Nothing else on this PC is changed.'))return status;
+          return alwaysOn.enable(p.name,(await backend.getState()).servers.map(server=>server.playerPort));
         }
         case 'alwaysOnDisable':
           if(!await confirm('Stop being the always-on PC?','Paired PCs can’t store or take the world here until you turn it back on, and the public address (if any) goes offline. The stored world, pairings and address are kept.'))return alwaysOn.status();
@@ -228,7 +231,15 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
           return backend.importExisting(selected.filePaths[0],true);
         }
         case 'saveProfile':return backend.saveProfile(p as {executable:string;args:string[]});
-        case 'startServer':return backend.startServerWithApproval(approval=>confirm('Run this server on this PC?','The selected executable, server JARs, and mods run code with your user permissions. Only continue if you trust them. No gateway is required.\n\nProfile: '+approval.root+'\nServer directory: '+approval.serverDir+'\nSnapshot: '+approval.snapshotId+'\nExecutable: '+approval.profile.executable+'\nArguments: '+JSON.stringify(approval.profile.args)));
+        case 'startServer':return backend.startServerWithApproval(async approval=>{
+          // Check the captured server under the backend approval lock, before any hosting ledger mutation.
+          const gateway=await alwaysOn.status(),minecraftPort=await readServerPort(approval.serverDir);
+          if(gateway.running&&gateway.gamePort===minecraftPort)throw new Error('Minecraft port '+minecraftPort+' is used by Seed Hosting’s player gateway. Choose a different Minecraft port in Server settings before starting. No server process was launched and ownership was not changed.');
+          // The explicit Start server action approves the captured local launch profile.
+          // Receiving a world never calls this handler or starts code automatically.
+          // Backend still revalidates the captured profile, snapshots and ownership before spawn.
+          return true;
+        });
         case 'stopServer':return backend.stopServer();
         case 'createSnapshot':return backend.createSnapshot();
         case 'sendCommand':return backend.sendCommand(p.command);
@@ -288,7 +299,9 @@ Joining pins the relay certificate and authorizes this PC. Members of this group
         case 'windowToggleFullscreen':window.setFullScreen(!window.isFullScreen());return windowState();
         case 'windowClose':window.close();return;
         case 'quitApp':void quit();return;
-        case 'recoverStopped':if(await confirm('Confirm every previous server process is stopped?','An uncertain session is not proof of process exit. Check for orphaned Java/server processes before continuing. This only restores local uncertain ownership without a pending handoff; it cannot take ownership back from a peer.'))return backend.recoverStopped(true);return;
+        // The explicitly labelled recovery button supplies confirmed:true; the IPC policy
+        // rejects false/missing confirmation and the backend retains every stopped/ownership fence.
+        case 'recoverStopped':return backend.recoverStopped(p.confirmed as boolean);
         default:throw new Error('This operation is not available in this build');
       }
     });

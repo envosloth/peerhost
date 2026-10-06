@@ -19,7 +19,7 @@ function runHarness(args = []) {
 
 // Reject the whole selector before launching any Electron case, including inherited keys.
 test('Friends regression selectors fail closed before execution', { timeout: 60000 }, async () => {
-  for (const selector of ['toString', 'constructor', '__proto__', '', 'preview,,join', 'preview,toString']) {
+  for (const selector of ['toString', 'constructor', '__proto__', '', 'pending-send,,username-roundtrip', 'pending-send,toString']) {
     const result = await runHarness(['--case=' + selector, '--hold=0']);
     assert.equal(result.code, 1, 'invalid selector must exit 1: ' + JSON.stringify(selector) + '\n' + result.output);
     assert.match(result.output, /Unknown regression case:/);
@@ -27,16 +27,16 @@ test('Friends regression selectors fail closed before execution', { timeout: 600
   }
 });
 
-test('Friends rejects mismatched saved join details without claiming success', { timeout: 120000 }, async () => {
+test('Username acceptance rejects mismatched saved group details without claiming success', { timeout: 120000 }, async () => {
   const result = await runHarness(['--case=readback-rejected', '--hold=0']);
   assert.equal(result.code, 0, result.output);
-  for (const field of ['fingerprint', 'host', 'port', 'parkOnStop']) assert.match(result.output, new RegExp('PASS readback-rejected=' + field));
+  for (const field of ['fingerprint', 'peerFingerprint', 'host', 'port', 'parkOnStop']) assert.match(result.output, new RegExp('PASS readback-rejected=' + field));
 });
 
 // Real headed Electron + real loopback relay + the real TLS account service. Native
 // consent, delivery timing, and negative readback falsification are explicitly labelled;
 // sign-in/send/accept run against actual IPC, backend and directory state.
-test('Friends guided invitations: visible isolated Electron behavioral regressions', { timeout: 360000 }, async () => {
+test('Username Friends: visible isolated Electron behavioral regressions', { timeout: 360000 }, async () => {
   const result = await runHarness();
   assert.equal(result.code, 0, result.output);
 });

@@ -121,7 +121,7 @@ test('friends display explicit custody instead of claiming every null holder mea
     ['unknown', null, 'Hosting: unknown · the always-on PC hasn’t stored this world yet.'],
     ['parked', null, 'Hosting: nobody · the world is waiting on the always-on PC.'],
     ['pending', null, 'Hosting: a hand-over is in progress.'],
-    ['held', 'Sam <qa>', 'Hosting: Sam <qa>'],
+    ['held', 'Sam <qa>', 'World held by Sam <qa> · hosting not observed'],
   ]) {
     const page = await renderer(t, state, { members, custody, holder });
     await page.waitForFunction(() => document.querySelector('#friend-list li') && !document.querySelector('#refresh-friends').disabled);

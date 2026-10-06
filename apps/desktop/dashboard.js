@@ -213,6 +213,8 @@
 
   const friendsBody = addPage('friends', 'Friends', 'People & invitations', 'i-friends');
   friendsBody.append($('account-card'), $('friends-home'), $('friends-controls'));
+  // Direct device trust is an advanced app setting, not friend enrollment.
+  $('settings-panel').querySelector('.page-inner').append($('advanced-peers'));
   $('friends-tab').append($('nav-friend-count'));
   friendsBody.append(el('p', 'alpha-note', 'Hosting invitations share world-file access. Minecraft players only need the player address. Seed Hosting never changes your router or firewall.'));
 
@@ -279,7 +281,7 @@
 
   // One header is shared by every server section; Home and App settings are renderer-only destinations.
   const serverHeader = el('section', 'server-workspace-header'); serverHeader.id = 'server-workspace-header';
-  home.before(serverHeader); serverHeader.append(document.querySelector('.server-identity'), $('server-toolbar'), $('server-action-hint'));
+  home.before(serverHeader); serverHeader.append(document.querySelector('.server-identity'), $('server-toolbar'), $('server-start-trust'), $('server-recovery-reminder'), $('server-action-hint'));
   const dashboardBar = el('div', 'dashboard-bar');
   const dashboardStatus = el('p', 'field-help'); dashboardStatus.id = 'dashboard-status'; dashboardStatus.setAttribute('role', 'status');
   const dashboardRefresh = button('Refresh data'); dashboardRefresh.id = 'dashboard-refresh'; dashboardBar.append(dashboardStatus, dashboardRefresh); serverHeader.append(dashboardBar);
@@ -350,6 +352,10 @@
     for (const p of pages) {
       $(p + '-panel').hidden = p !== name;
       const tab = $(p + '-tab'); tab.setAttribute('aria-selected', String(p === name)); tab.tabIndex = p === name ? 0 : -1; tab.classList.toggle('is-active', p === name);
+    }
+    if (name === 'friends' || name === 'peers') {
+      const anchor = name === 'friends' ? $('friends-home') : $('relay-card');
+      anchor.before($('account-card'), $('friends-controls'));
     }
     if (name === 'console' && $('follow-logs').checked) $('console-output').scrollTop = $('console-output').scrollHeight;
     syncRoute();

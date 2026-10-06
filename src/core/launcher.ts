@@ -141,6 +141,15 @@ export class ServerProcess extends EventEmitter {
       launch.child = child;
       let ready = false;
       let startupError: Error | undefined;
+      let bindReason: string | undefined;
+      const startupLines: string[] = [];
+      const captureStartupLine = (line: string): void => {
+        if (ready) return;
+        const bounded = line.slice(0, 512);
+        startupLines.push(bounded);
+        if (startupLines.length > 16) startupLines.shift();
+        if (/FAILED TO BIND TO PORT|Address already in use|EADDRINUSE/i.test(line)) bindReason = bounded;
+      };
       let readinessTimer: ReturnType<typeof setTimeout> | undefined;
       const failStartup = (error: Error, terminate: boolean): void => {
         if (ready || startupError) return;
@@ -162,7 +171,13 @@ export class ServerProcess extends EventEmitter {
             this.setState('offline', launch);
           }
         }
-        if (startupError) reject(startupError);
+        // close, unlike exit, guarantees both output streams have drained their diagnostics.
+        if (startupError) {
+          const detail = bindReason
+            ? `Configured Minecraft port is unavailable: ${bindReason}. Stop the conflicting process or change the server/gateway port, then retry.`
+            : startupLines.length ? `Startup log:\n${startupLines.join('\n')}` : '';
+          reject(detail ? new Error(`${startupError.message}. ${detail}`, { cause: startupError }) : startupError);
+        }
         resolveClosed();
       });
       const onProcessError = (error: Error): void => {
@@ -190,6 +205,7 @@ export class ServerProcess extends EventEmitter {
       const stderr = createInterface({ input: child.stderr, crlfDelay: Infinity });
       stdout.on('line', (line: string) => {
         if (this.launch !== launch) return;
+        captureStartupLine(line);
         this.emit('line', line);
         if (this.launch === launch && !ready && !startupError && this.currentState === 'starting' && line.includes(this.profile.readyPattern ?? 'Done (')) {
           ready = true;
@@ -199,7 +215,7 @@ export class ServerProcess extends EventEmitter {
         }
       });
       stderr.on('line', (line: string) => {
-        if (this.launch === launch) this.emit('line', line);
+        if (this.launch === launch) { captureStartupLine(line); this.emit('line', line); }
       });
     });
   }

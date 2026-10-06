@@ -152,28 +152,169 @@ test('first gateway start explains the one-time hand-off in plain words', async 
   assert.match(text, /Take over hosting/);
 });
 
-test('joining a group while this PC already has the world does not say to receive it', async t => {
-  const page = await renderer(t, appState(server(), { onboarding: { ...progress('ready'), dismissed: true } }));
-  const relay = { fingerprint: 'c'.repeat(64), name: 'Home relay', host: '100.97.20.84', port: 47625 };
-  await page.evaluate(relay => {
-    const call = window.seedhost.call;
-    window.seedhost.call = async (method, payload) => {
-      if (method === 'previewInvite') return { relayName: relay.name, host: relay.host, port: relay.port, relayFingerprint: relay.fingerprint, expiresAt: Date.now() + 3600000 };
-      if (method === 'joinWithInvite') { window.fixture.state.relay = { fingerprint: relay.fingerprint, name: relay.name, parkOnStop: true }; window.fixture.state.peers = [{ name: relay.name, fingerprint: relay.fingerprint, host: relay.host, port: relay.port }]; return { relayName: relay.name }; }
-      if (method === 'listFriends') return { members: [], custody: 'unknown', holder: null };
-      if (method === 'checkRelay') return null;
-      return call(method, payload);
+for (const scenario of ['other group result','round trip result','same pin new endpoint','old error','newer request wins','cached status cleared'])
+  test('relay check rejects stale context: ' + scenario, async t => {
+    const relay={fingerprint:'c'.repeat(64),name:'Group A',parkOnStop:true};
+    const peer={...relay,host:'127.0.0.1',port:8443};
+    const page=await renderer(t,appState(server(),{relay,peers:[peer],onboarding:{...progress('ready'),dismissed:true}}));
+    await openSelectedServer(page);await page.locator('#peers-tab').click();
+    await page.evaluate(()=>{
+      const call=window.seedhost.call;window.fixture.relayRequests=[];
+      window.seedhost.call=async(method,payload)=>{
+        if(method==='checkRelay')return new Promise((resolve,reject)=>window.fixture.relayRequests.push({resolve,reject}));
+        return call(method,payload);
+      };
+    });
+    const finish=async(index,error=false)=>{
+      await page.evaluate(({index,error})=>{
+        const request=window.fixture.relayRequests[index];
+        if(error)request.reject(new Error('OLD GROUP ERROR'));
+        else request.resolve({state:'transferred',ownerName:index===0?'OLD GROUP HOLDER':'CURRENT HOLDER'});
+      },{index,error});
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
     };
-  }, relay);
-  await page.locator('#home-tab').click();
+    const change=async(kind)=>{
+      await page.evaluate(kind=>{
+        if(kind==='B')window.fixture.state.relay={fingerprint:'d'.repeat(64),name:'Group B',parkOnStop:true};
+        if(kind==='A')window.fixture.state.relay={fingerprint:'c'.repeat(64),name:'Group A',parkOnStop:true};
+        if(kind==='endpoint')window.fixture.state.peers[0].port=9443;
+        document.dispatchEvent(new Event('visibilitychange'));
+      },kind);
+      await settled(page);
+      if(kind!=='endpoint')await page.waitForFunction(name=>document.querySelector('#relay-name').textContent===name,kind==='B'?'Group B':'Group A');
+    };
+    await page.locator('#check-relay').click();
+    await page.waitForFunction(()=>window.fixture.relayRequests.length===1);
+    if(scenario==='cached status cleared'){
+      await finish(0);assert.match(await page.locator('#relay-holder').textContent(),/OLD GROUP HOLDER/);
+      await change('B');assert.equal(await page.locator('#relay-holder').textContent(),'NOT CHECKED');return;
+    }
+    if(scenario==='newer request wins'){
+      await page.locator('#check-relay').click();await page.waitForFunction(()=>window.fixture.relayRequests.length===2);
+      await finish(1);
+    }else{
+      await change(scenario==='same pin new endpoint'?'endpoint':'B');
+      if(scenario==='round trip result')await change('A');
+    }
+    await finish(0,scenario==='old error');
+    assert.equal(await page.locator('#relay-holder').textContent(),scenario==='newer request wins'?'WITH CURRENT HOLDER':'NOT CHECKED');
+    assert.doesNotMatch(await page.locator('#relay-help').textContent(),/OLD GROUP ERROR/);
+  });
+
+test('Friends held custody never claims a stopped foreign holder is hosting', async t => {
+  const world=server();world.ownership={state:'transferred',owner:'d'.repeat(64)};
+  const page=await renderer(t,appState(world,{relay:{fingerprint:'c'.repeat(64),name:'Group',parkOnStop:true},onboarding:{...progress('ready'),dismissed:true}}));
+  await page.evaluate(()=>{
+    const call=window.seedhost.call;
+    window.seedhost.call=async(method,payload)=>method==='listFriends'?{members:[],custody:'held',holder:'Stopped friend',owner:'d'.repeat(64)}:call(method,payload);
+  });
+  await page.locator('#friends-tab').click();await page.locator('#refresh-friends').click();
+  await page.waitForFunction(()=>document.querySelector('#group-status').textContent==='Members confirmed');
+  assert.equal(await page.locator('#friend-holder').textContent(),'World held by Stopped friend · hosting not observed');
+});
+
+test('username acceptance rejects a truthy but non-boolean enrollment result', async t => {
+  const page=await renderer(t,appState(null,{onboarding:{...progress('ready'),dismissed:true}}));
+  await page.evaluate(()=>{
+    const call=window.seedhost.call;
+    window.seedhost.call=async(method,payload)=>{
+      if(method==='accountStatus')return {configured:true,signedIn:true,online:true,username:'local_user',detail:'Signed in'};
+      if(method==='accountRequests')return [{id:'request',from:'friend',group:'Group',controlEndpoint:{host:'127.0.0.1',port:8443}}];
+      if(method==='accountAccept'){
+        window.fixture.state.relay={fingerprint:'c'.repeat(64),name:'Group',parkOnStop:true};
+        window.fixture.state.peers=[{fingerprint:'c'.repeat(64),host:'127.0.0.1',port:8443}];
+        return {joined:'true',group:'Group'};
+      }
+      return call(method,payload);
+    };window.dispatchEvent(new Event('seedhost-account-changed'));
+  });
   await page.locator('#friends-tab').click();
-  if (await page.locator('#friends-intent-join').isVisible()) await page.locator('#friends-intent-join').click();
-  await page.locator('#friend-code').fill('SEEDHOST-' + 'A'.repeat(40));
-  await page.locator('#friend-name').fill('Angel');
-  await page.locator('#check-invitation').click();
-  await page.getByRole('button', { name: 'Review & join group' }).click();
-  await page.waitForFunction(() => /Joined/.test(document.querySelector('#friend-feedback').textContent));
-  const message = await page.locator('#friend-feedback').textContent();
-  assert.doesNotMatch(message, /receive the world/i, 'this PC already holds the world');
-  assert.match(message, /Weekend world|your world/i);
+  await page.locator('#account-inbox [data-account-accept]').click();
+  await page.waitForFunction(()=>!document.querySelector('#account-refresh').disabled);
+  assert.match(await page.locator('#account-friend-feedback').textContent(),/could not be confirmed/i);
+  assert.doesNotMatch(await page.locator('#account-friend-feedback').textContent(),/^Joined/);
+});
+
+for (const [label, pin, port] of [
+  ['missing pins', null, 8443], ['short agreeing pins', 'c', 8443],
+  ['uppercase agreeing pins', 'C'.repeat(64), 8443], ['nonhex agreeing pins', 'g'.repeat(64), 8443],
+  ['matching string ports', 'c'.repeat(64), '8443'], ['zero ports', 'c'.repeat(64), 0],
+  ['overflow ports', 'c'.repeat(64), 65536], ['fractional ports', 'c'.repeat(64), 8443.5],
+]) test('username acceptance rejects ' + label + ' in enrollment readback', async t => {
+  const page = await renderer(t, appState(null, {onboarding:{...progress('ready'),dismissed:true}}));
+  await page.evaluate(({pin,port}) => {
+    const call = window.seedhost.call;
+    window.seedhost.call = async (method,payload) => {
+      if(method==='accountStatus')return {configured:true,signedIn:true,online:true,username:'local_user',detail:'Signed in'};
+      if(method==='accountRequests')return [{id:'request',from:'friend',group:'Group',controlEndpoint:{host:'127.0.0.1',port}}];
+      if(method==='accountAccept'){
+        const fingerprint = pin === null ? {} : {fingerprint:pin};
+        window.fixture.state.relay = {...fingerprint,name:'Group',parkOnStop:true};
+        window.fixture.state.peers = [{...fingerprint,host:'127.0.0.1',port}];
+        return {joined:true,group:'Group'};
+      }
+      return call(method,payload);
+    };window.dispatchEvent(new Event('seedhost-account-changed'));
+  },{pin,port});
+  await page.locator('#friends-tab').click();
+  await page.locator('#account-inbox [data-account-accept]').click();
+  await page.waitForFunction(()=>!document.querySelector('#account-refresh').disabled);
+  assert.match(await page.locator('#account-friend-feedback').textContent(),/could not be confirmed/i);
+  assert.doesNotMatch(await page.locator('#account-friend-feedback').textContent(),/^Joined/);
+});
+
+for (const [label,host,group] of [
+  ['missing hosts',null,'Group'], ['empty hosts','','Group'], ['numeric hosts',42,'Group'],
+  ['missing group', '127.0.0.1',null], ['empty group','127.0.0.1',''], ['numeric group','127.0.0.1',42],
+]) test('username acceptance rejects ' + label + ' even when readback agrees', async t => {
+  const page=await renderer(t,appState(null,{onboarding:{...progress('ready'),dismissed:true}}));
+  await page.evaluate(({host,group})=>{
+    const call=window.seedhost.call;
+    const route=host===null?{port:8443}:{host,port:8443};
+    const name=group===null?{}:{group};
+    window.seedhost.call=async(method,payload)=>{
+      if(method==='accountStatus')return {configured:true,signedIn:true,online:true,username:'local_user',detail:'Signed in'};
+      if(method==='accountRequests')return [{id:'request',from:'friend',...name,controlEndpoint:route}];
+      if(method==='accountAccept'){
+        window.fixture.state.relay={fingerprint:'c'.repeat(64),...(group===null?{}:{name:group}),parkOnStop:true};
+        window.fixture.state.peers=[{fingerprint:'c'.repeat(64),...route}];
+        return {joined:true,...name};
+      }
+      return call(method,payload);
+    };window.dispatchEvent(new Event('seedhost-account-changed'));
+  },{host,group});
+  await page.locator('#friends-tab').click();
+  await page.locator('#account-inbox [data-account-accept]').click();
+  await page.waitForFunction(()=>!document.querySelector('#account-refresh').disabled);
+  assert.match(await page.locator('#account-friend-feedback').textContent(),/could not be confirmed/i);
+});
+
+test('username acceptance keeps an existing local world and never suggests receiving it', async t => {
+  const world=server();
+  const page=await renderer(t,appState(world,{onboarding:{...progress('ready'),dismissed:true}}));
+  const relay={fingerprint:'c'.repeat(64),name:'Home relay',host:'100.97.20.84',port:47625};
+  await page.evaluate(relay=>{
+    const call=window.seedhost.call;let requests=[{id:'fixture-request',from:'friend',group:relay.name,controlEndpoint:{host:relay.host,port:relay.port,privateRoute:true,reachability:'unverified'}}];
+    window.seedhost.call=async(method,payload)=>{
+      if(method==='accountStatus')return {configured:true,signedIn:true,online:true,username:'local_user',detail:'Signed in'};
+      if(method==='accountRequests')return requests;
+      if(method==='accountAccept'){
+        window.fixture.state.relay={fingerprint:relay.fingerprint,name:relay.name,parkOnStop:true};
+        window.fixture.state.peers=[{...relay}];requests=[];return {joined:true,group:relay.name};
+      }
+      if(method==='listFriends')return {members:[],custody:'unknown',holder:null};
+      if(method==='checkRelay')return null;
+      return call(method,payload);
+    };window.dispatchEvent(new Event('seedhost-account-changed'));
+  },relay);
+  await page.locator('#friends-tab').click();
+  await page.locator('#account-inbox [data-account-accept]').waitFor({state:'visible'});
+  assert.match(await page.locator('#account-inbox').textContent(),/@friend/);
+  await page.locator('#account-inbox [data-account-accept]').click();
+  await page.waitForFunction(()=>document.querySelector('#account-friend-feedback').textContent.startsWith('Joined'));
+  const message=await page.locator('#account-friend-feedback').textContent();
+  assert.doesNotMatch(message,/receive the world|take over/i);
+  assert.match(message,/existing world stays on this PC.*nothing was downloaded or started/i);
+  assert.deepEqual(await page.evaluate(()=>window.fixture.state.server),world);
+  assert.equal(await page.locator('#friend-code,#invite-code').count(),0);
 });

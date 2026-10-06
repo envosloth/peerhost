@@ -34,8 +34,7 @@
     $('account-start-group').disabled=working||!status.online;
     $('account-refresh').hidden=!status.signedIn;
     for(const id of ['account-refresh','username-invite','friend-username']) $(id).disabled=working||!status.online;
-    // Codes are a compatibility fallback, not the ordinary account-based flow.
-    const manual=document.querySelector('.friends-configure');if(manual)manual.hidden=Boolean(status.signedIn);
+
     $('account-title').textContent=mode==='register'?'Choose your username':'Welcome back';
     $('account-submit').textContent=working?'Please wait…':mode==='register'?'Create account':'Sign in';
     $('account-password').autocomplete=mode==='register'?'new-password':'current-password';
@@ -69,7 +68,13 @@
       const accept=document.createElement('button');accept.type='button';accept.className='button button-primary';accept.textContent='Accept';accept.dataset.accountAccept=r.id;
       accept.addEventListener('click',()=>act(async()=>{
         const result=await window.seedhost.call('accountAccept',{id:r.id});
-        $('account-friend-feedback').textContent=`Joined ${result.group}. Your world has not been downloaded or started.`;hasGroup=true;render();changed();await inbox();
+        const saved=await window.seedhost.call('getState');
+        const validPin=pin=>typeof pin==='string'&&/^[a-f0-9]{64}$/.test(pin);
+        const validPort=port=>Number.isInteger(port)&&port>=1&&port<=65535;
+        const peer=saved?.peers?.find(p=>validPin(p.fingerprint)&&p.fingerprint===saved?.relay?.fingerprint);
+        const validText=value=>typeof value==='string'&&value.trim().length>0;
+        if(result?.joined!==true||!validText(r.group)||!validText(result.group)||result.group!==r.group||!validText(saved?.relay?.name)||saved.relay.name!==r.group||saved.relay.parkOnStop!==true||!validPin(saved.relay.fingerprint)||!peer||!endpoint||!validText(endpoint.host)||!validText(peer.host)||!validPort(endpoint.port)||!validPort(peer.port)||peer.host!==endpoint.host||peer.port!==endpoint.port)throw new Error('Group enrollment could not be confirmed. This PC may already be enrolled; refresh members and check the group before retrying.');
+        $('account-friend-feedback').textContent=saved.server?`Joined ${result.group}. Your existing world stays on this PC; nothing was downloaded or started.`:`Joined ${result.group}. Your world has not been downloaded or started.`;hasGroup=true;render();changed();await inbox();
       }));
       const decline=document.createElement('button');decline.type='button';decline.className='text-button';decline.textContent='Decline';decline.dataset.accountDecline=r.id;
       decline.addEventListener('click',()=>act(async()=>{await window.seedhost.call('accountDecline',{id:r.id});await inbox();$('account-friend-feedback').textContent='Invitation declined.';}));

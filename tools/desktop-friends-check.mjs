@@ -24,6 +24,7 @@ await mkdir(scratch, { recursive: true });
 env.TMP = scratch; env.TEMP = scratch; env.TMPDIR = scratch;
 const root = await mkdtemp(path.join(scratch, 'seed-friends-'));
 const apps = [], relays = [], pageErrors = [];
+let workspaceSequence = 0, relaySequence = 0;
 const workspaceBaselines = new WeakMap();
 const serverTabs = ['operate', 'console', 'players', 'backups', 'scheduler', 'peers', 'mods', 'tunnels', 'server-settings', 'server-files'];
 async function assertLibraryNavigation(page) {
@@ -33,7 +34,7 @@ async function enterPeers(page, app) {
   await click(page, '#home-tab'); await assertLibraryNavigation(page);
   if (!(await state(page)).server) {
     console.log('STEP import disposable stopped workspace fixture (NOT Minecraft); native folder/consent answers only.');
-    const source = path.join(root, 'workspace-' + apps.indexOf(app));
+    const source = path.join(root, 'workspace-' + workspaceSequence++);
     await mkdir(source, { recursive: true }); await writeFile(path.join(source, 'eula.txt'), 'eula=true\n');
     await app.evaluate(({ dialog }, source) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [source] }); }, source);
     await click(page, '#import-server'); await idle(page);
@@ -92,7 +93,7 @@ async function launch(name, online = false, workspace = !online) {
   return { app, page };
 }
 async function relay(name = 'Garden <friends>') {
-  const node = new RelayNode(path.join(root, 'relay-' + relays.length), await createIdentity(), { name, log: () => {} });
+  const node = new RelayNode(path.join(root, 'relay-' + relaySequence++), await createIdentity(), { name, log: () => {} });
   await node.open(); await node.listen(); relays.push(node); return node;
 }
 async function idle(page) { await wait(page, () => document.querySelector('#activity-message').textContent === 'Ready'); }
@@ -126,11 +127,7 @@ async function usernamePair(prefix) {
   await wait(owner.page, () => !document.querySelector('#username-friend-form').hidden);
   return { owner, recipient, node };
 }
-async function chooseJoin(page) { await click(page, '#friends-intent-join'); }
-async function check(page, code, name = 'Sam') {
-  await chooseJoin(page); await fill(page, '#friend-code', code); await fill(page, '#friend-name', name);
-  await click(page, '#check-invitation');
-}
+
 // TEST-ONLY scheduling: native consent and the actual backend finish first. Only delivery
 // of the original successful result is held; payloads/results are never fabricated or logged.
 async function holdMutationResult(app, method) {
@@ -155,12 +152,12 @@ async function waitForHeldMutation(app) {
 // The redesigned guide hosts the username account card on the Friends stage. Pending account
 // work is scoped to the account card / sign-in dialog: cards lock their own controls (and the
 // dialog refuses Escape) until the verified result arrives; the guide footer is not a barrier
-// for account work. Codes stay Friends-page-only and are never moved into the guide.
+// for account work. Legacy code enrollment is absent from every workspace.
 async function assertGuideUsernameStage(page) {
   assert.equal(await page.locator('#setup-dialog').evaluate(dialog => dialog.open), true, 'guide stays open');
   assert.equal(await page.locator('#setup-friends-slot #account-card').count(), 1, 'guide hosts the username account card');
-  assert.equal(await page.locator('#setup-friends-slot #friends-controls').count(), 0, 'code controls are never moved into the guide');
-  assert.equal(await page.locator('#friends-panel #friends-controls').count(), 1, 'codes stay on the Friends page');
+  assert.equal(await page.locator('#setup-friends-slot #friends-controls').count(), 0, 'member controls stay in their workspace');
+  assert.equal(await page.locator('#friends-panel #friends-controls').count(), 1, 'member controls stay on the Friends page');
 }
 async function releaseMutation(app, page) {
   console.log('TEST-ONLY IPC scheduling: release original completed method result.');
@@ -255,422 +252,75 @@ const cases = {
     await shot(page, 'pending-signin-resolved');
     await click(page, '#setup-save-close'); await wait(page, () => !document.querySelector('#setup-dialog').open);
   },
-  async preview() {
-    console.log('STEP preview: local decoding never enrolls or changes settings; full verification details.');
-    const { page } = await launch('preview'); const node = await relay();
-    const invite = await node.createInvite({ hours: 1 });
-    assert.equal(await page.locator('#check-invitation').count(), 1, 'missing local Check invitation step');
-    assert.equal(await page.locator('#check-invitation').getAttribute('type'), 'button');
-    assert.equal(await page.locator('#join-friend').isDisabled(), true, 'joining requires a checked invitation');
-    await check(page, invite.code, 'River <QA>');
-    await wait(page, () => !document.querySelector('#invitation-preview').hidden);
-    assert.equal(await page.locator('#preview-group').textContent(), node.name);
-    assert.equal(await page.locator('#preview-address').textContent(), node.endpoint.host + ':' + node.endpoint.port);
-    assert.equal(await page.locator('#preview-local-warning').count(), 1, 'loopback invitations need a plain-language same-PC warning');
-    assert.equal(await page.locator('#preview-local-warning').isVisible(), true);
-    assert.match(await page.locator('#preview-local-warning').textContent(), /only.*this.*PC.*ask.*friend.*new.*code.*LAN.*VPN/is);
-    await click(page, '#invitation-verify > summary');
-    assert.equal(await page.locator('#preview-fingerprint').textContent(), node.identity.fingerprint);
-    assert.match(await page.locator('#preview-expiry').textContent(), /Expires/);
-    assert.match(await page.locator('#invitation-preview').textContent(), /not a connection check.*verify with.*friend/is);
-    assert.equal(await page.locator('#join-friend').isEnabled(), true);
-    assert.equal(node.trusted.length, 0, 'preview must not redeem or enroll');
-    assert.equal((await state(page)).relay, null); assertWorkspaceUnchanged(page, await state(page));
-    assert.equal(await page.locator('#invitation-preview friends').count(), 0, 'group name renders literal text');
-    const storage = await page.evaluate(() => JSON.stringify(localStorage)); assert.ok(!storage.includes(invite.code)); assert.ok(!storage.includes('River'));
-    await shot(page, 'local-preview-full-fingerprint');
-  },
-  async stale() {
-    console.log('STEP stale: completed real preview results delivered out of order; late result cannot replace input or survive guide close.');
-    const { app, page } = await launch('stale'); const node = await relay();
-    const first = await node.createInvite({ hours: 1 }), second = await node.createInvite({ hours: 1 });
-    await check(page, first.code); await wait(page, () => !document.querySelector('#invitation-preview').hidden);
-    await fill(page, '#friend-code', second.code);
-    assert.equal(await page.locator('#invitation-preview').isVisible(), false, 'editing the code must remove old verification details');
-    assert.equal(await page.locator('#join-friend').isDisabled(), true);
-    // This controls timing only. Results still come from the real local decoder/main handler.
-    await app.evaluate(({ ipcMain }) => {
-      const original = ipcMain._invokeHandlers.get('seedhost:call'); globalThis.__previewQueue = [];
-      ipcMain.removeHandler('seedhost:call');
-      ipcMain.handle('seedhost:call', async (event, method, payload) => {
-              const result = await original(event, method, payload);
-              if (method !== 'previewInvite') return result;
-              return new Promise(resolve => globalThis.__previewQueue.push(() => resolve(result)));
-            });
-    });
-    const queued = async count => { for (let n = 0; n < 100; n++) { if (await app.evaluate(() => globalThis.__previewQueue.length) === count) return; await new Promise(resolve => setTimeout(resolve, 20)); } throw new Error('preview scheduling bridge did not queue'); };
-    await check(page, first.code); await queued(1);
-    await fill(page, '#friend-code', second.code);
-    assert.equal(await page.locator('#check-invitation').isEnabled(), true, 'new input must be checkable while the old request is pending');
-    await click(page, '#check-invitation'); await queued(2);
-    await app.evaluate(() => globalThis.__previewQueue[1]());
-    await wait(page, () => !document.querySelector('#invitation-preview').hidden);
-    await app.evaluate(() => globalThis.__previewQueue[0]());
-    await page.waitForTimeout(100);
-    assert.equal(await page.locator('#join-friend').isEnabled(), true, 'old result must not replace the checked newer code');
-    await fill(page, '#friend-name', 'Changed name');
-    assert.equal(await page.locator('#invitation-preview').isVisible(), false, 'display-name changes require a fresh review');
-    await check(page, first.code); await queued(3);
-    // Legacy preview is requested on Friends, then a username-guide visit/close invalidates it.
-    await openFriendsGuide(page);
-    await click(page, '#setup-save-close'); await wait(page, () => !document.querySelector('#setup-dialog').open);
-    await app.evaluate(() => globalThis.__previewQueue[2]()); await page.waitForTimeout(100);
-    assert.equal(await page.locator('#friend-code').inputValue(), '');
-    assert.equal(await page.locator('#friend-name').inputValue(), '', 'closing wizard clears private draft');
-    assert.equal(await page.locator('#invitation-preview').isVisible(), false);
-    assert.equal(await page.locator('#join-friend').isDisabled(), true);
-    assert.equal(node.trusted.length, 0);
-    await shot(page, 'stale-preview-closed-wizard');
-  },
-  async layout() {
-    console.log('STEP layout: visible 1000x700 / 1240x860, light/dark, one set of wizard controls.');
-    const { app, page } = await launch('layout'); const node = await relay('Layout Garden'), invite = await node.createInvite({ hours: 1 });
-    for (const [width, height] of [[1000, 700], [1240, 860]]) for (const theme of ['light', 'dark']) {
-      console.log('ACTION window bounds ' + width + 'x' + height + ' ' + theme);
-      await app.evaluate(({ BrowserWindow }, bounds) => BrowserWindow.getAllWindows()[0].setBounds(bounds), { width, height });
-      await click(page, '#settings-tab'); await assertLibraryNavigation(page);
-      await click(page, `input[name="theme"][value="${theme}"]`);
-      await enterPeers(page, app);
-      const overflow = await page.evaluate(() => ['#friends-controls', '#friends-panel', '.friends-configure'].filter(selector => { const el = document.querySelector(selector); return el.scrollWidth > el.clientWidth + 1; }));
-      assert.deepEqual(overflow, [], 'no clipping at ' + width + ' ' + theme);
-      await shot(page, `friends-${width}-${theme}`);
-      await check(page, invite.code); await wait(page, () => !document.querySelector('#invitation-preview').hidden);
-      await click(page, '#invitation-verify > summary');
-      const previewOverflow = await page.evaluate(() => ['#invitation-preview', '.preview-facts', '#preview-fingerprint'].filter(selector => { const el = document.querySelector(selector); return el.scrollWidth > el.clientWidth + 1; }));
-      assert.deepEqual(previewOverflow, [], 'full preview fits at ' + width + ' ' + theme);
-      await page.locator('#invitation-preview').scrollIntoViewIfNeeded(); await shot(page, `friends-preview-${width}-${theme}`);
-      await click(page, '#nav-setup'); await click(page, '[data-setup-step="friends"]'); await idle(page);
-      assert.equal(await page.locator('#setup-friends-slot #account-card').count(), 1);
-      assert.equal(await page.locator('#setup-friends-slot #friends-controls').count(), 0);
-      assert.equal(await page.locator('#friends-panel #friends-controls').count(), 1);
-      const wizardOverflow = await page.evaluate(() => ['#setup-dialog', '.setup-body', '#setup-friends-slot'].filter(selector => { const el = document.querySelector(selector); return el.scrollWidth > el.clientWidth + 1; }));
-      assert.deepEqual(wizardOverflow, [], 'wizard controls fit at ' + width + ' ' + theme);
-      await page.locator('#account-card').scrollIntoViewIfNeeded();
-      await shot(page, `wizard-friends-${width}-${theme}`);
-      await click(page, '#setup-save-close'); await wait(page, () => !document.querySelector('#setup-dialog').open);
-    }
-  },
-  async invitation() {
-    console.log('STEP invitation: real configured relay, one-use code, large copy action and honest next steps.');
-    const { app, page } = await launch('invitation'); const node = await relay('Seed Garden');
-    await node.setMemberInvites(true);
-    const deviceId = (await state(page)).deviceId; await node.trust('Host', deviceId);
-    await page.evaluate(async peer => { await window.seedhost.call('addPeer', peer); await window.seedhost.call('saveRelay', { fingerprint: peer.fingerprint, parkOnStop: true }); }, { fingerprint: node.identity.fingerprint, name: node.name, ...node.endpoint });
-    await page.reload(); await idle(page); await enterPeers(page, apps.find(app => app.windows().includes(page)));
-    await click(page, '#create-invite');
-    await wait(page, () => document.querySelector('#invite-code').value.startsWith('SEEDHOST-'));
-    assert.equal(await page.locator('#invite-next-steps li').count(), 3, 'ready invitation needs three concise sharing steps');
-    assert.match(await page.locator('#invite-next-steps').textContent(), /privately.*I have an invitation.*name.*review.*join/is);
-    assert.match(await page.locator('#invite-warning').textContent(), /new.*does not revoke.*previous/is);
-    assert.match(await page.locator('#invite-help').textContent(), /one.use|one.time/i);
-    assert.match(await page.locator('#invite-help').textContent(), /24 hours/);
-    const code = await page.locator('#invite-code').inputValue();
-    assert.ok((await page.locator('#copy-invite').boundingBox()).height >= 40, 'copy is the large primary next action');
-    await click(page, '#copy-invite');
-    await wait(page, () => document.querySelector('#copy-invite').textContent.includes('Copied'));
-    assert.equal(await app.evaluate(({ clipboard }) => clipboard.readText()), code);
-    assert.match(await page.locator('#invite-status').textContent(), /copied.*send.*privately/i);
-    assert.equal(node.trusted.length, 1, 'creation/copy never infers another member');
-    assert.ok(!(await page.locator('#friend-feedback').textContent()).includes('A friend joined'));
-    await shot(page, 'invitation-ready-copied');
-  },
-  async members() {
-    console.log('STEP members: explicit no-group/checking/confirmed/unreachable states; no fake presence.');
-    const { page } = await launch('members');
-    assert.equal(await page.locator('#group-status').count(), 1, 'group status must distinguish saved settings from checked members');
-    assert.match(await page.locator('#group-status').textContent(), /No group/);
-    const node = await relay('Seed Members'), deviceId = (await state(page)).deviceId;
-    await node.trust('You <literal>', deviceId); await node.trust('Other host', (await createIdentity()).fingerprint);
-    await page.evaluate(async peer => { await window.seedhost.call('addPeer', peer); await window.seedhost.call('saveRelay', { fingerprint: peer.fingerprint, parkOnStop: true }); }, { fingerprint: node.identity.fingerprint, name: node.name, ...node.endpoint });
-    await page.reload(); await idle(page); await enterPeers(page, apps.find(app => app.windows().includes(page)));
-    await wait(page, () => document.querySelectorAll('#friend-list li').length === 2);
-    assert.match(await page.locator('#group-status').textContent(), /Members confirmed/);
-    assert.match(await page.locator('#friend-list').textContent(), /You.*Can host/s);
-    assert.ok(!/online|connected/i.test(await page.locator('#friend-list').textContent()));
-    assert.match(await page.locator('#friend-last-checked').textContent(), /Last checked/);
-    await shot(page, 'members-confirmed-not-presence');
-    await node.close(); await click(page, '#refresh-friends');
-    await wait(page, () => document.querySelector('#group-status').textContent.includes('Unreachable'));
-    assert.equal(await page.locator('#friend-list li').count(), 0, 'failed refresh must not leave stale confirmed members');
-    assert.equal(await page.locator('#nav-friend-count').isVisible(), false);
-    assert.equal(await page.locator('#refresh-friends').isEnabled(), true);
-    assert.match(await page.locator('#friend-holder').textContent(), /unavailable.*Refresh/i);
-    await shot(page, 'members-unreachable-retry');
-  },
-  async validation() {
-    console.log('STEP validation: explicit inline name and complete-code errors without leaking private input.');
-    const { page } = await launch('validation');
-    await click(page, '#check-invitation');
-    assert.equal(await page.locator('#friend-name-error').count(), 1, 'name needs an inline error near its field');
-    assert.equal(await page.locator('#friend-code-error').count(), 1, 'code needs an inline error near its field');
-    assert.match(await page.locator('#friend-name-error').textContent(), /own.*name/i);
-    assert.match(await page.locator('#friend-code-error').textContent(), /complete.*code/i);
-    assert.equal(await page.locator('#friend-name').getAttribute('aria-invalid'), 'true');
-    assert.equal(await page.locator('#friend-code').getAttribute('aria-invalid'), 'true');
-    await fill(page, '#friend-name', 'Sam'); await fill(page, '#friend-code', 'private-invalid-input');
-    await click(page, '#check-invitation');
-    assert.match(await page.locator('#friend-code-error').textContent(), /copy.*complete.*code/i);
-    assert.ok(!(await page.locator('#error-text').textContent()).includes('private-invalid-input'));
-    assert.ok(!(await page.locator('#friend-code-error').textContent()).includes('private-invalid-input'));
-    assert.equal(await page.locator('#friend-name').getAttribute('aria-invalid'), null);
-    assert.equal((await state(page)).relay, null);
-    await shot(page, 'inline-field-validation');
-  },
-  async recovery() {
-    console.log('STEP recovery: damaged and expired real-protocol codes recover inline, no redemption or secret errors.');
-    const { page } = await launch('recovery'); const node = await relay();
-    const invite = await node.createInvite({ hours: 1 }); const damaged = invite.code.slice(0, -4);
-    await check(page, damaged);
-    await wait(page, () => !document.querySelector('#friend-code-error').hidden);
-    assert.match(await page.locator('#friend-code-error').textContent(), /damaged.*copy.*complete.*code/is);
-    assert.equal(await page.locator('#join-friend').isDisabled(), true);
-    assert.equal(await page.locator('#invitation-preview').isVisible(), false);
-    const realNow = Date.now; let expired;
-    try { Date.now = () => realNow() - 7200000; expired = await node.createInvite({ hours: 1 }); } finally { Date.now = realNow; }
-    await check(page, expired.code);
-    await wait(page, () => document.querySelector('#friend-code-error').textContent.includes('expired'));
-    assert.match(await page.locator('#friend-code-error').textContent(), /ask.*new code/i);
-    assert.ok(await page.locator('#friend-code').inputValue() === expired.code, 'recovery keeps pasted invitation');
-    assert.ok(!(await page.locator('#error-text').textContent()).includes(expired.code));
-    assert.equal(node.trusted.length, 0); assert.equal((await state(page)).relay, null);
-    await shot(page, 'expired-code-inline-recovery');
-  },
-  async cancel() {
-    console.log('STEP consent cancellation: not joined; keep name, code and checked details for retry.');
-    const { app, page } = await launch('cancel'); const node = await relay(); const invite = await node.createInvite({ hours: 1 });
-    await check(page, invite.code, 'Sam'); await wait(page, () => !document.querySelector('#join-friend').disabled);
-    await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response: 0 }); });
-    await click(page, '#join-friend'); await idle(page);
-    assert.equal(await page.locator('#join-friend-feedback').count(), 1, 'join result needs inline recovery/status');
-    assert.match(await page.locator('#join-friend-feedback').textContent(), /Not joined\. Your invitation is kept\./);
-    assert.ok(await page.locator('#friend-code').inputValue() === invite.code, 'native cancellation keeps invitation');
-    assert.equal(await page.locator('#friend-name').inputValue(), 'Sam');
-    assert.equal(await page.locator('#join-friend').isEnabled(), true);
-    assert.equal(node.trusted.length, 0); assert.equal((await state(page)).relay, null);
-    await shot(page, 'consent-cancel-invitation-kept');
-    await click(page, '#nav-setup'); await click(page, '[data-setup-step="friends"]'); await idle(page);
-    await click(page, '#setup-save-close'); await wait(page, () => !document.querySelector('#setup-dialog').open);
-    assert.equal(await page.locator('#join-friend-feedback').textContent(), '', 'wizard close must not say an erased invitation is kept');
-  },
-  async retry() {
-    console.log('STEP retry: real native cancel then unchanged-code approval; actual backend enrollment clears the old cancellation notice. Dialog answers only; no IPC bridge.');
-    const { app, page } = await launch('retry'); const node = await relay('Retry Garden'), invite = await node.createInvite({ hours: 1 });
-    await check(page, invite.code, 'Retry host'); await wait(page, () => !document.querySelector('#join-friend').disabled);
-    await app.evaluate(({ dialog }) => {
-      globalThis.__retryAnswers = [];
-      dialog.showMessageBox = async () => {
-        const response = globalThis.__retryAnswers.length === 0 ? 0 : 1;
-        globalThis.__retryAnswers.push(response); return { response };
-      };
-    });
-    await click(page, '#join-friend'); await idle(page);
-    assert.match(await page.locator('#join-friend-feedback').textContent(), /Not joined\. Your invitation is kept\./);
-    assert.ok(await page.locator('#friend-code').inputValue() === invite.code, 'cancellation retains the exact invitation for retry');
-    assert.equal(await page.locator('#friend-name').inputValue(), 'Retry host');
-    assert.equal(node.trusted.length, 0); assert.equal((await state(page)).relay, null);
-    await shot(page, 'retry-native-cancel');
-    // Do not edit/recheck: only retry the already reviewed invitation and approve.
-    await click(page, '#join-friend'); await idle(page);
-    await wait(page, () => document.querySelector('#friend-feedback').textContent.startsWith('Joined'));
-    const saved = await state(page), peer = saved.peers.find(entry => entry.fingerprint === node.identity.fingerprint);
-    assert.equal(saved.relay.fingerprint, node.identity.fingerprint); assert.equal(saved.relay.parkOnStop, true);
-    assert.equal(peer.host, node.endpoint.host); assert.equal(peer.port, node.endpoint.port);
-    assert.equal(node.trusted.length, 1); assert.equal(node.trusted[0].name, 'Retry host');
-    assert.deepEqual(await app.evaluate(() => globalThis.__retryAnswers), [0, 1]);
-    assert.equal(await page.locator('#friend-code').inputValue(), '');
-    await wait(page, () => document.querySelector('#group-status').textContent === 'Members confirmed');
-    await chooseJoin(page);
-    assert.equal(await page.locator('#join-friend-feedback').textContent(), '', 'verified retry must clear the old Not joined notice');
-    assert.match(await page.locator('#friend-feedback').textContent(), /^Joined/);
-    await shot(page, 'retry-real-enrollment-no-stale-notice');
-  },
-  async failure() {
-    console.log('STEP failure: unreachable relay gives inline network/VPN recovery and retains entries.');
-    const { page } = await launch('failure'); const node = await relay(); const invite = await node.createInvite({ hours: 1 });
-    await node.close(); await check(page, invite.code, 'Sam'); await wait(page, () => !document.querySelector('#join-friend').disabled);
-    await click(page, '#join-friend'); await idle(page);
-    assert.match(await page.locator('#join-friend-feedback').textContent(), /same network.*VPN.*always.on PC/is);
-    assert.match(await page.locator('#join-friend-feedback').textContent(), /Couldn.t confirm joining.*Retry the same code on this PC/is, 'network failure is not proof that the relay did not enroll');
-    assert.ok(await page.locator('#friend-code').inputValue() === invite.code, 'failure preserves code');
-    assert.equal(await page.locator('#friend-name').inputValue(), 'Sam');
-    assert.equal((await state(page)).relay, null); assert.equal(node.trusted.length, 0);
-    assert.ok(!(await page.locator('#error-text').textContent()).includes(invite.code));
-    await shot(page, 'unreachable-join-invitation-kept');
-    await fill(page, '#friend-name', 'New name');
-    assert.equal(await page.locator('#join-friend-feedback').textContent(), '', 'new input clears old join result');
-  },
   async ['readback-rejected']() {
-    console.log('STEP readback: TEST-ONLY IPC falsification of each saved field after real enrollment; never claim verified join.');
-    for (const field of ['fingerprint', 'host', 'port', 'parkOnStop']) {
-      const { app, page } = await launch('readback-' + field); const node = await relay('Readback Garden');
-      const invite = await node.createInvite({ hours: 1 }); await check(page, invite.code); await wait(page, () => !document.querySelector('#join-friend').disabled);
-      await app.evaluate(({ ipcMain }, field) => {
-        const original = ipcMain._invokeHandlers.get('seedhost:call'); let joined = false;
-        ipcMain.removeHandler('seedhost:call'); ipcMain.handle('seedhost:call', async (event, method, payload) => {
-          const result = await original(event, method, payload);
-          if (method === 'joinWithInvite' && result) joined = true;
-          if (method === 'getState' && joined && result.relay) {
-            if (field === 'fingerprint') result.relay.fingerprint = '0'.repeat(64);
-            if (field === 'parkOnStop') result.relay.parkOnStop = false;
-            const peer = result.peers.find(peer => peer.fingerprint === result.relay.fingerprint);
-            if (peer && field === 'host') peer.host = 'localhost';
-            if (peer && field === 'port') peer.port = peer.port === 65535 ? 65534 : peer.port + 1;
-          }
-          return result;
+    console.log('STEP username readback: TEST-ONLY IPC falsification after real account acceptance.');
+    for (const field of ['fingerprint', 'peerFingerprint', 'host', 'port', 'parkOnStop']) {
+      const prefix = 'rb_' + ['fingerprint', 'peerFingerprint', 'host', 'port', 'parkOnStop'].indexOf(field);
+      const firstApp = apps.length, firstRelay = relays.length;
+      const {owner,recipient:{app,page},node} = await usernamePair(prefix);
+      await fill(owner.page, '#friend-username', prefix + '_recipient'); await click(owner.page, '#username-invite');
+      await wait(owner.page, () => document.querySelector('#account-friend-feedback').textContent.includes('Invitation sent'));
+      await click(page, '#friends-tab'); await click(page, '#account-refresh');
+      await page.locator('#account-inbox [data-account-accept]').waitFor({state:'visible'});
+      await app.evaluate(({ipcMain},field)=>{
+        const original=ipcMain._invokeHandlers.get('seedhost:call');let accepted=false;
+        ipcMain.removeHandler('seedhost:call');ipcMain.handle('seedhost:call',async(event,method,payload)=>{
+          const result=await original(event,method,payload);
+          if(method==='accountAccept'&&result)accepted=true;
+          if(method==='getState'&&accepted&&result.relay){
+            if(field==='fingerprint')result.relay.fingerprint='0'.repeat(64);
+            if(field==='parkOnStop')result.relay.parkOnStop=false;
+            const peer=result.peers.find(peer=>peer.fingerprint===result.relay.fingerprint);
+            if(peer&&field==='peerFingerprint')peer.fingerprint='0'.repeat(64);
+            if(peer&&field==='host')peer.host='localhost';
+            if(peer&&field==='port')peer.port=peer.port===65535?65534:peer.port+1;
+          }return result;
         });
-      }, field);
-      await click(page, '#join-friend'); await idle(page);
-      assert.ok(await page.locator('#friend-code').inputValue() === invite.code, 'unconfirmed ' + field + ' readback must preserve code');
-      assert.ok(!(await page.locator('#friend-feedback').textContent()).includes('Joined'), 'unconfirmed join cannot announce success');
-      assert.match(await page.locator('#join-friend-feedback').textContent(), /couldn.t confirm.*kept/i);
-      assert.equal(node.trusted.length, 1, 'test only falsifies readback, actual enrollment is real');
-      await shot(page, 'readback-rejected-' + field);
-      console.log('PASS readback-rejected=' + field);
+      },field);
+      await click(page,'#account-inbox [data-account-accept]');
+      await wait(page,()=>!document.querySelector('#account-refresh').disabled);
+      assert.doesNotMatch(await page.locator('#account-friend-feedback').textContent(),/^Joined/);
+      assert.match(await page.locator('#account-friend-feedback').textContent(),/could not be confirmed/i);
+      assert.equal(node.trusted.length,2,'only readback falsified; actual username enrollment is real');
+      await shot(page,'username-readback-rejected-'+field);console.log('PASS readback-rejected='+field);
+      // Retire each completed scenario: accumulated account pollers would stress the real
+      // directory's per-address request budget and contaminate later independent cases.
+      for (const completed of apps.splice(firstApp).reverse()) await completed.close();
+      for (const completed of relays.splice(firstRelay)) await completed.close();
     }
   },
-  async readback() {
-    console.log('STEP readback: real enrollment and unchanged persisted relay/peer settings after renderer restart; no falsified responses.');
-    const { page } = await launch('readback'), node = await relay('Readback Garden');
-    const invite = await node.createInvite({ hours: 1 }); await check(page, invite.code);
-    await wait(page, () => !document.querySelector('#join-friend').disabled);
-    await click(page, '#join-friend'); await idle(page);
-    await wait(page, () => document.querySelector('#friend-feedback').textContent.startsWith('Joined'));
-    const before = await state(page);
-    assert.equal(before.relay.fingerprint, node.identity.fingerprint); assert.equal(before.relay.parkOnStop, true);
-    const peer = before.peers.find(entry => entry.fingerprint === node.identity.fingerprint);
-    assert.equal(peer.host, node.endpoint.host); assert.equal(peer.port, node.endpoint.port);
-    await page.reload(); await idle(page); await enterPeers(page, apps.find(app => app.windows().includes(page)));
-    const after = await state(page);
-    assert.deepEqual(after.relay, before.relay); assert.deepEqual(after.peers, before.peers);
-    assert.equal(node.trusted.length, 1);
-    await wait(page, () => document.querySelector('#group-status').textContent === 'Members confirmed');
-    await shot(page, 'real-saved-readback');
-  },
-  async join() {
-    console.log('STEP join: two real profiles, real invitation/copy/enrollment/member reads; nothing downloads or starts.');
-    const node = await relay('Shared Garden'); await node.setMemberInvites(true);
-    const a = await launch('join-a'), b = await launch('join-b'); const initial = await node.createInvite({ hours: 1 });
-    await check(a.page, initial.code, 'River <QA>'); await wait(a.page, () => !document.querySelector('#join-friend').disabled);
-    await click(a.page, '#join-friend'); await idle(a.page);
-    await wait(a.page, () => document.querySelector('#friend-feedback').textContent.startsWith('Joined'));
-    assert.match(await a.page.locator('#friend-feedback').textContent(), /Joined the group.*world.*stays on this PC.*handed to the always.on PC.*take over hosting/is);
-    assertWorkspaceUnchanged(a.page, await state(a.page));
-    assert.equal(await a.page.locator('#preview-fingerprint').textContent(), '', 'successful join clears preview secret context');
-    await click(a.page, '#create-invite'); await wait(a.page, () => document.querySelector('#invite-code').value.startsWith('SEEDHOST-'));
-    const invitation = await a.page.locator('#invite-code').inputValue(); await click(a.page, '#copy-invite');
-    // The renderer's copy is async: wait for the app's own confirmation before checking the OS clipboard.
-    await wait(a.page, () => /^(?:Copied|Couldn)/.test(document.querySelector('#invite-status').textContent));
-    const copyStatus = await a.page.locator('#invite-status').textContent();
-    assert.match(copyStatus, /^Copied/, 'copy confirmation: ' + copyStatus);
-    let clipboardText = '';
-    for (let attempt = 0; attempt < 50 && clipboardText !== invitation; attempt++) { clipboardText = await a.app.evaluate(({ clipboard }) => clipboard.readText()); if (clipboardText !== invitation) await new Promise(resolve => setTimeout(resolve, 100)); }
-    assert.equal(clipboardText, invitation, 'actual clipboard contains invitation (got ' + clipboardText.length + ' chars)');
-    await check(b.page, invitation, 'Sam'); await wait(b.page, () => !document.querySelector('#join-friend').disabled);
-    assert.equal(node.trusted.length, 1, 'B preview does not enroll');
-    await click(b.page, '#join-friend'); await idle(b.page);
-    await wait(b.page, () => document.querySelector('#friend-feedback').textContent.startsWith('Joined'));
-    for (const instance of [a, b]) {
-      const saved = await state(instance.page), peer = saved.peers.find(peer => peer.fingerprint === node.identity.fingerprint);
-      assert.equal(saved.relay.fingerprint, node.identity.fingerprint); assert.equal(saved.relay.parkOnStop, true);
-      assert.equal(peer.host, node.endpoint.host); assert.equal(peer.port, node.endpoint.port);
-      assertWorkspaceUnchanged(instance.page, saved); assert.equal(saved.gateway.enabled, false); assert.equal(saved.settings.persistentAddress, false);
-      assert.ok(!saved.logs.some(line => line.includes(invitation) || /Downloading|Starting server/.test(line)));
-      assert.equal(saved.servers.length, 1, 'joining creates no additional managed server beyond the explicit workspace fixture');
+  async ['username-roundtrip']() {
+    const {owner,recipient,node}=await usernamePair('roundtrip');
+    const {page,app}=recipient;
+    await click(page,'#friends-tab');
+    assert.equal(await page.locator('#friend-code,#invite-code,#friends-intent-join,#friends-intent-invite').count(),0);
+    async function send(){
+      await fill(owner.page,'#friend-username','roundtrip_recipient');await click(owner.page,'#username-invite');
+      await wait(owner.page,()=>!document.querySelector('#username-invite').disabled);
+      await click(page,'#account-refresh');await page.locator('#account-inbox [data-account-accept]').waitFor({state:'visible'});
+      assert.match(await page.locator('#account-inbox').textContent(),/@roundtrip_owner/);
     }
-    await click(a.page, '#refresh-friends'); await wait(a.page, () => document.querySelectorAll('#friend-list li').length === 2);
-    assert.deepEqual(node.trusted.map(member => member.name).sort(), ['River <QA>', 'Sam']);
-    assert.equal(await a.page.locator('#friend-list qa').count(), 0);
-    await a.page.bringToFront(); await a.page.locator('#friend-list').scrollIntoViewIfNeeded();
-    await shot(a.page, 'two-profile-invitation-members');
-    await b.page.bringToFront(); await b.page.locator('#friend-feedback').scrollIntoViewIfNeeded();
-    await shot(b.page, 'two-profile-joined-next-steps');
-  },
-  async used() {
-    console.log('STEP used: a redeemed invitation remains locally previewable, but second PC gets fresh-code recovery.');
-    const node = await relay('One-use Garden'), invite = await node.createInvite({ hours: 1 });
-    const a = await launch('used-a'), b = await launch('used-b');
-    await check(a.page, invite.code, 'First host'); await wait(a.page, () => !document.querySelector('#join-friend').disabled);
-    await click(a.page, '#join-friend'); await idle(a.page);
-    await check(b.page, invite.code, 'Second host'); await wait(b.page, () => !document.querySelector('#join-friend').disabled);
-    await click(b.page, '#join-friend'); await idle(b.page);
-    assert.match(await b.page.locator('#join-friend-feedback').textContent(), /already used.*ask.*new code/is);
-    assert.ok(await b.page.locator('#friend-code').inputValue() === invite.code, 'used-code failure retains input');
-    assert.equal((await state(b.page)).relay, null); assert.equal(node.trusted.length, 1);
-    await shot(b.page, 'already-used-request-new-code');
-  },
-  async conflict() {
-    console.log('STEP conflict: other-group code is locally reviewable but cannot replace saved relay automatically.');
-    const { page } = await launch('conflict'); const current = await relay('Current Garden'), other = await relay('Other Garden');
-    await check(page, (await current.createInvite({ hours: 1 })).code); await wait(page, () => !document.querySelector('#join-friend').disabled);
-    await click(page, '#join-friend'); await idle(page);
-    const otherInvite = await other.createInvite({ hours: 1 }); await check(page, otherInvite.code);
-    await wait(page, () => !document.querySelector('#invitation-preview').hidden);
-    assert.equal(await page.locator('#join-friend').isDisabled(), true, 'other-group invitation must be blocked before consent');
-    assert.match(await page.locator('#join-friend-feedback').textContent(), /different group.*Settings.*Network.*Relay.*None.*Save/is);
-    assert.equal((await state(page)).relay.fingerprint, current.identity.fingerprint); assert.equal(other.trusted.length, 0);
-    assert.ok(await page.locator('#friend-code').inputValue() === otherInvite.code);
-    await shot(page, 'different-group-settings-guidance');
-  },
-  async stopped() {
-    console.log('STEP stopped guard: deliberately run an isolated Node process fixture (NOT Minecraft), block join until stopped.');
-    const { app, page } = await launch('stopped'); const node = await relay(), invite = await node.createInvite({ hours: 1 });
-    const source = path.join(root, 'Stopped-guard fixture NOT Minecraft'); await mkdir(source); await writeFile(path.join(source, 'eula.txt'), 'eula=true\n');
-    await app.evaluate(({ dialog }, source) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [source] }); }, source);
-    await click(page, '#home-tab'); await click(page, '#import-server'); await idle(page);
-    await page.evaluate(profile => window.seedhost.call('saveProfile', profile), { executable: process.execPath, args: [path.join(project, 'tools/fake-java-server.mjs')], startTimeoutSeconds: 10, stopTimeoutSeconds: 10 });
-    await page.reload(); await idle(page);
-    await click(page, '#server-list .is-current button[data-action="open"]');
-    try {
-      await openSelectedServer(page); await click(page, '#start-server'); await wait(page, () => document.querySelector('#server-status').textContent === 'Hosting');
-      await click(page, '#home-tab'); await click(page, '#friends-tab'); await check(page, invite.code); await wait(page, () => !document.querySelector('#invitation-preview').hidden);
-      assert.equal(await page.locator('#join-friend').isDisabled(), true, 'server must be stopped before joining');
-      assert.match(await page.locator('#join-friend-feedback').textContent(), /Stop.*server.*join/i);
-      assert.equal(node.trusted.length, 0); await shot(page, 'running-fixture-join-blocked');
-    } finally {
-      if (['running', 'starting'].includes((await state(page)).server?.state)) await page.evaluate(() => window.seedhost.call('stopServer'));
-      await idle(page);
-    }
-    await wait(page, () => !document.querySelector('#join-friend').disabled);
-    assert.equal((await state(page)).server.state, 'offline');
-  },
-  async chooser() {
-    console.log('STEP chooser: one intent panel; no-group actions; play-only and same wizard controls.');
-    let { page } = await launch('chooser');
-    assert.equal(await page.locator('#friends-intent-join').count(), 1, 'missing clear two-button intent chooser');
-    assert.equal(await page.locator('#friends-intent-invite').count(), 1);
-    assert.equal(await page.locator('#join-friend-details').isVisible(), true);
-    assert.equal(await page.locator('#invite-panel').isVisible(), false);
-    await click(page, '#friends-intent-invite');
-    assert.equal(await page.locator('#join-friend-details').isVisible(), false);
-    assert.equal(await page.locator('#create-invite').isVisible(), false, 'no dead invite button without a group');
-    assert.equal(await page.locator('#friends-setup-hosting').isEnabled(), true);
-    await shot(page, 'no-group-invite');
-    await click(page, '#friends-setup-hosting');
-    await wait(page, () => document.querySelector('#setup-dialog').open && !document.querySelector('#setup-gateway').hidden);
-    await click(page, '#setup-save-close'); await wait(page, () => !document.querySelector('#setup-dialog').open);
-    await click(page, '#friends-use-invitation');
-    assert.equal(await page.locator('#join-friend-details').isVisible(), true);
-    const before = await state(page);
-    await click(page, '#friends-play-only');
-    assert.equal(await page.locator('#operate-panel').isVisible(), true, 'existing-server play-only action returns to its workspace');
-    await click(page, '#home-tab'); await assertLibraryNavigation(page);
-    assert.equal(await page.locator('#join-help').isVisible(), true);
-    assert.match(await page.locator('#join-help').textContent(), /Minecraft.*Multiplayer.*Add Server.*localhost/i);
-    const after = await state(page); assert.deepEqual(after.settings, before.settings); assert.equal(after.relay, before.relay);
-    ({ page } = await launch('chooser-fresh-guide', false, false));
-    assert.equal((await state(page)).server, null, 'guide join choice needs no managed server');
-    await click(page, '#nav-setup'); await click(page, '[data-setup-step="server"]'); await idle(page);
-    if (await page.locator('#setup-back').isVisible()) await click(page, '#setup-back');
-    await click(page, '#setup-choose-join');
-    await wait(page, () => document.querySelector('#account-card').parentElement.id === 'setup-friends-slot');
-    assert.equal(await page.locator('#setup-friends-slot #account-open').isVisible(), true);
-    assert.equal(await page.locator('#friends-panel #friends-controls').count(), 1, 'legacy code controls stay on the Friends page');
-    assert.equal(await page.locator('#setup-friends-slot #friends-controls').count(), 0, 'no code controls inside the guide');
-    await shot(page, 'wizard-username-join-intent');
-    await click(page, '#setup-save-close'); await wait(page, () => !document.querySelector('#setup-dialog').open);
-    await wait(page, () => document.activeElement.id === 'nav-setup');
-    assert.equal(await page.locator('#advanced-peers').getAttribute('open'), null);
-    assert.match(await page.locator('#advanced-peers').textContent(), /loopback.only/i);
+    await send();await click(page,'#account-inbox [data-account-decline]');
+    await wait(page,()=>document.querySelector('#account-friend-feedback').textContent.includes('declined'));
+    assert.equal(node.trusted.length,1);assert.deepEqual(await page.evaluate(()=>window.seedhost.call('accountRequests')),[]);
+    await send();await click(page,'#account-inbox [data-account-accept]');
+    await wait(page,()=>document.querySelector('#account-friend-feedback').textContent.startsWith('Joined'));
+    const before=await state(page);assert.equal(before.server,null);assert.equal(before.gateway.enabled,false);
+    assert.equal(before.relay.fingerprint,node.identity.fingerprint);assert.equal(before.relay.parkOnStop,true);
+    const peer=before.peers.find(p=>p.fingerprint===node.identity.fingerprint);
+    assert.equal(peer.host,node.endpoint.host);assert.equal(peer.port,node.endpoint.port);assert.equal(node.trusted.length,2);
+    await page.reload();await idle(page);await click(page,'#friends-tab');await click(page,'#refresh-friends');
+    await wait(page,()=>document.querySelector('#group-status').textContent==='Members confirmed');
+    const after=await state(page);assert.deepEqual(after.relay,before.relay);assert.deepEqual(after.peers,before.peers);
+    assert.match(await page.locator('#friend-list').textContent(),/roundtrip_owner.*roundtrip_recipient/s);
+    await enterPeers(page,app);await openSelectedServer(page);await click(page,'#peers-tab');
+    assert.equal(await page.locator('#peers-panel #account-card').isVisible(),true);
+    assert.equal(await page.locator('#peers-panel #username-friend-form').isVisible(),true);
+    assert.equal(await page.locator('#peers-panel #friends-controls').isVisible(),true);
+    assert.equal(await page.locator('#peers-panel #advanced-peers').count(),0);
+    assert.equal(await page.locator('#account-card').count(),1);
+    await click(page,'#refresh-friends');await wait(page,()=>document.querySelector('#group-status').textContent==='Members confirmed');
+    await shot(page,'username-multi-host');
   },
 };
 
@@ -680,6 +330,8 @@ try {
   for (const name of names) assert.ok(Object.hasOwn(cases, name) && typeof cases[name] === 'function', 'Unknown regression case: ' + name);
   for (const name of names) {
     await cases[name](); console.log('PASS case=' + name);
+    for (const completed of apps.splice(0).reverse()) await completed.close();
+    for (const completed of relays.splice(0)) await completed.close();
   }
   assert.deepEqual(pageErrors, [], 'renderer errors');
   console.log('PASS: visible Electron Friends regressions. Loopback only; no Minecraft/cross-network proof.');

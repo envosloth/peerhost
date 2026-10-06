@@ -1,0 +1,42 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,mkdir,writeFile,readFile} from 'node:fs/promises';
+import path from 'node:path';
+import {_electron as electron} from 'playwright';
+import {desktopArtifactLaunch} from '../tools/desktop-artifact-launch.mjs';
+import {OwnershipLedger} from '../dist/src/core/ownership.js';
+
+const packagedArg=process.argv.find(arg=>arg.startsWith('--packaged='));
+const packaged=packagedArg?.slice('--packaged='.length);
+if(process.argv.includes('--packaged'))throw new Error('Use --packaged=<absolute executable>; no artifact check may fall back to source.');
+
+test('explicit start stop and stopped recovery have no extra popup; deletion still requires confirmation', {timeout:45000},async t=>{
+  const root=await mkdtemp(path.join(process.env.TMPDIR,'seedhost-routine-actions-'));
+  const source=path.join(root,'source');await mkdir(source);await writeFile(path.join(source,'world.bin'),'preserved source');await writeFile(path.join(source,'eula.txt'),'eula=true\n');
+  const env={...process.env,SEEDHOST_TEST_LOOPBACK:'1'};delete env.ELECTRON_RUN_AS_NODE;delete env.SEEDHOST_ACCOUNT_SERVICE;
+  const app=await electron.launch({...desktopArtifactLaunch(process.cwd(),path.join(root,'profile'),packaged),env});
+  console.log('ARTIFACT_MODE='+(packaged?'packaged':'source')+(packaged?' EXECUTABLE='+packaged:''));
+  const page=await app.firstWindow();t.after(async()=>{await page.evaluate(()=>window.seedhost.call('stopServer')).catch(()=>{});await app.close();});
+  await page.bringToFront();await page.waitForFunction(()=>typeof window.seedhost?.call==='function');
+  await app.evaluate(({dialog},source)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[source]});dialog.showMessageBox=async()=>({response:1});},source);
+  await page.evaluate(()=>window.seedhost.call('importServer'));
+  await page.evaluate(profile=>window.seedhost.call('saveProfile',profile),{executable:process.execPath,args:[path.resolve('tools/fake-java-server.mjs'),'--lifetime-ms=30000']});
+  await app.evaluate(({dialog})=>{globalThis.__consents=[];dialog.showMessageBox=async(_window,options)=>{globalThis.__consents.push(options);return {response:0};};});
+  console.log('VISIBLE QA: actual isolated main/preload; real fixture process, NOT Minecraft.');
+  await page.evaluate(()=>window.seedhost.call('startServer'));
+  let state=await page.evaluate(()=>window.seedhost.call('getState'));assert.equal(state.server.state,'running','Start server itself authorizes this locally configured profile, without another modal');
+  await page.evaluate(()=>window.seedhost.call('stopServer'));
+  state=await page.evaluate(()=>window.seedhost.call('getState'));
+  const ledger=new OwnershipLedger(state.server.ledgerFile,state.deviceId);await ledger.markUncertain();
+  await page.evaluate(()=>window.seedhost.call('recoverStopped',{confirmed:true}));
+  const before=await page.evaluate(()=>window.seedhost.call('getState'));assert.equal(before.server.ownership.state,'owned');
+  assert.deepEqual(await app.evaluate(()=>globalThis.__consents),[],'explicit start/stop/recovery must not open native warning or question popups');
+  await assert.rejects(page.evaluate(()=>window.seedhost.call('recoverStopped',{confirmed:false})),/confirm|stopped/i);
+  await page.evaluate(id=>window.seedhost.call('deleteServer',{id}),before.server.id);
+  const prompts=await app.evaluate(()=>globalThis.__consents);assert.equal(prompts.length,1,'deletion retains a separate confirmation step');
+  const prompt=prompts[0];assert.equal(prompt.type,'question');assert.deepEqual(prompt.buttons,['Cancel','Delete server']);assert.equal(prompt.defaultId,0);assert.equal(prompt.cancelId,0);
+  const after=await page.evaluate(()=>window.seedhost.call('getState'));assert.deepEqual(after.server.ownership,before.server.ownership);assert.equal(after.servers.length,1);
+  assert.equal(await readFile(path.join(source,'world.bin'),'utf8'),'preserved source');
+  await page.screenshot({path:path.join(root,'routine-actions.png')});
+  console.log('PASS: no routine popups; explicit recovery guard retained; deletion cancellation preserves server. ARTIFACT_DIR='+root);
+});

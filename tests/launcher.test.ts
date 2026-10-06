@@ -49,7 +49,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 6000): Promise<void
 }
 
 async function fixture(t: TestContext, args: string[] = [], overrides: Partial<ServerProcessProfile> = {}) {
-  const testRoot = path.join(projectRoot, '.test-data');
+  const testRoot = process.env.TMPDIR ?? path.join(projectRoot, '.test-data');
   await mkdir(testRoot, { recursive: true });
   const cwd = await mkdtemp(path.join(testRoot, 'launcher with spaces-'));
   const profile = {
@@ -72,6 +72,43 @@ async function fixture(t: TestContext, args: string[] = [], overrides: Partial<S
   });
   return { server, profile, cwd, lines, states };
 }
+
+test('zero exit before readiness reports bind failure from either startup stream with actionable port diagnostics', async (t) => {
+  for (const [stream, reason] of [['stdout', '**** FAILED TO BIND TO PORT!'], ['stderr', 'java.net.BindException: Address already in use'], ['stderr', 'listen EADDRINUSE 127.0.0.1:31415']] as const) {
+    const { server, states } = await fixture(t, [], { args: ['-e', `process.${stream}.write(${JSON.stringify(reason + '\n')}); process.exitCode = 0;`] });
+    await assert.rejects(server.start(), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /before stdout readiness.*code 0.*signal null/i);
+      assert.match(error.message, /configured.*port.*unavailable/i);
+      assert.ok(error.message.includes(reason));
+      assert.match(error.message, /change.*port|stop.*process/i);
+      return true;
+    });
+    assert.equal(server.state, 'failed');
+    assert.equal(server.pid, undefined);
+    assert.ok(!states.includes('running'));
+  }
+});
+
+test('non-bind startup errors retain a bounded useful log tail without fabricating port diagnosis or stderr readiness', async (t) => {
+  const { server, states } = await fixture(t, [], { args: ['-e', `
+    console.log('x'.repeat(20000));
+    console.error('Done (fixture)!');
+    console.error('Fatal startup: missing required mod dependency');
+    process.exitCode = 7;
+  `] });
+  await assert.rejects(server.start(), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /before stdout readiness.*code 7.*signal null/i);
+    assert.match(error.message, /missing required mod dependency/i);
+    assert.ok(error.message.length < 9000, 'diagnostic retained output must be bounded');
+    assert.doesNotMatch(error.message, /port is unavailable/i);
+    return true;
+  });
+  assert.equal(server.state, 'failed');
+  assert.equal(server.pid, undefined);
+  assert.ok(!states.includes('running'));
+});
 
 test('a new ServerProcess is offline without a PID and is an EventEmitter', async () => {
   const server = new ServerProcess({ executable: process.execPath, args: [], cwd: process.cwd() });

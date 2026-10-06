@@ -24,7 +24,7 @@ import { validAdvertise } from './relay-friends-store.js';
  */
 
 export const DISCOVERY_PORT = 47625; // UDP; the relay's TLS listener uses the same number on TCP.
-const DEFAULT_GAME_PORT = 25565;
+const DEFAULT_GAME_PORT = 25566; // Leave Minecraft's conventional 25565 to the local server.
 const CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'; // Crockford base32: no I, L, O, U.
 const CODE_MINUTES = 30;
 const SALT = 'seedhost-pairing-v1';
@@ -125,7 +125,13 @@ export class AlwaysOnHost {
   private session?: { code: string; expiresAt: number; secrets: PairingSecrets };
   private error: string | null = null;
   private enabled = false;
-  constructor(readonly root: string, private readonly identity: PeerIdentity, private readonly options: { port?: number; gamePorts?: number[]; discoveryPort?: number; host?: string; advertise?: { host: string; port: number } } = {}) {}
+  constructor(readonly root: string, private readonly identity: PeerIdentity, private readonly options: { port?: number; gamePorts?: number[]; reservedGamePorts?: number[]; discoveryPort?: number; host?: string; advertise?: { host: string; port: number } } = {}) {
+    const reserved = options.reservedGamePorts;
+    if (reserved !== undefined && (!Array.isArray(reserved) || Array.from(reserved).some(port => !Number.isInteger(port) || port < 1 || port > 65535))) {
+      throw new Error('reservedGamePorts must be an array of integer ports between 1 and 65535');
+    }
+    this.options = { ...options, reservedGamePorts: reserved && [...reserved], gamePorts: options.gamePorts && [...options.gamePorts] };
+  }
 
   private get settingsFile(): string { return path.join(this.root, 'always-on.json'); }
 
@@ -144,7 +150,14 @@ export class AlwaysOnHost {
     this.enabled = enabled;
   }
 
-  async enable(name?: string): Promise<AlwaysOnStatus> {
+  async enable(name?: string, reservedGamePorts?: number[]): Promise<AlwaysOnStatus> {
+    if (reservedGamePorts !== undefined) {
+      if (!Array.isArray(reservedGamePorts) || Array.from(reservedGamePorts).some(port => !Number.isInteger(port) || port < 1 || port > 65535)) {
+        throw new Error('reservedGamePorts must be an array of integer ports between 1 and 65535');
+      }
+      // Refresh future allocation without disconnecting players or changing an existing address.
+      this.options.reservedGamePorts = [...reservedGamePorts];
+    }
     await this.start(name);
     await this.save(true);
     return this.status();
@@ -178,6 +191,9 @@ export class AlwaysOnHost {
   private async start(name?: string): Promise<void> {
     if (this.relay) { if (name) await this.relay.setName(name); return; }
     this.error = null;
+    const gamePorts = (this.options.gamePorts ?? [DEFAULT_GAME_PORT, 25567, 25568, 25569])
+      .filter(port => !this.options.reservedGamePorts?.includes(port));
+    if (gamePorts.length === 0) throw new Error('Couldn’t open a player port: all gateway candidates are reserved for local Minecraft servers. Configure a different gateway player port.');
     let advertise = this.options.advertise;
     if (advertise === undefined) {
       try {
@@ -200,13 +216,17 @@ export class AlwaysOnHost {
         catch (error) { listenError = error; }
       }
       if (listenError) throw new Error(`Couldn’t open Seed Hosting’s port: ${(listenError as Error).message}`);
-      // The player address: first free port from the usual Minecraft one upward.
+      // A separate gateway player address must not occupy a managed Minecraft server's port.
       let lastError: unknown;
-      for (const gamePort of this.options.gamePorts ?? [DEFAULT_GAME_PORT, 25566, 25567, 25568]) {
+      for (const gamePort of gamePorts) {
         try { await relay.listenGame({ host, port: gamePort }); lastError = undefined; break; }
         catch (error) { lastError = error; }
       }
       if (lastError) throw new Error(`Couldn’t open a player port: ${(lastError as Error).message}`);
+      // Port zero is an explicit ephemeral fixture/custom choice; check the actual allocation too.
+      if (relay.gameEndpoint && this.options.reservedGamePorts?.includes(relay.gameEndpoint.port)) {
+        throw new Error(`Couldn’t open a player port: allocated port ${relay.gameEndpoint.port} is reserved for local Minecraft. Configure a different gateway player port and retry.`);
+      }
       await this.listenDiscovery(host);
     } catch (error) {
       await relay.close().catch(() => undefined);

@@ -12,8 +12,9 @@ const renderer = 'file:///app/index.html';
 const trusted = { senderId: 1, expectedSenderId: 1, isMainFrame: true };
 
 async function setup(prefix) {
-  await mkdir('.test-data', { recursive: true });
-  const root = await mkdtemp(path.resolve('.test-data/' + prefix));
+  assert.ok(process.env.TMPDIR, 'Hermes scratch TMPDIR is required for isolated profiles');
+  await mkdir(process.env.TMPDIR, { recursive: true });
+  const root = await mkdtemp(path.join(process.env.TMPDIR, prefix));
   const identity = await createIdentity();
   const profile = path.join(root, 'profile');
   const app = new SeedHostApplication(profile, identity);
@@ -49,6 +50,31 @@ test('importing a second server keeps the first and makes the newest active', as
     const stored = JSON.parse(await readFile(path.join(root, 'profile', 'state.json'), 'utf8'));
     assert.equal(stored.version, 2);
     assert.equal(stored.servers.length, 2);
+  } finally { await app.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('library summaries expose validated player ports for every registered server without selection', async () => {
+  const { root, app } = await setup('library-ports-');
+  try {
+    const alpha = await stoppedSource(root, 'alpha');
+    const bravo = await stoppedSource(root, 'bravo');
+    await writeFile(path.join(alpha, 'server.properties'), 'server-port=25571\n');
+    await writeFile(path.join(bravo, 'server.properties'), 'server-port = 25582\n');
+    await app.importExisting(alpha, true);
+    const alphaManaged = (await app.getState()).server;
+    await app.importExisting(bravo, true);
+    const state = await app.getState();
+    assert.equal(state.server.name, 'bravo');
+    assert.deepEqual(state.servers.map(({ name, playerPort }) => ({ name, playerPort })), [
+      { name: 'alpha', playerPort: 25571 }, { name: 'bravo', playerPort: 25582 },
+    ]);
+    // Re-read managed properties, not cached active-server data; invalid and missing files
+    // use the validated reader's default even for an inactive library entry.
+    await writeFile(path.join(alphaManaged.serverDir, 'server.properties'), 'server-port=65536\n');
+    await rm(path.join(state.server.serverDir, 'server.properties'));
+    const fallback = await app.getState();
+    assert.deepEqual(fallback.servers.map(entry => entry.playerPort), [25565, 25565]);
+    assert.equal(fallback.server.id, state.server.id);
   } finally { await app.close(); await rm(root, { recursive: true, force: true }); }
 });
 
