@@ -15,6 +15,21 @@
   <script src="accounts.js" defer></script>
 </head>
 <body class="is-splashing">
+  <dialog id="profile-dialog" class="account-dialog" aria-labelledby="profile-title">
+    <div class="compact-heading"><h1 id="profile-title">Profile</h1><button id="profile-close" type="button" class="text-button" aria-label="Close profile">Close</button></div>
+    <p id="profile-status" class="field-help" role="status"></p>
+    <button id="profile-signin" type="button" class="button button-primary">Sign in or create an account</button>
+    <form id="account-profile-form" hidden>
+      <label for="profile-username">Username</label><input id="profile-username" type="text" minlength="3" maxlength="24" pattern="[A-Za-z0-9_]{3,24}" autocomplete="username" spellcheck="false" required>
+      <p class="field-help">3–24 letters, numbers or underscores. Changes affect this shared account directory; your PC identity and worlds do not change.</p>
+      <label for="profile-current-password">Current password</label><input id="profile-current-password" type="password" minlength="4" maxlength="128" autocomplete="current-password" required>
+      <label for="profile-new-password">New password (optional)</label><input id="profile-new-password" type="password" minlength="4" maxlength="128" autocomplete="new-password" aria-describedby="profile-password-help">
+      <p id="profile-password-help" class="field-help">Leave blank to keep your password. At least 4 characters; a longer unique password is safer. Changing it signs out your other devices.</p>
+      <label for="profile-confirm-password">Confirm new password</label><input id="profile-confirm-password" type="password" minlength="4" maxlength="128" autocomplete="new-password">
+      <button id="profile-save" type="submit" class="button button-primary">Save profile</button>
+    </form>
+    <p id="account-profile-feedback" class="field-help" role="status" aria-live="polite"></p>
+  </dialog>
   <dialog id="account-dialog" class="account-dialog" aria-labelledby="account-title">
     <form id="account-form">
       <svg class="account-logo" aria-hidden="true"><use href="#logo"/></svg>
@@ -91,6 +106,7 @@
       </div>
       <button class="guide-button" id="nav-setup" type="button"><span class="nav-icon"><svg class="icon" aria-hidden="true"><use href="#i-guide"/></svg></span><span class="nav-copy"><span class="nav-text">Setup guide</span><span class="nav-sub">Step by step</span></span></button>
       <div class="sidebar-footer">
+        <button id="profile-open" type="button" class="button button-quiet profile-button" aria-haspopup="dialog"><svg class="icon" aria-hidden="true"><use href="#i-friends"/></svg><span>Profile</span><span id="profile-name" class="section-caption"></span></button>
         <div class="device-card">
           <span class="device-label"><span id="device-led" class="led" aria-hidden="true"></span>THIS PC</span>
           <p class="device-note">✕ keeps Seed Hosting running in the tray. Stop your server before quitting.</p>

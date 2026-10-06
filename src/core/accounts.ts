@@ -86,7 +86,11 @@ export class AccountService {
       const salt=row?.salt as string || randomBytes(32).toString('hex');
       let hashed:Buffer;
       this.hashing++;try{hashed=await hashPassword(secret,salt);}finally{this.hashing--;}
-      if(op==='login' && (!row || !timingSafeEqual(hashed,Buffer.from(row.hash as string,'hex'))))throw new Error('Username or password is incorrect');
+      if(op==='login') {
+        if(!row||!timingSafeEqual(hashed,Buffer.from(row.hash as string,'hex')))throw new Error('Username or password is incorrect');
+        const current=db.prepare('SELECT salt,hash FROM accounts WHERE username=?').get(username);
+        if(!current||current.salt!==row.salt||current.hash!==row.hash)throw new Error('Account changed; sign in again');
+      }
       if(op==='register') {
         // Recheck after asynchronous hashing: concurrent registrations cannot steal or overwrite a name.
         if(db.prepare('SELECT 1 FROM accounts WHERE username=?').get(username))throw new Error('That username is taken');
@@ -100,6 +104,44 @@ export class AccountService {
       return {username,token,expiresAt};
     }
     const username=this.session(p.token,fp);
+    if(op==='update-profile') {
+      const keys=Object.keys(p).sort().join(',');
+      if(keys!=='currentPassword,token,username'&&keys!=='currentPassword,newPassword,token,username')throw new Error('Invalid account request');
+      this.limit('auth:'+ip,10);
+      const nextUsername=accountUsername(p.username), secret=accountPassword(p.currentPassword);
+      const newSecret=keys.includes('newPassword')?accountPassword(p.newPassword):undefined;
+      if(this.hashing>=2)throw new Error('Service is busy; try again shortly');
+      const row=db.prepare('SELECT salt,hash FROM accounts WHERE username=?').get(username)!;
+      let salt=row.salt as string, hash=row.hash as string;
+      // Hold one hashing slot across both derivations; at most two account jobs derive concurrently.
+      this.hashing++;
+      try {
+        const hashed=await hashPassword(secret,salt);
+        if(!timingSafeEqual(hashed,Buffer.from(hash,'hex')))throw new Error('Current password is incorrect');
+        if(newSecret!==undefined){salt=randomBytes(32).toString('hex');hash=(await hashPassword(newSecret,salt)).toString('hex');}
+      } finally {this.hashing--;}
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        if(this.session(p.token,fp)!==username)throw new Error('Account changed; sign in again');
+        const current=db.prepare('SELECT salt,hash FROM accounts WHERE username=?').get(username);
+        if(!current||current.salt!==row.salt||current.hash!==row.hash)throw new Error('Account changed; sign in again');
+        if(nextUsername!==username) {
+          if(db.prepare('SELECT 1 FROM accounts WHERE username=?').get(nextUsername))throw new Error('That username is taken');
+          // Insert before moving the session foreign keys; the original credentials and device bindings remain intact.
+          db.prepare('INSERT INTO accounts VALUES(?,?,?)').run(nextUsername,row.salt as string,row.hash as string);
+          db.prepare('UPDATE sessions SET username=? WHERE username=?').run(nextUsername,username);
+          db.prepare('UPDATE requests SET sender=? WHERE sender=?').run(nextUsername,username);
+          db.prepare('UPDATE requests SET recipient=? WHERE recipient=?').run(nextUsername,username);
+          db.prepare('DELETE FROM accounts WHERE username=?').run(username);
+        }
+        if(newSecret!==undefined) {
+          db.prepare('UPDATE accounts SET salt=?,hash=? WHERE username=?').run(salt,hash,nextUsername);
+          db.prepare('DELETE FROM sessions WHERE username=? AND digest<>?').run(nextUsername,digest(p.token as string));
+        }
+        db.exec('COMMIT');
+      } catch(e) {db.exec('ROLLBACK');throw e;}
+      return {username:nextUsername};
+    }
     if(op==='me') {if(Object.keys(p).join(',')!=='token')throw new Error('Invalid account request');return {username};}
     if(op==='logout') {if(Object.keys(p).join(',')!=='token')throw new Error('Invalid account request');db.prepare('DELETE FROM sessions WHERE digest=?').run(digest(p.token as string));return {signedOut:true};}
     if(op==='lookup') {
@@ -144,6 +186,9 @@ export class AccountService {
   async close() { if(this.listener){await this.listener.close();this.listener=undefined;}this.db?.close();this.db=undefined; }
 }
 
+// Only this typed error proves a complete, authenticated service error frame was received.
+export class AccountOperationError extends Error {}
+
 export class AccountClient {
   readonly endpoint:AccountEndpoint;
   constructor(private readonly identity:PeerIdentity,endpoint:AccountEndpoint){this.endpoint=accountEndpoint(endpoint);}
@@ -152,7 +197,10 @@ export class AccountClient {
     try {
       await writeFrame(socket,{type:'account',version:1,op,payload});
       const reply=await readFrame(socket,262144,10000) as Record<string,unknown>;
-      if(reply?.type==='account-error')throw new Error(typeof reply.message==='string'?reply.message:'Account operation failed');
+      if(reply?.type==='account-error'){
+        if(Object.keys(reply).sort().join(',')!=='message,type'||typeof reply.message!=='string'||!reply.message||reply.message.length>200)throw new Error('Invalid account service reply');
+        throw new AccountOperationError(reply.message);
+      }
       if(reply?.type!=='account-result'||!reply.data||typeof reply.data!=='object'||Array.isArray(reply.data))throw new Error('Invalid account service reply');
       return reply.data;
     } finally {socket.destroy();}

@@ -1,8 +1,9 @@
 import { readFile, mkdir, open, rename, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { AccountClient, accountUsername, type AccountEndpoint } from './accounts.js';
+import { AccountClient, AccountOperationError, accountUsername, accountPassword, type AccountEndpoint } from './accounts.js';
 import { decodeInvite } from './invites.js';
+import { isPrivateEndpointHost } from './endpoints.js';
 import { fingerprintOK } from './relay-friends-store.js';
 import { syncDirectory } from './snapshots.js';
 import { isRetryablePeerError, type PeerIdentity } from './peer-transport.js';
@@ -33,8 +34,10 @@ export class AccountIntegration {
     const s=await this.load();if(!s||s.expiresAt<=Date.now())return {configured:true,signedIn:false,online:true,username:null,detail:'Create an account or sign in to this account directory.'};
     try {
       const me=await this.client.call('me',{token:s.token});
-      if(me.username!==s.username)throw new Error('Invalid account service reply');
-      return {configured:true,signedIn:true,online:true,username:s.username,detail:'Signed in · '+this.client.endpoint.host};
+      if(!me||Object.keys(me).join(',')!=='username'||accountUsername(me.username)!==me.username)throw new Error('Invalid account service reply');
+      // The authenticated token/device binding is authority; usernames may change on another PC.
+      // Status stays read-only, so it cannot overwrite a concurrent encrypted login or logout.
+      return {configured:true,signedIn:true,online:true,username:me.username,detail:'Signed in · '+this.client.endpoint.host};
     }catch(e){
       if((e as Error).message==='Sign in again')return {configured:true,signedIn:false,online:true,username:null,detail:'Your session expired. Sign in again.'};
       return {configured:true,signedIn:true,online:false,username:s.username,detail:'Account service is unavailable. Your local world is unaffected.'};
@@ -47,6 +50,32 @@ export class AccountIntegration {
       const reply=await this.client.call(op,input);
       if(reply.username!==accountUsername(input.username)||!fingerprintOK(reply.token)||!Number.isSafeInteger(reply.expiresAt)||reply.expiresAt<=Date.now())throw new Error('Invalid account service reply');
       await this.store({...reply,service:this.client.endpoint});return this.status();
+    });
+  }
+  async updateProfile(input:{username:string;currentPassword:string;newPassword?:string}) {
+    return this.exclusive(async()=>{
+      if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!['username','currentPassword','newPassword'].includes(k)))throw new Error('Invalid account profile');
+      const username=accountUsername(input.username),currentPassword=accountPassword(input.currentPassword);
+      const newPassword=input.newPassword===undefined?undefined:accountPassword(input.newPassword);
+      const s=await this.load();if(!s||!this.client)throw new Error('Sign in first');
+      const payload={token:s.token,username,currentPassword,...(newPassword===undefined?{}:{newPassword})};
+      let reply:any;
+      try {reply=await this.client.call('update-profile',payload);}
+      catch(e) {
+        const rejected=new Set(['Unsupported account operation','Invalid account request','Sign in again','Current password is incorrect','That username is taken','Account changed; sign in again','Service is busy; try again shortly','Too many requests; try again in a minute']);
+        if(e instanceof AccountOperationError&&rejected.has(e.message))throw e;
+        // Transport/protocol failures and unexpected service errors do not prove no commit occurred.
+        throw new Error('Your account may have changed, but the reply could not be verified. Do not save again; sign in with the requested username and password to check.');
+      }
+      try {
+        if(Object.keys(reply).join(',')!=='username'||reply.username!==username)throw new Error('Invalid account service reply');
+        const me=await this.client.call('me',{token:s.token});
+        if(Object.keys(me).join(',')!=='username'||me.username!==username)throw new Error('Account profile could not be verified');
+        await this.store({...s,username});
+      } catch {
+        throw new Error('Your account may have changed, but verification or saving the local session failed. Do not save again; sign in with the requested username and password to check.');
+      }
+      return {configured:true,signedIn:true,online:true,username,detail:'Signed in · '+this.client.endpoint.host};
     });
   }
   private async call(op:string,p:Record<string,unknown>={}){const s=await this.load();if(!s||!this.client)throw new Error('Sign in first');return this.client.call(op,{token:s.token,...p});}
@@ -65,7 +94,8 @@ export class AccountIntegration {
   private validateRequest(r:any){
     if(!r||typeof r.id!=='string'||!/^[a-f0-9-]{36}$/.test(r.id)||accountUsername(r.from)!==r.from||typeof r.code!=='string'||r.code.length>1500||!Number.isSafeInteger(r.expiresAt))throw new Error('Invalid friend request reply');
     const invite=decodeInvite(r.code);if(invite.expiresAt*1000!==r.expiresAt)throw new Error('Invalid friend request expiry');
-    return {id:r.id,from:r.from,group:invite.relayName,expiresAt:r.expiresAt};
+    return {id:r.id,from:r.from,group:invite.relayName,expiresAt:r.expiresAt,
+      controlEndpoint:{host:invite.host,port:invite.port,privateRoute:isPrivateEndpointHost(invite.host),reachability:'unverified' as const}};
   }
   async requests(){const reply=await this.call('inbox');if(!Array.isArray(reply.requests)||reply.requests.length>100)throw new Error('Invalid invitation inbox');return reply.requests.map((r:any)=>this.validateRequest(r));}
   async accept(id:string){return this.exclusive(async()=>{

@@ -123,7 +123,7 @@ test('optional friends stage uses the username account flow; code controls stay 
   assert.equal(await page.locator('#setup-friends #friends-controls').count(), 0, 'the old invitation-code controls are not moved into the wizard');
   assert.equal(await page.locator('#setup-friends #join-friend-form').count(), 0);
   assert.equal(await page.locator('#setup-friends #friend-code').count(), 0, 'no code entry in the wizard');
-  assert.equal(await page.locator('#peers-panel #friends-controls').count(), 1, 'old controls remain on the Friends page');
+  assert.equal(await page.locator('#friends-panel #friends-controls').count(), 1, 'old controls remain on the Friends page');
   await page.locator('#setup-skip').click(); await settled(page);
   assert.equal(await page.locator('#setup-gateway').isVisible(), true);
   await page.locator('#setup-skip').click(); await settled(page);
@@ -132,8 +132,8 @@ test('optional friends stage uses the username account flow; code controls stay 
   assert.equal(saved.completed, false, 'no server is not completion');
   assert.doesNotMatch(JSON.stringify(saved), /SEEDHOST-private-secret|friend-code|invitation/);
   await page.locator('#setup-next').click(); await settled(page);
-  assert.equal(await page.locator('#peers-panel #join-friend-form').count(), 1, 'existing friends inspector stays usable');
-  assert.equal(await page.locator('#peers-panel #account-card').count(), 1, 'account card is restored to the Friends page');
+  assert.equal(await page.locator('#friends-panel #join-friend-form').count(), 1, 'existing friends inspector stays usable');
+  assert.equal(await page.locator('#friends-panel #account-card').count(), 1, 'account card is restored to the Friends page');
   assert.equal(await page.locator('#setup-friends #account-card').count(), 0);
 });
 

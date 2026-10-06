@@ -28,6 +28,116 @@ const settle = () => page.waitForFunction(() => document.querySelector('#activit
 async function set(value) { await page.evaluate(v => window.dashboardFixture.set(v), value); await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange'))); await settle(); }
 
 // Each feature below is added and run RED before its implementation.
+test('global Friends and Settings sit below Home, outside server-only navigation', async () => {
+  await reset();
+  assert.equal(await page.locator('#friends-tab').count(), 1, 'global Friends destination exists');
+  assert.deepEqual(await page.locator('.nav-tabs > button').evaluateAll(nodes => nodes.filter(n => !n.hidden).map(n => n.id)), ['home-tab', 'friends-tab', 'settings-tab']);
+  await click('#friends-tab');
+  assert.equal(await page.locator('#friends-panel #account-card').isVisible(), true);
+  assert.equal(await page.locator('#friends-panel #friends-controls').count(), 1);
+  assert.equal(await page.locator('#server-workspace-header').isVisible(), false);
+  await page.locator('#friends-tab').press('ArrowDown');
+  assert.equal(await page.locator('#settings-panel').isVisible(), true);
+  await page.locator('#settings-tab').press('Home');
+  await click('#server-list [data-action="open"][data-id="alpha"]');
+  assert.equal(await page.locator('#settings-tab').isVisible(), false, 'app settings do not appear inside server workspace');
+  assert.equal(await page.locator('#friends-tab').isVisible(), false);
+  assert.equal(await page.locator('#server-settings-tab').isVisible(), true);
+  assert.equal(await page.locator('#peers-tab .nav-text').textContent(), 'Multi-host');
+  assert.equal(await page.locator('#peers-panel #account-card').count(), 0);
+  await click('#home-tab');
+  await click('#friends-tab');
+  assert.equal(await page.locator('#friends-panel').isVisible(), true);
+  await page.evaluate(() => window.dashboardFixture.set({ state: { ...window.dashboardFixture.read().state, server: null, servers: [] } }));
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await settle();
+  assert.equal(await page.locator('#friends-panel').isVisible(), true, 'Friends also works without a server');
+  await click('#settings-tab');
+  assert.equal(await page.locator('#settings-panel').isVisible(), true);
+});
+test('bottom-left Profile works signed out and preserves the current page', async () => {
+  await reset();
+  assert.equal(await page.locator('.sidebar-footer #profile-open').count(), 1, 'Profile button stays in sidebar footer');
+  await click('#profile-open');
+  assert.equal(await page.locator('#profile-dialog').isVisible(), true);
+  assert.equal(await page.locator('#account-profile-form').isVisible(), false);
+  assert.equal(await page.locator('#profile-signin').isDisabled(), true, 'unconfigured directory cannot sign in');
+  await page.locator('#profile-dialog').press('Escape');
+  assert.equal(await page.locator('#home-panel').isVisible(), true);
+});
+
+test('Profile verifies account update readback, clears password inputs, and reports service refusals', async () => {
+  await reset();
+  const status = { configured: true, signedIn: true, online: true, username: 'fixture_user', detail: 'Signed in' };
+  await page.evaluate(s => { window.dashboardFixture.set({ accountStatus: s }); window.dispatchEvent(new Event('seedhost-account-changed')); }, status);
+  await page.waitForFunction(() => document.querySelector('#account-heading').textContent === '@fixture_user');
+  await click('#profile-open');
+  assert.equal(await page.locator('#profile-username').inputValue(), 'fixture_user');
+  await page.locator('#profile-username').fill('updated_user');
+  await page.locator('#profile-current-password').fill('test-only-current');
+  await page.locator('#profile-new-password').fill('test-only-new');
+  await page.locator('#profile-confirm-password').fill('mismatch');
+  await click('#profile-save');
+  assert.match(await page.locator('#account-profile-feedback').textContent(), /match/i);
+  assert.equal((await fixture()).calls.some(c => c.method === 'accountUpdateProfile'), false);
+  await page.locator('#profile-confirm-password').fill('test-only-new');
+  await click('#profile-save');
+  await page.waitForFunction(() => document.querySelector('#account-profile-feedback').textContent.includes('Saved'));
+  assert.equal(await page.locator('#profile-current-password').inputValue(), '');
+  assert.equal(await page.locator('#profile-new-password').inputValue(), '');
+  assert.equal(await page.locator('#profile-confirm-password').inputValue(), '');
+  assert.equal(await page.locator('#account-heading').textContent(), '@updated_user');
+  await page.evaluate(() => window.dashboardFixture.set({ fail: 'accountUpdateProfile' }));
+  await page.locator('#profile-current-password').fill('test-only-current');
+  await page.locator('#profile-username').fill('refused_user');
+  await click('#profile-save');
+  await page.waitForFunction(() => document.querySelector('#account-profile-feedback').textContent.includes('TEST failure'));
+  assert.equal(await page.locator('#profile-current-password').inputValue(), '');
+  assert.equal(await page.locator('#account-heading').textContent(), '@updated_user');
+  await page.locator('#profile-new-password').fill('discarded-synthetic');
+  await page.locator('#profile-dialog').press('Escape');
+  assert.equal(await page.locator('#profile-new-password').inputValue(), '');
+});
+
+test('cached signed-in and offline accounts retain a visible reauthentication path', async () => {
+  await reset();
+  await page.evaluate(() => { window.dashboardFixture.set({accountStatus:{configured:true,signedIn:true,online:false,username:'cached_user',detail:'Account service unavailable'}});window.dispatchEvent(new Event('seedhost-account-changed')); });
+  await page.waitForFunction(() => document.querySelector('#account-heading').textContent === '@cached_user');
+  await click('#profile-open');
+  assert.equal(await page.locator('#profile-signin').isVisible(),true,'offline cached session cannot trap sign-in recovery');
+  assert.equal(await page.locator('#profile-signin').isEnabled(),true);
+  await click('#profile-signin');
+  assert.equal(await page.locator('#account-dialog').isVisible(),true);
+  assert.equal(await page.locator('#profile-dialog').isVisible(),false);
+  assert.equal(await page.locator('#account-submit').textContent(),'Sign in');
+});
+
+test('Profile rejects a mismatched account response rather than reporting saved', async () => {
+  await reset();
+  await page.evaluate(() => { window.dashboardFixture.set({accountStatus:{configured:true,signedIn:true,online:true,username:'fixture_user',detail:'Signed in'},profileResponseMismatch:true}); window.dispatchEvent(new Event('seedhost-account-changed')); });
+  await page.waitForFunction(() => document.querySelector('#account-heading').textContent === '@fixture_user');
+  await click('#profile-open');
+  await page.locator('#profile-username').fill('not_confirmed');
+  await page.locator('#profile-current-password').fill('test-only-current');
+  await click('#profile-save');
+  await page.waitForFunction(() => document.querySelector('#account-profile-feedback').textContent.includes('did not confirm'));
+  assert.equal(await page.locator('#account-heading').textContent(), '@fixture_user');
+  assert.equal(await page.locator('#profile-current-password').inputValue(), '');
+});
+
+test('username invitations explain private control routes and stale-endpoint recovery before accepting', async () => {
+  await reset();
+  await page.evaluate(() => { window.dashboardFixture.set({accountStatus:{configured:true,signedIn:true,online:true,username:'fixture_user',detail:'Signed in'},accountRequests:[{id:'test-request',from:'owner',group:'Test group',controlEndpoint:{host:'192.168.1.50',port:8443,privateRoute:true,reachability:'unverified'}}]}); window.dispatchEvent(new Event('seedhost-account-changed')); });
+  await page.waitForFunction(() => document.querySelector('#account-inbox').textContent.includes('Test group'));
+  await click('#friends-tab');
+  const text=await page.locator('#account-inbox').textContent();
+  assert.match(text,/192\.168\.1\.50:8443/);
+  assert.match(text,/private.*same network|same network.*private/i);
+  assert.match(text,/Minecraft.*address.*not|not.*Minecraft.*address/i);
+  assert.match(text,/unverified/i);
+  assert.match(text,/restart.*decline.*new invitation/is);
+});
+
 test('Home begins with selectable server cards from the library and explicit one-running limit', async () => {
   await reset(); console.log('TEST-ONLY renderer: Home/library selection');
   assert.equal(await page.locator('#home-panel').count(), 1, 'Home exists');
@@ -131,8 +241,8 @@ test('every per-server section lays out at the minimum window size without clipp
     }
     return problems;
   });
-  for (const name of ['home', 'operate', 'console', 'players', 'backups', 'scheduler', 'peers', 'mods', 'tunnels', 'server-settings', 'server-files']) {
-    if (name !== 'home' && !await page.locator('#' + name + '-tab').isVisible()) await click('#server-list [data-action="open"][data-id="alpha"]');
+  for (const name of ['home', 'friends', 'settings', 'operate', 'console', 'players', 'backups', 'scheduler', 'peers', 'mods', 'tunnels', 'server-settings', 'server-files']) {
+    if (name !== 'home' && !await page.locator('#' + name + '-tab').isVisible()) { await click('#home-tab'); await click('#server-list [data-action="open"][data-id="alpha"]'); }
     await click('#' + name + '-tab');
     await page.evaluate(() => Promise.all(document.getAnimations().filter(a => a.effect?.getComputedTiming().iterations !== Infinity).map(a => a.finished.catch(() => {}))));
     assert.deepEqual(await audit(), [], 'layout problems in ' + name);
@@ -213,9 +323,13 @@ test('Multi-host reuses group/relay controls, explicitly distinguishes app-wide 
   assert.equal(await page.locator('#peers-tab .nav-text').textContent(), 'Multi-host'); await click('#peers-tab');
   assert.match(await page.locator('#multi-host-scope').textContent(), /app-wide.*group/i);
   assert.equal(await page.locator('#peers-panel #relay-card').count(), 1);
-  assert.equal(await page.locator('#peers-panel #friends-controls').count(), 1);
-  assert.equal(await page.locator('#peers-panel #account-card').count(), 1);
+  assert.equal(await page.locator('#peers-panel #friends-controls').count(), 0);
+  assert.equal(await page.locator('#peers-panel #account-card').count(), 0);
+  await click('#home-tab'); await click('#friends-tab');
+  assert.equal(await page.locator('#friends-panel #friends-controls').count(), 1);
+  assert.equal(await page.locator('#friends-panel #account-card').count(), 1);
   await click('#friends-intent-join'); assert.equal(await page.locator('#friend-code').isVisible(), true);
+  await click('#home-tab'); await click('#server-list [data-action="open"][data-id="alpha"]'); await click('#peers-tab');
   const f = await fixture(); f.state.relay = { name: 'Shared relay', fingerprint: 'c'.repeat(64), parkOnStop: false }; f.state.peers = [{ name: 'Shared relay', fingerprint: 'c'.repeat(64), host: '127.0.0.1', port: 1234 }];
   await set({ state: f.state });
   assert.equal(await page.locator('#park-relay').isEnabled(), true);

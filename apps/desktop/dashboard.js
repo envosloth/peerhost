@@ -211,6 +211,11 @@
 
   const modsBody = addPage('mods', 'Mods', 'Modrinth & client pack', 'i-puzzle'); modsBody.append($('mods-details'));
 
+  const friendsBody = addPage('friends', 'Friends', 'People & invitations', 'i-friends');
+  friendsBody.append($('account-card'), $('friends-home'), $('friends-controls'));
+  $('friends-tab').append($('nav-friend-count'));
+  friendsBody.append(el('p', 'alpha-note', 'Hosting invitations share world-file access. Minecraft players only need the player address. Seed Hosting never changes your router or firewall.'));
+
   const multiBody = $('peers-panel').querySelector('.page-inner');
   $('peers-tab').querySelector('.nav-text').textContent = 'Multi-host'; $('peers-tab').querySelector('.nav-sub').textContent = 'Group & world handoff';
   multiBody.querySelector('h1').textContent = 'Multi-host';
@@ -325,11 +330,12 @@
   }
   dashboardRefresh.addEventListener('click', () => void refreshDashboard(true));
   function syncRoute() {
-    const serverPage = !['home', 'settings'].includes(currentPage);
+    const serverPage = !['home', 'friends', 'settings'].includes(currentPage);
     // Remembered backend selection is not an opened workspace. Home stays a library;
     // its stop-first control remains available if a server is running.
     const workspaceOpen = serverPage && Boolean(state?.server);
     for (const name of ['operate', 'console', 'players', 'backups', 'scheduler', 'peers', 'mods', 'tunnels', 'server-settings', 'server-files']) $(name + '-tab').hidden = !workspaceOpen;
+    for (const name of ['friends', 'settings']) $(name + '-tab').hidden = workspaceOpen;
     serverHeader.hidden = !workspaceOpen;
     dashboardRefresh.disabled = blocked || !selectedId();
     renderPlayers(); renderSchedules(); renderProperties(); renderFiles();
@@ -339,7 +345,7 @@
 
   function selectPage(name, focus = false) {
     if (!pages.includes(name)) return;
-    if (!['home', 'settings', 'peers'].includes(name) && !state?.server) return;
+    if (!['home', 'friends', 'settings'].includes(name) && !state?.server) return;
     currentPage = name;
     for (const p of pages) {
       $(p + '-panel').hidden = p !== name;
@@ -350,7 +356,7 @@
     if (focus) $(name + '-tab').focus();
   }
   // One fixed information architecture: the library first, then the selected server's sections.
-  const TAB_ORDER = ['home', 'operate', 'console', 'players', 'backups', 'scheduler', 'peers', 'mods', 'tunnels', 'server-settings', 'server-files', 'settings'];
+  const TAB_ORDER = ['home', 'friends', 'settings', 'operate', 'console', 'players', 'backups', 'scheduler', 'peers', 'mods', 'tunnels', 'server-settings', 'server-files'];
   document.querySelector('.nav-tabs').append(...TAB_ORDER.map(name => $(name + '-tab')));
   document.querySelector('main').append(...TAB_ORDER.map(name => $(name + '-panel')));
 
@@ -361,7 +367,7 @@
       $(p + '-tab').addEventListener('keydown', event => {
         const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[event.key];
         if (!step && !['Home', 'End'].includes(event.key)) return;
-        event.preventDefault(); const names = pages.filter(n => !$(n + '-tab').hidden && !$(n + '-tab').disabled);
+        event.preventDefault(); const names = TAB_ORDER.filter(n => !$(n + '-tab').hidden && !$(n + '-tab').disabled);
         const index = event.key === 'Home' ? 0 : event.key === 'End' ? names.length - 1 : (names.indexOf(p) + step + names.length) % names.length;
         selectPage(names[index], true);
       });
@@ -405,7 +411,7 @@
       dashboardRequest++; dashboardInFlight = false; dashboard = null; dashboardId = selectedId(); requestedAt = 0; propertiesDirty.clear(); resetFiles(); resetSchedule(); $('schedule-feedback').textContent = ''; $('player-feedback').textContent = ''; renderDashboard();
     }
     syncRoute();
-    if (!['home', 'settings'].includes(currentPage) && !blocked && !dashboardInFlight && Date.now() - requestedAt >= 1000) void refreshDashboard();
+    if (!['home', 'friends', 'settings'].includes(currentPage) && !blocked && !dashboardInFlight && Date.now() - requestedAt >= 1000) void refreshDashboard();
     renderConsole();
   }
   window.seedDashboard = Object.freeze({ bind, update, renderServers, selectPage, logsFor });

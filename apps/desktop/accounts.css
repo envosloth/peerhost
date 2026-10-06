@@ -6,7 +6,10 @@
 .account-intro { color:var(--muted); margin-bottom:24px; }
 .account-dialog label { display:block; margin:16px 0 6px; }
 .account-dialog input { width:100%; }
-.account-dialog #account-submit { width:100%; margin-top:22px; }
+.account-dialog #account-submit, .account-dialog #profile-save { width:100%; margin-top:22px; }
+.profile-button { width:100%; justify-content:flex-start; min-width:0; }
+.profile-button #profile-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+.account-request p.field-help { font-weight:400; margin-top:8px; }
 .account-footer { display:grid; gap:12px; justify-items:start; margin-top:18px; }
 .account-invite-form { margin:20px 0; }
 .account-invite-form > label { display:block; margin-bottom:8px; font-weight:600; }

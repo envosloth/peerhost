@@ -199,8 +199,11 @@ test('splash, borderless/fullscreen toggle, page tabs, appearance, minimize, clo
     await page.locator('#start-listener').click();
     await page.waitForFunction(() => document.querySelector('#listener-status').textContent === 'LISTENING');
     await page.waitForFunction(() => document.querySelector('#listener-led').classList.contains('led-info'), undefined, { timeout: 5000 });
+    await page.locator('#home-tab').click();
     await page.locator('#settings-tab').click();
     await page.locator('#settings-tab').focus(); await page.keyboard.press('ArrowUp');
+    assert.equal(await page.evaluate(() => document.activeElement?.id), 'friends-tab', 'arrow keys follow visible Home/Friends/Settings order');
+    await page.keyboard.press('ArrowUp');
     assert.equal(await page.evaluate(() => document.activeElement?.id), 'home-tab', 'arrow keys skip every hidden server tab on app settings');
     assert.equal(await page.locator('#home-panel').isHidden(), false);
 

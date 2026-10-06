@@ -12,7 +12,7 @@ import { randomBytes } from 'node:crypto';
 import { AccountService } from '../dist/src/core/accounts.js';
 import { RelayNode } from '../dist/src/core/relay.js';
 import { createIdentity } from '../dist/src/core/peer-transport.js';
-import { dismissInitialSetup } from './desktop-test-setup.mjs';
+import { dismissInitialSetup, openSelectedServer } from './desktop-test-setup.mjs';
 
 const project = fileURLToPath(new URL('../', import.meta.url));
 const packaged = process.argv.find(value => value.startsWith('--packaged='))?.slice('--packaged='.length);
@@ -43,7 +43,7 @@ async function enterPeers(page, app) {
   await assertLibraryNavigation(page);
   await click(page, '#server-list .is-current button[data-action="open"]');
   for (const name of serverTabs) assert.equal(await page.locator('#' + name + '-tab').isVisible(), true);
-  await click(page, '#peers-tab');
+  await click(page, '#home-tab'); await click(page, '#friends-tab');
   if (!workspaceBaselines.has(page)) workspaceBaselines.set(page, await state(page));
 }
 function assertWorkspaceUnchanged(page, saved) {
@@ -112,7 +112,7 @@ async function openFriendsGuide(page) {
   await click(page, '#nav-setup'); await click(page, '[data-setup-step="friends"]'); await idle(page);
   assert.equal(await page.locator('#setup-friends-slot #account-card').count(), 1);
   assert.equal(await page.locator('#setup-friends-slot #friends-controls').count(), 0);
-  assert.equal(await page.locator('#peers-panel #friends-controls').count(), 1);
+  assert.equal(await page.locator('#friends-panel #friends-controls').count(), 1);
 }
 async function usernamePair(prefix) {
   const owner = await launch(prefix + '-owner', true), recipient = await launch(prefix + '-recipient', true);
@@ -160,7 +160,7 @@ async function assertGuideUsernameStage(page) {
   assert.equal(await page.locator('#setup-dialog').evaluate(dialog => dialog.open), true, 'guide stays open');
   assert.equal(await page.locator('#setup-friends-slot #account-card').count(), 1, 'guide hosts the username account card');
   assert.equal(await page.locator('#setup-friends-slot #friends-controls').count(), 0, 'code controls are never moved into the guide');
-  assert.equal(await page.locator('#peers-panel #friends-controls').count(), 1, 'codes stay on the Friends page');
+  assert.equal(await page.locator('#friends-panel #friends-controls').count(), 1, 'codes stay on the Friends page');
 }
 async function releaseMutation(app, page) {
   console.log('TEST-ONLY IPC scheduling: release original completed method result.');
@@ -195,8 +195,8 @@ const cases = {
     await assertGuideUsernameStage(page);
     await shot(page, 'pending-send-resolved');
     await click(page, '#setup-save-close'); await wait(page, () => !document.querySelector('#setup-dialog').open);
-    assert.equal(await page.locator('#peers-panel #account-card').count(), 1, 'closing restores the card to the Friends page');
-    assert.match(await page.locator('#peers-panel #account-friend-feedback').textContent(), /Invitation sent to @send_recipient/);
+    assert.equal(await page.locator('#friends-panel #account-card').count(), 1, 'closing restores the card to the Friends page');
+    assert.match(await page.locator('#friends-panel #account-friend-feedback').textContent(), /Invitation sent to @send_recipient/);
   },
   async ['pending-accept']() {
     console.log('STEP pending username accept: real TLS inbox and enrollment complete first; the pending row locks accept/decline and keeps its context, and nothing downloads or starts.');
@@ -225,7 +225,7 @@ const cases = {
     assert.equal(await page.locator('#setup-dialog').evaluate(d => d.open), true);
     await shot(page, 'pending-accept-resolved');
     await click(page, '#setup-save-close'); await wait(page, () => !document.querySelector('#setup-dialog').open);
-    assert.equal(await page.locator('#peers-panel #account-card').count(), 1);
+    assert.equal(await page.locator('#friends-panel #account-card').count(), 1);
   },
   async ['pending-signin']() {
     console.log('STEP pending username sign-in: real TLS registration; while the account dialog works, its exits pause, Escape is refused, and the typed username stays.');
@@ -331,7 +331,7 @@ const cases = {
       await click(page, '#settings-tab'); await assertLibraryNavigation(page);
       await click(page, `input[name="theme"][value="${theme}"]`);
       await enterPeers(page, app);
-      const overflow = await page.evaluate(() => ['#friends-controls', '#peers-panel', '.friends-configure'].filter(selector => { const el = document.querySelector(selector); return el.scrollWidth > el.clientWidth + 1; }));
+      const overflow = await page.evaluate(() => ['#friends-controls', '#friends-panel', '.friends-configure'].filter(selector => { const el = document.querySelector(selector); return el.scrollWidth > el.clientWidth + 1; }));
       assert.deepEqual(overflow, [], 'no clipping at ' + width + ' ' + theme);
       await shot(page, `friends-${width}-${theme}`);
       await check(page, invite.code); await wait(page, () => !document.querySelector('#invitation-preview').hidden);
@@ -342,7 +342,7 @@ const cases = {
       await click(page, '#nav-setup'); await click(page, '[data-setup-step="friends"]'); await idle(page);
       assert.equal(await page.locator('#setup-friends-slot #account-card').count(), 1);
       assert.equal(await page.locator('#setup-friends-slot #friends-controls').count(), 0);
-      assert.equal(await page.locator('#peers-panel #friends-controls').count(), 1);
+      assert.equal(await page.locator('#friends-panel #friends-controls').count(), 1);
       const wizardOverflow = await page.evaluate(() => ['#setup-dialog', '.setup-body', '#setup-friends-slot'].filter(selector => { const el = document.querySelector(selector); return el.scrollWidth > el.clientWidth + 1; }));
       assert.deepEqual(wizardOverflow, [], 'wizard controls fit at ' + width + ' ' + theme);
       await page.locator('#account-card').scrollIntoViewIfNeeded();
@@ -621,8 +621,8 @@ const cases = {
     await page.reload(); await idle(page);
     await click(page, '#server-list .is-current button[data-action="open"]');
     try {
-      await click(page, '#start-server'); await wait(page, () => document.querySelector('#server-status').textContent === 'Hosting');
-      await click(page, '#peers-tab'); await check(page, invite.code); await wait(page, () => !document.querySelector('#invitation-preview').hidden);
+      await openSelectedServer(page); await click(page, '#start-server'); await wait(page, () => document.querySelector('#server-status').textContent === 'Hosting');
+      await click(page, '#home-tab'); await click(page, '#friends-tab'); await check(page, invite.code); await wait(page, () => !document.querySelector('#invitation-preview').hidden);
       assert.equal(await page.locator('#join-friend').isDisabled(), true, 'server must be stopped before joining');
       assert.match(await page.locator('#join-friend-feedback').textContent(), /Stop.*server.*join/i);
       assert.equal(node.trusted.length, 0); await shot(page, 'running-fixture-join-blocked');
@@ -664,7 +664,7 @@ const cases = {
     await click(page, '#setup-choose-join');
     await wait(page, () => document.querySelector('#account-card').parentElement.id === 'setup-friends-slot');
     assert.equal(await page.locator('#setup-friends-slot #account-open').isVisible(), true);
-    assert.equal(await page.locator('#peers-panel #friends-controls').count(), 1, 'legacy code controls stay on the Friends page');
+    assert.equal(await page.locator('#friends-panel #friends-controls').count(), 1, 'legacy code controls stay on the Friends page');
     assert.equal(await page.locator('#setup-friends-slot #friends-controls').count(), 0, 'no code controls inside the guide');
     await shot(page, 'wizard-username-join-intent');
     await click(page, '#setup-save-close'); await wait(page, () => !document.querySelector('#setup-dialog').open);

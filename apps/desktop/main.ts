@@ -104,6 +104,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         }
         case 'accountStatus':return accounts.status();
         case 'accountRequests':return accounts.requests();
+        case 'accountUpdateProfile':return accounts.updateProfile(p as {username:string;currentPassword:string;newPassword?:string});
         case 'accountRegister':return accounts.authenticate('register',p as any);
         case 'accountLogin':return accounts.authenticate('login',p as any);
         case 'accountLogout':return accounts.logout();

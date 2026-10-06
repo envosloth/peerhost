@@ -34,7 +34,20 @@ All testing uses isolated profiles. No edits to live worlds/accounts; no remote 
 - Package and exercise the actual deliverable; do not mark deployed/network acceptance as verified without evidence.
 - Preserve the original issue prose, updating checkboxes only for verified completion with an accompanying evidence report.
 
-## Verified local evidence (external acceptance still pending)
+## Navigation and Profile follow-up — verified local build
+
+The follow-up restores global **Home → Friends → Settings**. Opening a server hides global Friends/app Settings and retains **Server settings**; Profile remains in the bottom-left sidebar in both contexts. Profile edits require the current password and preserve device identity, world ownership, salted scrypt, session binding and abuse limits. Other devices follow authenticated username changes; configured accounts always retain a Sign in again recovery path.
+
+- Review found a second-device rename/offline recovery defect; a real two-device integration regression reproduced it RED and passed GREEN after the correction. An offline renderer regression likewise reproduced hidden recovery controls before the fix. Raw empty/oversized/invalid-UTF-8 TLS acknowledgments injected after a real mutation committed now report uncertainty without replaying the mutation.
+- Six focused account/security suites: **41 passed, 0 failed**. Independent corrective review `deleg_c7e2eb6a` passed with no blocking findings. Non-blocking follow-ups: guard stale renderer refresh completion; refresh the group-member display name from authenticated directory state after a rename on another device.
+- `npm run package:windows` exited **0**: **668 passed, 0 failed, 1 opt-in skip** (669 tests). `seedhost-profile-package-reviewed.log`. Earlier renderer/full-suite runs failed with obsolete navigation expectations; those failures are historical, not silently treated as passing.
+- Exact unsigned Electron 44.5.1 package: `release/alpha-QdX0wx/SeedHost-win32-x64/`. Exact-package `tools/desktop-profile-check.mjs` passed all five stages and a 90-second visible hold: signup, real privileged profile mutation, incorrect-password refusal, server/global settings visibility, new-credential login, OS-encrypted session restoration after restart, responsive layout and unique DOM IDs. Evidence: `seedhost-profile-packaged-verified-green.log`, scratch `seedhost-profile-desktop-frXlCS`. The first launch command incorrectly supplied a directory instead of the executable and failed; corrected executable-path run passed.
+- The packaged app's nine changed renderer/backend/IPC files were SHA-256 compared to the verified source/emitted build. The Electron executable has the same runtime hash as the prior package; this alone does **not** establish updated app content.
+- Download ZIP: `release/SeedHost-0.5.0-alpha-profile-win32-x64.zip`, **163,895,103 bytes**, SHA-256 `8146e114a61c40fed5ec1ac82910eb292ecf2bc3c6373f904a4f5f5e50eafa95`. All **1,283** archive files were extracted and individually hash-compared with the tested package.
+- Desktop `SeedHost.lnk` now targets this exact package and retains the separate `SeedHost-LocalBuild-Profile` argument. Readback verified target/arguments/working directory; installed shortcut unchanged, previous local-build shortcut preserved. No live profile/world/account contents were edited or restored; no installed process was closed.
+- This verifies the requested local UI/Profile update, not issue 1's deferred two-network invitation acceptance. External directory deployment, WAN/gameplay acceptance and the user's hands-on acceptance remain unverified. Nothing was pushed.
+
+## Verified prior local evidence (external acceptance still pending)
 
 - Current source real official-Minecraft dashboard: eight stages, exit 0; `seedhost-current-real-dashboard.log`, scratch `seedhost-real-dashboard-E1TqNt/result.json`. Actual properties/file writes, schedules/backup revisions, process metrics/status, console mutation, and guarded switching. Loopback only; not authenticated gameplay or WAN proof.
 - Current source real Electron setup guide: thirteen stages, exit 0, 90-second visible hold; `seedhost-current-setup-held.log`, scratch `seedhost-setup-issues-ui-2Pvdei/result.json`.

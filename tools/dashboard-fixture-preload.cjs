@@ -20,6 +20,13 @@ contextBridge.exposeInMainWorld('seedhost', { call: async (method, payload) => {
   if (fixture.cancelMethod === method) return null;
   if (fixture.fail === method) throw new Error('TEST failure for ' + method);
   if (method.includes('Window') || method.startsWith('window')) return ipcRenderer.invoke('fixture:window', method);
+  if (method === 'accountStatus') return clone(fixture.accountStatus ?? {configured:false,signedIn:false,online:false,username:null,detail:'No directory configured'});
+  if (method === 'accountRequests') return clone(fixture.accountRequests ?? []);
+  if (method === 'accountUpdateProfile') {
+    if (fixture.profileResponseMismatch) return clone(fixture.accountStatus);
+    fixture.accountStatus = { ...fixture.accountStatus, username: payload.username };
+    return clone(fixture.accountStatus);
+  }
   if (method === 'getState') return clone(fixture.state);
   if (method === 'selectServer') {
     fixture.state.server = fixture.serverMap[payload.id]; fixture.state.logs = [];

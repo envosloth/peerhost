@@ -10,7 +10,7 @@ import { validateSimpleProfileInput } from './java-arguments.js';
 const NO_PAYLOAD=new Set(['accountStartGroup','accountStatus','accountRequests','accountLogout','playitStatus','playitImport','playitCheck','playitCreate','playitDisconnect','playitSetup','getState','importServer','createSnapshot','startServer','stopServer','startPeerListener','cleanUp','parkAtRelay','claimFromRelay','checkRelay','exportClientPack','createInvite','listFriends','listSnapshots','listServerVersions','discoverJava','pickJava','checkGameGateway','alwaysOnStatus','alwaysOnDisable','alwaysOnNewCode','publicAddressStatus','publicAddressEnable','publicAddressDisable','publicAddressOpenApproval',
   // Window chrome acts only on the trusted app window.
   'getWindowState','windowMinimize','windowToggleFullscreen','windowClose','quitApp']);
-const METHODS=new Set([...DASHBOARD_METHODS,...NO_PAYLOAD,'accountRegister','accountLogin','accountSend','accountAccept','accountDecline','removeFriend','saveProfile','sendCommand','saveSettings','addPeer','sendSnapshot','handoff','recoverStopped','saveRelay','addMods','removeMod','searchMods','installMod','saveModTarget','openModPage','previewInvite','joinWithInvite','saveOnboarding','restoreSnapshot','createServer','configureSimpleProfile','saveGameGateway','openSetupLink','selectServer','deleteServer','alwaysOnEnable','pairAlwaysOn','setupFabricMods','searchSetupMods']);
+const METHODS=new Set([...DASHBOARD_METHODS,...NO_PAYLOAD,'accountUpdateProfile','accountRegister','accountLogin','accountSend','accountAccept','accountDecline','removeFriend','saveProfile','sendCommand','saveSettings','addPeer','sendSnapshot','handoff','recoverStopped','saveRelay','addMods','removeMod','searchMods','installMod','saveModTarget','openModPage','previewInvite','joinWithInvite','saveOnboarding','restoreSnapshot','createServer','configureSimpleProfile','saveGameGateway','openSetupLink','selectServer','deleteServer','alwaysOnEnable','pairAlwaysOn','setupFabricMods','searchSetupMods']);
 function boundedString(v:unknown,max:number):v is string{return typeof v==='string'&&v.length<=max&&!v.includes('\0');}
 function fingerprint(v:unknown):v is string{return typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);}
 export interface TrustedIpcContext {senderId:number;expectedSenderId:number;isMainFrame:boolean}
@@ -34,6 +34,9 @@ export function validateCall(method:unknown,payload:unknown,senderUrl:string,exp
     case 'accountRegister':case 'accountLogin':
       if(Object.keys(p).sort().join(',')!=='password,username')throw new Error('Invalid account request');
       return {username:accountUsername(p.username),password:accountPassword(p.password)};
+    case 'accountUpdateProfile':
+      if(Object.keys(p).sort().join(',')!==('newPassword' in p?'currentPassword,newPassword,username':'currentPassword,username'))throw new Error('Invalid account profile request');
+      return {username:accountUsername(p.username),currentPassword:accountPassword(p.currentPassword),...('newPassword' in p?{newPassword:accountPassword(p.newPassword)}:{})};
     case 'accountSend':
       if(Object.keys(p).join(',')!=='username')throw new Error('Invalid username');
       return {username:accountUsername(p.username)};

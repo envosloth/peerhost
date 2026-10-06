@@ -32,7 +32,10 @@ export async function reveal(page, selector) {
   });
   for (const id of tabs) {
     await page.bringToFront();
-    if (await page.locator('#' + id).isHidden() && !['home-tab', 'settings-tab'].includes(id)) await openSelectedServer(page);
+    if (await page.locator('#' + id).isHidden()) {
+      if (['home-tab', 'friends-tab', 'settings-tab'].includes(id)) await page.locator('#home-tab').click();
+      else await openSelectedServer(page);
+    }
     await page.locator('#' + id).click();
   }
 }

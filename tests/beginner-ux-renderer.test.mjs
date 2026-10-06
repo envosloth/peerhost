@@ -165,8 +165,8 @@ test('joining a group while this PC already has the world does not say to receiv
       return call(method, payload);
     };
   }, relay);
-  await openSelectedServer(page);
-  await page.locator('#peers-tab').click();
+  await page.locator('#home-tab').click();
+  await page.locator('#friends-tab').click();
   if (await page.locator('#friends-intent-join').isVisible()) await page.locator('#friends-intent-join').click();
   await page.locator('#friend-code').fill('SEEDHOST-' + 'A'.repeat(40));
   await page.locator('#friend-name').fill('Angel');

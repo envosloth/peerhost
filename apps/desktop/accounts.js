@@ -4,7 +4,23 @@
   let status=null, working=false, checking=false, mode='register', prompted=false, hasGroup=false;
   const changed=()=>window.dispatchEvent(new Event('seedhost-account-changed'));
   const message=e=>String(e?.message||e).replace(/^Error invoking remote method '[^']+': Error: /,'');
+  const profilePasswords = ['profile-current-password','profile-new-password','profile-confirm-password'];
+  function clearProfilePasswords(){for(const id of profilePasswords)$(id).value='';}
+  function renderProfile(){
+    const signedIn=Boolean(status?.signedIn);
+    $('profile-name').textContent=signedIn?'@'+status.username:'';
+    $('profile-open').disabled=working;
+    $('profile-status').textContent=status?.detail||'Account directory is not configured. Local hosting still works.';
+    $('account-profile-form').hidden=!signedIn;
+    // Explicit recovery stays available even after an ambiguous save or while a cached session is offline.
+    $('profile-signin').hidden=false;
+    $('profile-signin').textContent=signedIn?'Sign in again':'Sign in or create an account';
+    $('profile-signin').disabled=working||!status?.configured;
+    for(const n of $('account-profile-form').querySelectorAll('input,button'))n.disabled=working||!status?.online;
+    $('profile-close').disabled=working;
+  }
   function render(){
+    renderProfile();
     if(!status)return;
     $('account-heading').textContent=status.signedIn?`@${status.username}`:'Your Seed Hosting account';
     $('account-status').textContent=status.detail;
@@ -45,6 +61,10 @@
       const li=document.createElement('li');li.className='account-request';
       const text=document.createElement('p');text.textContent=`@${r.from} invited you to ${r.group}.`;
       const hint=document.createElement('span');hint.className='field-help';hint.textContent='Accept to share hosting and world-file access. Only accept people you trust.';
+      const route=document.createElement('p');route.className='field-help invitation-route';
+      const endpoint=r.controlEndpoint;
+      route.textContent=endpoint?`Hosting control endpoint: ${endpoint.host}:${endpoint.port}. Reachability is unverified. ${endpoint.privateRoute?'This is a private route: use the same network or a VPN that can reach this address. ':''}This is not the Minecraft player address; a Minecraft tunnel does not make hosting invitations reachable.`:'Hosting control route is unverified. A Minecraft player address is not proof that hosting invitations can connect.';
+      const recovery=document.createElement('p');recovery.className='field-help';recovery.textContent='If acceptance times out, retry only after the owner restores access to this same endpoint. If the endpoint must change, the owner must correct the advertised control route and restart Seed Hosting; decline the old request, then ask for a new invitation.';
       const actions=document.createElement('div');actions.className='account-input-row';
       const accept=document.createElement('button');accept.type='button';accept.className='button button-primary';accept.textContent='Accept';accept.dataset.accountAccept=r.id;
       accept.addEventListener('click',()=>act(async()=>{
@@ -53,12 +73,39 @@
       }));
       const decline=document.createElement('button');decline.type='button';decline.className='text-button';decline.textContent='Decline';decline.dataset.accountDecline=r.id;
       decline.addEventListener('click',()=>act(async()=>{await window.seedhost.call('accountDecline',{id:r.id});await inbox();$('account-friend-feedback').textContent='Invitation declined.';}));
-      actions.append(accept,decline);li.append(text,hint,actions);return li;
+      actions.append(accept,decline);li.append(text,hint,route,recovery,actions);return li;
     });
     if(!nodes.length){const empty=document.createElement('li');empty.className='field-help';empty.textContent='No invitations waiting.';nodes.push(empty);}
     $('account-inbox').replaceChildren(...nodes);render();
   }
   async function act(work){if(working)return;working=true;render();try{await work();}catch(e){$('account-friend-feedback').textContent=message(e);}finally{working=false;render();}}
+  $('account-profile-form').addEventListener('submit',async event=>{
+    event.preventDefault();if(working||!status?.signedIn||!status.online||!$('account-profile-form').reportValidity())return;
+    const username=$('profile-username').value.trim().toLowerCase(),newPassword=$('profile-new-password').value;
+    if(newPassword!==$('profile-confirm-password').value){$('account-profile-feedback').textContent='The new passwords must match.';return;}
+    if(username===status.username&&!newPassword){$('account-profile-feedback').textContent='No profile changes to save.';clearProfilePasswords();return;}
+    const input={username,currentPassword:$('profile-current-password').value,...(newPassword?{newPassword}:{})};
+    clearProfilePasswords();working=true;$('account-profile-feedback').textContent='Saving profile…';render();
+    try{
+      const result=await window.seedhost.call('accountUpdateProfile',input);
+      const readBack=await window.seedhost.call('accountStatus');
+      if(!result?.signedIn||result.username!==username||!readBack?.signedIn||!readBack.online||readBack.username!==username)throw new Error('The account directory did not confirm this change. Sign in again and check before retrying.');
+      status=readBack;$('profile-username').value=status.username;
+      $('account-profile-feedback').textContent='Saved profile and confirmed your username with the account directory.';changed();
+    }catch(e){$('account-profile-feedback').textContent=message(e);}
+    finally{input.currentPassword='';if('newPassword' in input)input.newPassword='';working=false;render();}
+  });
+  $('profile-open').addEventListener('click',()=>{
+    if(working)return;clearProfilePasswords();$('account-profile-feedback').textContent='';
+    $('profile-username').value=status?.username||'';renderProfile();$('profile-dialog').showModal();
+  });
+  $('profile-close').addEventListener('click',()=>{if(!working)$('profile-dialog').close();});
+  $('profile-dialog').addEventListener('cancel',event=>{if(working)event.preventDefault();});
+  $('profile-dialog').addEventListener('close',clearProfilePasswords);
+  $('profile-signin').addEventListener('click',()=>{
+    if(working||!status?.configured)return;mode='login';$('profile-dialog').close();
+    $('account-error').hidden=true;render();$('account-dialog').showModal();
+  });
   $('account-open').addEventListener('click',()=>{if(!working){$('account-error').hidden=true;$('account-dialog').showModal();}});
   $('account-offline').addEventListener('click',()=>{$('account-password').value='';$('account-dialog').close();prompted=true;});
   $('account-dialog').addEventListener('cancel',event=>{if(working)event.preventDefault();else{$('account-password').value='';prompted=true;}});

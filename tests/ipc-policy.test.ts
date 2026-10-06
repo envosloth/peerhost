@@ -3,6 +3,13 @@ import assert from 'node:assert/strict';
 const mod:any=await import('../src/core/'+'ipc-policy.js').catch(()=>({}));
 const renderer='file:///C:/seedhost/index.html';
 const trusted={senderId:7,expectedSenderId:7,isMainFrame:true};
+test('account profile updates are bounded, exact-key and trusted-main-frame only',()=>{
+  const input={username:'new_user',currentPassword:'test-current',newPassword:'test-new'};
+  assert.deepEqual(mod.validateCall('accountUpdateProfile',input,renderer,renderer,trusted),input);
+  assert.deepEqual(mod.validateCall('accountUpdateProfile',{username:'new_user',currentPassword:'test-current'},renderer,renderer,trusted),{username:'new_user',currentPassword:'test-current'});
+  for(const bad of [{...input,token:'injected'},{...input,device:'a'.repeat(64)},{username:'new_user'},{...input,currentPassword:''},{...input,newPassword:'abc'},{...input,newPassword:'x'.repeat(129)},{...input,username:'not-valid!'}])assert.throws(()=>mod.validateCall('accountUpdateProfile',bad,renderer,renderer,trusted));
+  assert.throws(()=>mod.validateCall('accountUpdateProfile',input,renderer,renderer,{...trusted,isMainFrame:false}),/sender/i);
+});
 test('same renderer URL cannot authorize a foreign WebContents or frame',async t=>{
   for(const [label,context] of [
     ['missing context',undefined],
