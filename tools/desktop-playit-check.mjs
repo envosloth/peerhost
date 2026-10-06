@@ -8,6 +8,7 @@ const app=await electron.launch({executablePath:createRequire(import.meta.url)('
 try{
  const page=await app.firstWindow();const errors=[];page.on('pageerror',e=>errors.push(String(e)));
  await page.waitForFunction(()=>document.querySelector('#app-version')?.textContent.includes('0.5.0'));await dismissInitialSetup(page);
+ await page.locator('#tunnels-tab').click();
  await page.locator('#playit-panel summary').click();await page.locator('#playit-panel').scrollIntoViewIfNeeded();
  await page.waitForFunction(()=>!document.querySelector('#playit-connect').disabled);
  assert.equal(await page.locator('#playit-create').isDisabled(),true);
@@ -18,6 +19,7 @@ try{
  await page.locator('#playit-check').click();await page.waitForFunction(()=>!document.querySelector('#playit-check').disabled);
  assert.match(await page.locator('#playit-status').textContent(),/Could not verify/);
  await page.reload();await page.waitForFunction(()=>!document.querySelector('#playit-connect').disabled);
+ await page.locator('#tunnels-tab').click();
  await page.locator('#playit-panel').evaluate(el=>el.open=true);await page.locator('#playit-panel').scrollIntoViewIfNeeded();
  assert.equal((await page.evaluate(()=>window.seedhost.call('playitStatus'))).state,'off');
  assert.deepEqual(errors,[]);

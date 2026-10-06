@@ -1,6 +1,7 @@
 import test from 'node:test';
+import { javaProbeFixture } from './java-probe-fixture.mjs';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, chmod, rm, readFile, readdir, mkdir, lstat, readlink } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, readdir, mkdir, lstat, readlink } from 'node:fs/promises';
 import path from 'node:path';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
@@ -12,14 +13,14 @@ const scratch = process.env.TMPDIR;
 assert.ok(scratch, 'Tests require TMPDIR; never use application state');
 const hash = (value, algorithm = 'sha1') => createHash(algorithm).update(value).digest('hex');
 const ALL = '/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json';
-const javaScript = (version) => Buffer.from(`#!${process.execPath}\nif (JSON.stringify(process.argv.slice(2)) !== '["-version"]') process.exit(5); process.stderr.write('openjdk version "${version}" 2025-04-15\\n');\n`);
+const javaBytes = async (dir, version) => readFile(await javaProbeFixture(dir, { version, server: false }));
 
 async function fixture(t, options = {}) {
   const dir = await mkdtemp(path.join(scratch, 'java-runtime-test-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const requests = []; let origin;
   const jar = Buffer.from('PK fixture server bytes, NOT real Minecraft');
-  const java = javaScript(options.runtimeVersion ?? '21.0.7');
+  const java = await javaBytes(dir, options.runtimeVersion ?? '21.0.7');
   const license = Buffer.from('fixture licence text');
   const platform = mojangRuntimePlatform();
   const exe = platform.startsWith('windows') ? 'bin/java.exe' : platform.startsWith('mac') ? 'jre.bundle/Contents/Home/bin/java' : 'bin/java';
@@ -108,7 +109,7 @@ test('automatic Java prefers a compatible Java already on the PC and needs no do
   const f = await fixture(t);
   const bin = path.join(f.dir, 'system-bin'); await mkdir(bin);
   const name = process.platform === 'win32' ? 'java.exe' : 'java';
-  await writeFile(path.join(bin, name), javaScript('21.0.4')); await chmod(path.join(bin, name), 0o700);
+  await javaProbeFixture(f.dir, { executable: path.join(bin, name), version: '21.0.4', server: false });
   const previous = { PATH: process.env.PATH, JAVA_HOME: process.env.JAVA_HOME };
   process.env.PATH = bin; delete process.env.JAVA_HOME;
   t.after(() => { for (const key of Object.keys(previous)) if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key]; });

@@ -14,9 +14,11 @@ test('packaged builds do not expose DevTools in the application menu', async () 
 test('desktop checks resolve Electron through its package rather than a Windows-only path', async () => {
   const banned = 'electron' + '.exe';
   for (const directory of ['tests', 'tools']) {
-    for (const name of await readdir(directory)) {
-      const text = await readFile(path.join(directory, name), 'utf8');
-      assert.equal(text.includes(banned), false, `${directory}/${name} hardcodes ${banned}`);
+    for (const entry of await readdir(directory, { withFileTypes: true, recursive: true })) {
+      if (!entry.isFile() || !/\.(?:[cm]?[jt]s)$/.test(entry.name)) continue;
+      const file = path.join(entry.parentPath, entry.name);
+      const text = await readFile(file, 'utf8');
+      assert.equal(text.includes(banned), false, `${file} hardcodes ${banned}`);
     }
   }
 });

@@ -1,14 +1,16 @@
+import { DASHBOARD_METHODS, validateDashboardCall } from './server-dashboard-policy.js';
 import { validateSettings } from './settings.js';
 import { isValidEndpointHost } from './endpoints.js';
 import { validTimeout, isServerId, MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS } from './saved-state.js';
 import { isModKind, isModName } from './mods.js';
-import { isGameVersion, isModLoader, isProjectKey } from './modrinth.js';
-import { accountUsername } from './accounts.js';
+import { isGameVersion, isModLoader, isProjectKey, validateModSort } from './modrinth.js';
+import { accountPassword, accountUsername } from './accounts.js';
 import { validateOnboarding } from './onboarding.js';
+import { validateSimpleProfileInput } from './java-arguments.js';
 const NO_PAYLOAD=new Set(['accountStartGroup','accountStatus','accountRequests','accountLogout','playitStatus','playitImport','playitCheck','playitCreate','playitDisconnect','playitSetup','getState','importServer','createSnapshot','startServer','stopServer','startPeerListener','cleanUp','parkAtRelay','claimFromRelay','checkRelay','exportClientPack','createInvite','listFriends','listSnapshots','listServerVersions','discoverJava','pickJava','checkGameGateway','alwaysOnStatus','alwaysOnDisable','alwaysOnNewCode','publicAddressStatus','publicAddressEnable','publicAddressDisable','publicAddressOpenApproval',
   // Window chrome acts only on the trusted app window.
   'getWindowState','windowMinimize','windowToggleFullscreen','windowClose','quitApp']);
-const METHODS=new Set([...NO_PAYLOAD,'accountRegister','accountLogin','accountSend','accountAccept','accountDecline','removeFriend','saveProfile','sendCommand','saveSettings','addPeer','sendSnapshot','handoff','recoverStopped','saveRelay','addMods','removeMod','searchMods','installMod','saveModTarget','openModPage','previewInvite','joinWithInvite','saveOnboarding','restoreSnapshot','createServer','configureSimpleProfile','saveGameGateway','openSetupLink','selectServer','deleteServer','alwaysOnEnable','pairAlwaysOn','setupFabricMods','searchSetupMods']);
+const METHODS=new Set([...DASHBOARD_METHODS,...NO_PAYLOAD,'accountRegister','accountLogin','accountSend','accountAccept','accountDecline','removeFriend','saveProfile','sendCommand','saveSettings','addPeer','sendSnapshot','handoff','recoverStopped','saveRelay','addMods','removeMod','searchMods','installMod','saveModTarget','openModPage','previewInvite','joinWithInvite','saveOnboarding','restoreSnapshot','createServer','configureSimpleProfile','saveGameGateway','openSetupLink','selectServer','deleteServer','alwaysOnEnable','pairAlwaysOn','setupFabricMods','searchSetupMods']);
 function boundedString(v:unknown,max:number):v is string{return typeof v==='string'&&v.length<=max&&!v.includes('\0');}
 function fingerprint(v:unknown):v is string{return typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);}
 export interface TrustedIpcContext {senderId:number;expectedSenderId:number;isMainFrame:boolean}
@@ -27,10 +29,11 @@ export function validateCall(method:unknown,payload:unknown,senderUrl:string,exp
   }
   if(!payload||typeof payload!=='object'||Array.isArray(payload))throw new Error('Invalid payload');
   const p=payload as Record<string,unknown>;
+  if(DASHBOARD_METHODS.has(method))return validateDashboardCall(method,p);
   switch(method){
     case 'accountRegister':case 'accountLogin':
-      if(Object.keys(p).sort().join(',')!=='password,username'||!boundedString(p.password,128)||p.password.length<12)throw new Error('Use a password of 12–128 characters');
-      return {username:accountUsername(p.username),password:p.password};
+      if(Object.keys(p).sort().join(',')!=='password,username')throw new Error('Invalid account request');
+      return {username:accountUsername(p.username),password:accountPassword(p.password)};
     case 'accountSend':
       if(Object.keys(p).join(',')!=='username')throw new Error('Invalid username');
       return {username:accountUsername(p.username)};
@@ -49,8 +52,7 @@ export function validateCall(method:unknown,payload:unknown,senderUrl:string,exp
         !Number.isInteger(p.memoryMiB)||Number(p.memoryMiB)<512||Number(p.memoryMiB)>65536||typeof p.eulaAccepted!=='boolean')throw new Error('Invalid new server configuration');
       return {...p};
     case 'configureSimpleProfile':
-      if(Object.keys(p).sort().join(',')!=='javaExecutable,memoryMiB'||!boundedString(p.javaExecutable,4096)||!p.javaExecutable.trim()||/[\r\n]/.test(p.javaExecutable)||!Number.isInteger(p.memoryMiB)||Number(p.memoryMiB)<512||Number(p.memoryMiB)>65536)throw new Error('Invalid simple launch profile');
-      return {...p};
+      return {...validateSimpleProfileInput(p)};
     case 'saveGameGateway':
       if(Object.keys(p).sort().join(',')!=='enabled,localPort'||typeof p.enabled!=='boolean'||!Number.isInteger(p.localPort)||Number(p.localPort)<1||Number(p.localPort)>65535)throw new Error('Invalid game gateway configuration');
       return {enabled:p.enabled,localPort:p.localPort};
@@ -67,8 +69,8 @@ export function validateCall(method:unknown,payload:unknown,senderUrl:string,exp
       if(Object.keys(p).join(',')!=='projectIds'||!Array.isArray(p.projectIds)||p.projectIds.length>50||!p.projectIds.every(isProjectKey)||new Set(p.projectIds).size!==p.projectIds.length)throw new Error('Invalid mod selection');
       return {projectIds:[...(p.projectIds as string[])]};
     case 'searchSetupMods':
-      if(Object.keys(p).sort().join(',')!=='gameVersion,offset,query'||!boundedString(p.query,200)||!isGameVersion(p.gameVersion)||!Number.isSafeInteger(p.offset)||Number(p.offset)<0||Number(p.offset)>10000)throw new Error('Invalid mod search');
-      return {query:p.query,gameVersion:p.gameVersion,offset:p.offset};
+      if(Object.keys(p).sort().join(',')!==('sort' in p?'gameVersion,offset,query,sort':'gameVersion,offset,query')||!boundedString(p.query,200)||!isGameVersion(p.gameVersion)||!Number.isSafeInteger(p.offset)||Number(p.offset)<0||Number(p.offset)>10000)throw new Error('Invalid mod search');
+      return {query:p.query,gameVersion:p.gameVersion,offset:p.offset,...('sort' in p?{sort:validateModSort(p.sort)}:{})};
     case 'selectServer':case 'deleteServer':
       if(Object.keys(p).join(',')!=='id'||!isServerId(p.id))throw new Error('Invalid server id');
       return {id:p.id};
@@ -92,8 +94,8 @@ export function validateCall(method:unknown,payload:unknown,senderUrl:string,exp
     case 'sendSnapshot':case 'handoff':
       if(!fingerprint(p.fingerprint))throw new Error('Invalid peer fingerprint');return {fingerprint:p.fingerprint};
     case 'searchMods':
-      if(Object.keys(p).sort().join(',')!=='offset,query'||!boundedString(p.query,200)||!Number.isSafeInteger(p.offset)||Number(p.offset)<0||Number(p.offset)>10000)throw new Error('Invalid mod query or offset');
-      return {query:p.query,offset:p.offset};
+      if(Object.keys(p).sort().join(',')!==('sort' in p?'offset,query,sort':'offset,query')||!boundedString(p.query,200)||!Number.isSafeInteger(p.offset)||Number(p.offset)<0||Number(p.offset)>10000)throw new Error('Invalid mod query or offset');
+      return {query:p.query,offset:p.offset,...('sort' in p?{sort:validateModSort(p.sort)}:{})};
     case 'installMod':
       if(!isProjectKey(p.projectId)||Object.keys(p).some(k=>!['projectId','targets'].includes(k)))throw new Error('Invalid mod project');
       if('targets' in p&&(!Array.isArray(p.targets)||p.targets.length<1||p.targets.length>2||!p.targets.every(isModKind)||new Set(p.targets).size!==p.targets.length))throw new Error('Invalid mod targets');

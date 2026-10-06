@@ -34,7 +34,11 @@ try {
   const answer = (value) => app.evaluate((_e, v) => { globalThis.__answer = v; }, value);
   const queueDir = (dir) => app.evaluate((_e, d) => { globalThis.__next = d; }, dir);
 
-  assert.equal(await page.locator('#server-library').isHidden(), true, 'no servers: the library stays hidden');
+  // Home is the multi-server library: with no servers it shows the empty state and the one-running limit note.
+  assert.equal(await page.locator('#home-panel').isVisible(), true, 'the app opens on Home');
+  assert.equal(await page.locator('#server-list .server-row').count(), 0, 'no servers: no cards');
+  assert.equal(await page.locator('#server-empty').isVisible(), true);
+  assert.match(await page.locator('#home-concurrency').textContent(), /one server.*time/i, 'the one-running-server limit is visible');
 
   for (const name of ['alpha', 'bravo']) {
     await queueDir(await source(name));
@@ -51,21 +55,26 @@ try {
     }
   }
   const rows = page.locator('#server-list .server-row');
-  assert.equal(await rows.count(), 2, 'both servers are listed');
+  assert.equal(await rows.count(), 2, 'both servers are listed as real cards');
   assert.equal(await page.locator('#server-list .server-row.is-current .server-row-name').textContent(), 'bravo', 'the newest import is in use');
-  assert.equal(await page.locator('#server-list .is-current').getAttribute('class'), 'server-row is-current');
-  assert.match(await page.locator('#server-list').textContent(), /In use/);
+  assert.equal(await page.locator('#server-list .server-row.is-current').getAttribute('class'), 'server-row is-current');
+  assert.match(await page.locator('#server-list').textContent(), /Open server/, 'the active card opens its workspace');
+  assert.equal(await page.locator('#server-list [data-action="select"]').count(), 0, 'no legacy switch action remains');
 
-  // Switch back to the first server through the visible control.
-  await page.locator('#server-list .server-row').first().locator('button[data-action="select"]').click();
+  // Switch to the first server through the card's visible control; the card opens the workspace.
+  await rows.first().locator('button[data-action="open"]').click();
   await page.waitForFunction(() => document.querySelector('#server-name').textContent === 'alpha');
-  await page.waitForFunction(() => document.querySelector('#server-list .server-row.is-current .server-row-name').textContent === 'alpha');
-  assert.equal(await page.locator('#server-list .server-row').first().locator('button[data-action="select"]').count(), 0, 'the server in use offers no switch button');
+  await page.waitForFunction(() => document.querySelector('#server-list .server-row.is-current .server-row-name')?.textContent === 'alpha');
+  assert.equal(await page.locator('#operate-panel').isVisible(), true, 'opening a card lands on the selected server workspace');
+  assert.equal(await rows.filter({ hasText: 'alpha' }).locator('button[data-action="open"]').textContent(), 'Open server');
+
+  // Back to Home for the library actions.
+  await page.locator('#home-tab').click();
 
   // Cancelling the native confirmation deletes nothing.
   await answer(0);
   await page.locator('#server-list .server-row.is-current button[data-action="delete"]').click();
-  await page.waitForFunction(() => !document.querySelector('#error-banner').hidden === false);
+  await page.waitForFunction(() => document.querySelector('#activity-message').textContent.startsWith('Ready'));
   assert.equal(await rows.count(), 2, 'cancel keeps the server');
   assert.equal(await page.locator('#server-name').textContent(), 'alpha');
 
@@ -84,13 +93,14 @@ try {
   await page.evaluate(() => window.seedhost.call('createSnapshot'));
   const after = (await page.evaluate(() => window.seedhost.call('getState'))).server.snapshotId;
   assert.notEqual(after, before, 'the remaining server still saves backups after another was deleted');
+  await page.locator('#backups-tab').click();
   await page.locator('#refresh-snapshots').click();
   await page.waitForFunction(() => document.querySelectorAll('#snapshot-list li').length >= 1);
   assert.doesNotMatch(await page.locator('#snapshot-history-status').textContent(), /Couldn.t load backups/);
 
   assert.deepEqual(errors, []);
   await page.screenshot({ path: path.join(root, 'library.png') });
-  console.log('PASS visible library: import adds, switch moves, cancel keeps, delete removes and falls back. Screenshot ' + path.join(root, 'library.png'));
+  console.log('PASS visible Home library: import adds cards, open moves the workspace, cancel keeps, delete removes and falls back. Screenshot ' + path.join(root, 'library.png'));
 } finally {
   await app.close();
 }

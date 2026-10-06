@@ -26,7 +26,7 @@ function lineMatching(child: ChildProcessWithoutNullStreams, pattern: RegExp): P
   });
 }
 
-test('the headless relay CLI initializes, trusts a host, serves a park, reports status and stops cleanly', { timeout: 60000 }, async (t) => {
+test('the headless relay CLI initializes, trusts a host, serves a park and preserves custody after shutdown', { timeout: 60000 }, async (t) => {
   await mkdir('.test-data', { recursive: true });
   const root = await mkdtemp(path.resolve('.test-data/relay-cli-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -59,8 +59,12 @@ test('the headless relay CLI initializes, trusts a host, serves a park, reports 
   assert.equal((await app.checkRelay())!.state, 'owned');
 
   serve.kill('SIGTERM');
-  const code = await new Promise<number | null>((resolve) => serve.once('close', resolve));
-  assert.equal(code, 0, 'SIGTERM is a clean shutdown');
+  const [code, signal] = await new Promise<[number | null, NodeJS.Signals | null]>((resolve) => serve.once('close', (exitCode, exitSignal) => resolve([exitCode, exitSignal])));
+  if (process.platform === 'win32') {
+    // Node child.kill(SIGTERM) terminates the Windows process; it cannot deliver
+    // a catchable console signal. Persisted custody is checked below after closure.
+    assert.deepEqual([code, signal], [null, 'SIGTERM']);
+  } else assert.deepEqual([code, signal], [0, null], 'POSIX SIGTERM is handled as a graceful shutdown');
   const status = await run(['status', '--root', relayRoot]);
   assert.equal(status.code, 0, status.stderr);
   assert.match(status.stdout, /CUSTODY=owned generation=1 snapshot=[a-f0-9]{64}/);

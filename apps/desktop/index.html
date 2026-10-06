@@ -7,6 +7,8 @@
   <title>Seed Hosting</title>
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="playit.css">
+  <link rel="stylesheet" href="dashboard.css">
+  <script src="dashboard.js" defer></script>
   <script src="renderer.js" defer></script>
   <script src="playit.js" defer></script>
   <link rel="stylesheet" href="accounts.css">
@@ -20,8 +22,8 @@
       <p class="account-intro">One account. Find your friends by name. Your worlds stay on your own PCs.</p>
       <label for="account-username">Username</label><input id="account-username" type="text" minlength="3" maxlength="24" autocomplete="username" spellcheck="false" required aria-describedby="account-username-help">
       <p id="account-username-help" class="field-help">3–24 letters, numbers or underscores.</p>
-      <label for="account-password">Password</label><input id="account-password" type="password" minlength="12" maxlength="128" autocomplete="new-password" required aria-describedby="account-password-help">
-      <p id="account-password-help" class="field-help">At least 12 characters. Keep it in your password manager.</p>
+      <label for="account-password">Password</label><input id="account-password" type="password" minlength="4" maxlength="128" pattern="[^\p{Cc}]*" autocomplete="new-password" required aria-describedby="account-password-help">
+      <p id="account-password-help" class="field-help">4–128 characters, no control characters. Four characters is weak; use a longer, unique password and keep it in your password manager.</p>
       <p id="account-error" class="field-error" role="alert" hidden></p>
       <button id="account-submit" type="submit" class="button button-primary button-large">Create account</button>
       <div class="account-footer"><button id="account-mode" type="button" class="text-button">Already have an account? Sign in</button><button id="account-offline" type="button" class="text-button">Use offline for now</button></div>
@@ -224,6 +226,7 @@
                 <p id="mod-target-feedback" class="field-help" role="status">Import a modded server to browse compatible mods.</p>
                 <form id="mod-search-form" class="mod-search-form" role="search">
                   <label class="sr-only" for="mod-query">Search Modrinth mods</label><input id="mod-query" type="search" maxlength="200" placeholder="Search mods, e.g. Lithium" autocomplete="off" disabled>
+                  <div class="mod-sort-field"><label for="mod-sort">Sort</label><select id="mod-sort" aria-describedby="mod-search-status" disabled><option value="downloads">Downloads</option><option value="popularity">Popularity (followers)</option><option value="title-asc">A–Z (this page only)</option><option value="title-desc">Z–A (this page only)</option><option value="relevance">Relevance</option><option value="newest">Newest</option><option value="updated">Recently updated</option></select></div>
                   <button id="search-mods" type="submit" class="button button-small" disabled>Search</button>
                 </form>
                 <p id="mod-search-status" class="field-help" role="status" aria-live="polite">Save compatibility to browse mods.</p>
@@ -472,7 +475,7 @@
           <div id="setup-choices" class="setup-choices" role="group" aria-label="How do you want to start?">
             <button id="setup-choose-create" type="button" class="choice-card"><span class="choice-icon" aria-hidden="true"><svg class="icon"><use href="#i-sparkle"/></svg></span><span class="choice-tag">Recommended</span><strong>Create a new world</strong><span>Download a fresh Vanilla or Fabric server. Recommended for first-timers.</span><span class="choice-go" aria-hidden="true">Start fresh →</span></button>
             <button id="setup-import" type="button" class="choice-card"><span class="choice-icon" aria-hidden="true"><svg class="icon"><use href="#i-folder"/></svg></span><strong>Use a server I already have</strong><span>Pick an existing server folder. Seed Hosting works on a copy; the original isn’t changed.</span><span class="choice-go" aria-hidden="true">Choose folder →</span></button>
-            <button id="setup-choose-join" type="button" class="choice-card"><span class="choice-icon" aria-hidden="true"><svg class="icon"><use href="#i-friends"/></svg></span><strong>Join a friend’s world</strong><span>Got an invitation code? Join their group and take turns hosting.</span><span class="choice-go" aria-hidden="true">Use a code →</span></button>
+            <button id="setup-choose-join" type="button" class="choice-card"><span class="choice-icon" aria-hidden="true"><svg class="icon"><use href="#i-friends"/></svg></span><strong>Join a friend’s world</strong><span>Your friend adds you by username — accept their invitation here.</span><span class="choice-go" aria-hidden="true">Join with a username →</span></button>
           </div>
           <ul class="setup-perks" aria-label="What Seed Hosting does for you">
             <li><svg class="icon" aria-hidden="true"><use href="#i-backup"/></svg><span><strong>Automatic backups</strong>Saved every time you stop the server.</span></li>
@@ -502,16 +505,14 @@
               <select id="setup-version" class="select-large"><option value="">Loading versions…</option></select>
               <label class="inline-check small-check"><input id="setup-all-versions" type="checkbox"> Show older versions</label>
             </div>
-            <fieldset class="form-section">
-              <legend class="form-section-head"><span class="section-num" aria-hidden="true">4</span><span><span class="section-title">Memory (RAM)</span><span class="field-help">2–4 GB suits most small groups. Leave enough for your own game.</span></span></legend>
-              <div id="setup-memory-chips" class="chip-options" data-bridge="setup-memory"></div>
-              <select id="setup-memory" class="select-bridge" tabindex="-1" aria-hidden="true"></select>
-            </fieldset>
+            <p class="field-help">Starts with 2 GB of memory. You can adjust it on the Memory step next.</p>
             <fieldset id="setup-mods" class="form-section setup-mods" hidden>
-              <legend class="form-section-head"><span class="section-num" aria-hidden="true">5</span><span><span class="section-title">Mods <span class="optional-tag">optional</span></span><span class="field-help">Pick any mods from Modrinth. Only ones that work with your version are shown; required extras (like Fabric API) are added for you.</span></span></legend>
-              <div class="setup-mods-search"><input id="setup-mod-query" type="search" placeholder="Search mods — e.g. Sodium, Lithium, Waystones" autocomplete="off" spellcheck="false" aria-label="Search mods"><button id="setup-mod-search" type="button" class="button">Search</button></div>
+              <legend class="form-section-head"><span class="section-num" aria-hidden="true">4</span><span><span class="section-title">Mods <span class="optional-tag">optional</span></span><span class="field-help">Pick any mods from Modrinth. Only ones that work with your version are shown; required extras (like Fabric API) are added for you.</span></span></legend>
+              <div class="setup-mods-search"><input id="setup-mod-query" type="search" maxlength="200" placeholder="Search mods — e.g. Sodium, Lithium, Waystones" autocomplete="off" spellcheck="false" aria-label="Search mods"><button id="setup-mod-search" type="button" class="button">Search</button></div>
+              <label for="setup-mod-sort">Sort Modrinth results</label><select id="setup-mod-sort" aria-describedby="setup-mod-status"><option value="downloads">Downloads</option><option value="popularity">Popularity (followers)</option><option value="title-asc">A–Z (this page only)</option><option value="title-desc">Z–A (this page only)</option><option value="relevance">Relevance</option><option value="newest">Newest</option><option value="updated">Recently updated</option></select>
               <ul id="setup-mod-list" class="setup-mod-list" aria-label="Mods"></ul>
               <p id="setup-mod-status" class="field-help" role="status"></p>
+              <div class="mod-pagination"><button id="setup-mod-previous" type="button" class="button button-small" disabled>Previous</button><span id="setup-mod-page" class="field-help">No results loaded</span><button id="setup-mod-next" type="button" class="button button-small" disabled>Next</button></div>
               <p id="setup-mod-picked" class="setup-mod-picked" hidden></p>
             </fieldset>
             <div class="setup-create-actions"><button id="setup-create" type="submit" class="button button-primary button-large">Create my world</button><span class="field-help">Downloads and checks the official server files, plus Java if this PC needs it. Nothing starts until you press Start.</span></div>
@@ -519,25 +520,30 @@
             <button type="button" data-setup-link="fabric" class="text-button" hidden>About Fabric ↗</button>
           </form>
         </section>
-        <section id="setup-runtime" data-setup-panel="runtime" hidden><h3>Memory</h3><p class="setup-lead">Java is handled for you. Your chosen memory is already saved — leave it as it is, or adjust it here.</p>
+        <section id="setup-runtime" data-setup-panel="runtime" hidden><h3>Memory</h3><p class="setup-lead">New worlds start with 2 GB. Adjust memory here, leaving enough for your own game. Existing launch settings stay unchanged until you save.</p>
           <form id="setup-runtime-form" novalidate>
-            <details id="setup-java-advanced" class="setup-more"><summary>Advanced: change Java</summary>
+            <details id="setup-java-advanced" class="setup-more"><summary>Advanced: Java and custom arguments</summary>
             <div class="form-section">
               <div class="form-section-head"><span class="section-num" aria-hidden="true">1</span><div><label for="setup-runtime-java" class="section-title">Java</label><p class="field-help">The runtime that starts your server.</p></div></div>
               <select id="setup-runtime-java" class="select-large"><option value="">Select Java</option></select>
               <div class="setup-inline-actions"><button id="setup-runtime-pick" type="button" class="text-button">Choose another…</button><button type="button" data-setup-link="java" class="text-button">Java downloads ↗</button></div>
-            </div></details>
+            </div>
+            <label for="setup-custom-java-args">Custom Java arguments (JSON array)</label>
+            <textarea id="setup-custom-java-args" class="mono" rows="4" maxlength="16384" spellcheck="false" aria-describedby="setup-custom-java-help">[]</textarea>
+            <p id="setup-custom-java-help" class="field-help">Example: ["-XX:+UseG1GC", "-XX:MaxGCPauseMillis=200", "-Dmy.setting=value"]. Each string is one JVM argument, never a shell command. Heap, launcher, classpath, argument files, agents and executable hooks are blocked. Unsupported imported options are retained; use advanced launch settings to change those. RAM-only saves keep your existing arguments.</p>
+            </details>
             <fieldset class="form-section">
               <legend class="form-section-head"><span class="section-num" aria-hidden="true">2</span><span><span class="section-title">Memory (RAM)</span><span class="field-help">More memory helps big worlds and modpacks.</span></span></legend>
-              <div id="setup-runtime-memory-chips" class="chip-options" data-bridge="setup-runtime-memory"></div>
-              <select id="setup-runtime-memory" class="select-bridge" tabindex="-1" aria-hidden="true"></select>
+              <label for="setup-runtime-memory">Server memory <output id="setup-memory-value" for="setup-runtime-memory">2 GB (2,048 MiB)</output></label>
+              <input id="setup-runtime-memory" type="range" min="512" max="65536" step="512" value="2048" aria-describedby="setup-memory-help">
+              <p id="setup-memory-help" class="field-help">512 MiB–64 GB · 2–4 GB suits most small groups. Save changes to apply; nothing starts automatically.</p>
             </fieldset>
             <button id="setup-profile-save" type="submit" class="button button-primary">Save changes</button>
           </form>
           <p id="setup-runtime-feedback" class="field-help" role="status"></p>
           <details class="setup-more"><summary>Using a modpack or custom start command?</summary><p>Modpack start files and arguments are kept as they are. For anything unusual, edit the full command yourself.</p><button id="setup-advanced" type="button" class="text-button">Open advanced launch settings</button></details>
         </section>
-        <section id="setup-friends" data-setup-panel="friends" hidden><h3>Friends <span class="optional-tag">optional</span></h3><p class="setup-lead">Friends in a group can take turns hosting the same world: whoever is online starts it, and the world moves safely between your PCs. A group lives on an always-on PC (next step).</p><ul class="setup-points"><li><strong>Got an invitation code?</strong> Paste it below to join.</li><li><strong>Starting a group?</strong> Set up the always-on PC first, then invite friends from here or the Friends tab.</li><li><strong>Just playing on your own Wi-Fi?</strong> Skip this — friends can join your server directly.</li></ul><div id="setup-friends-slot"></div></section>
+        <section id="setup-friends" data-setup-panel="friends" hidden><h3>Friends <span class="optional-tag">optional</span></h3><p class="setup-lead">Friends in a group can take turns hosting the same world: whoever is online starts it, and the world moves safely between your PCs. A group lives on an always-on PC (next step).</p><ul class="setup-points"><li><strong>Have an invitation?</strong> Sign in below — your friend adds you by username and you accept it here.</li><li><strong>Starting a group?</strong> Sign in, create your group, then add friends by username.</li><li><strong>Just playing on your own Wi-Fi?</strong> Skip this — friends can join your server directly.</li></ul><div id="setup-friends-slot"></div></section>
         <section id="setup-gateway" data-setup-panel="gateway" hidden><h3>Always-on PC <span class="optional-tag">optional</span></h3><p class="setup-lead">A spare computer that stays on — an old laptop, mini PC or home server — keeps your world between play sessions and gives friends one address to join, even when you’re offline. It takes one click.</p>
           <div id="always-on-choices" class="setup-choices always-on-choices">
             <button id="always-on-be" type="button" class="choice-card"><span class="choice-icon" aria-hidden="true"><svg class="icon"><use href="#i-server"/></svg></span><strong>This PC stays on</strong><span>Make this computer the always-on PC. Seed Hosting runs it for you — nothing to install.</span><span class="choice-go" aria-hidden="true">Make it the always-on PC →</span></button>
@@ -564,7 +570,7 @@
         </section>
         <section id="setup-ready" data-setup-panel="ready" hidden><h3 id="setup-ready-title">You’re all set</h3><ul id="setup-ready-list" class="setup-summary"></ul><div class="setup-howto"><h4>How to play</h4><ol><li>Close this guide and press <strong>Start server</strong>.</li><li>Open Minecraft Java Edition → <strong>Multiplayer</strong> → <strong>Add Server</strong>.</li><li>Use the address <code>localhost</code> on this PC. Friends use the addresses shown under your server.</li></ol></div><p id="setup-ready-copy" class="field-help">You can reopen this guide any time from the sidebar.</p></section>
       </div>
-      <footer class="setup-footer"><button id="setup-back" type="button" class="button">Back</button><p id="setup-status" class="setup-status" role="status" aria-live="polite"></p><button id="setup-later" type="button" class="text-button">Set up later</button><button id="setup-skip" type="button" class="button" hidden>Skip</button><button id="setup-next" type="button" class="button button-primary">Next</button></footer>
+      <footer class="setup-footer"><button id="setup-back" type="button" class="button">Back</button><p id="setup-status" class="setup-status" role="status" aria-live="polite"></p><button id="setup-later" type="button" class="text-button">Set up later</button><button id="setup-unskip" type="button" class="text-button" hidden>Undo skip</button><button id="setup-skip" type="button" class="button" hidden>Skip</button><button id="setup-next" type="button" class="button button-primary">Next</button></footer>
     </div>
   </dialog>
   <dialog id="send-dialog" class="send-dialog" aria-labelledby="send-dialog-title" aria-describedby="send-dialog-warning">

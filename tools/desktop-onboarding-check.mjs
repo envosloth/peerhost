@@ -107,6 +107,7 @@ try {
   await writeFile(path.join(original.server.serverDir, 'world-marker.txt'), 'revised\n');
   await click('create-snapshot'); await wait(id => document.querySelector('#snapshot-id').textContent !== id, firstSnapshot);
   const revised = await state();
+  await click('backups-tab');
   await wait(id => document.querySelector(`#snapshot-list button[data-snapshot="${id}"]`), firstSnapshot);
   await native(0);
   await page.locator(`#snapshot-list button[data-snapshot="${firstSnapshot}"]`).click(); await settled();
@@ -121,6 +122,7 @@ try {
   assert.equal(restored.server.ownership.generation, revised.server.ownership.generation, 'ownership generation not rewound');
   const history = await page.evaluate(() => window.seedhost.call('listSnapshots'));
   assert.ok(history.some(s => s.id === revised.server.snapshotId), 'safety/revised snapshot retained');
+  await reveal(page, '#java-executable');
   await page.locator('#profile-details').evaluate(node => { node.open = true; });
   await page.locator('#java-executable').fill(process.execPath);
   await page.locator('#java-args').fill(JSON.stringify([path.join(project, 'tools/fake-java-server.mjs'), '--lifetime-ms=120000']));
@@ -140,6 +142,7 @@ try {
   for (const [id, value] of Object.entries({ 'peer-name': 'Visible relay', 'peer-fingerprint': relay.identity.fingerprint, 'peer-host': relay.endpoint.host, 'peer-port': String(relay.endpoint.port) })) await page.locator('#'+id).fill(value);
   await click('add-peer'); await click('settings-tab'); await reveal(page, '#relay-peer'); await page.locator('#relay-peer').selectOption(relay.identity.fingerprint); await page.locator('#park-on-stop').uncheck(); await click('save-settings');
   await click('peers-tab'); await click('park-relay'); await click('claim-relay');
+  await reveal(page, '#java-executable');
   await page.locator('#profile-details').evaluate(node => { node.open = true; });
   await page.locator('#java-executable').fill(process.execPath); await page.locator('#java-args').fill(JSON.stringify([path.join(project, 'tools/fake-java-server.mjs'), '--lifetime-ms=120000'])); await click('save-profile');
   await click('nav-setup'); await stage('gateway'); await page.locator('#setup-gateway-advanced').evaluate(d => { d.open = true; }); await page.locator('#setup-gateway-enabled').check(); await page.locator('#setup-gateway-port').fill(String(echo.address().port)); await click('setup-gateway-save'); await click('setup-gateway-check');

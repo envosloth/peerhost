@@ -12,6 +12,9 @@ import { validateCall } from '../../src/core/ipc-policy.js';
 import { decodeInvite, previewInvite } from '../../src/core/invites.js';
 import { applicationMenuTemplate } from './menu.js';
 import { ServerSetupClient, discoverJava, probeJava, type CreateServerInput } from '../../src/core/server-setup.js';
+import type { SimpleProfileInput } from '../../src/core/java-arguments.js';
+import type { ModSort } from '../../src/core/modrinth.js';
+import { onboardingChecks } from '../../src/core/onboarding.js';
 import { AlwaysOnHost } from '../../src/core/always-on.js';
 import { PublicAddress, playitClaim } from '../../src/core/public-address.js';
 const setupLinks: Record<string,string> = Object.freeze({
@@ -79,7 +82,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
     const openApprovalOnce=async(status:{approveUrl:string|null})=>{if(status.approveUrl&&status.approveUrl!==lastApproveOpened&&/^https:\/\/playit\.gg\/claim\/[a-f0-9]{10}$/.test(status.approveUrl)){lastApproveOpened=status.approveUrl;await shell.openExternal(status.approveUrl);}return status;};
     const image=nativeImage.createFromPath(fileURLToPath(new URL('../../../apps/desktop/icon.png',import.meta.url)));
     if(image.isEmpty())throw new Error('App icon could not be loaded');
-    window=new BrowserWindow({width:1240,height:860,minWidth:1000,minHeight:700,title:'Seed Hosting',icon:image,frame:false,fullscreenable:true,backgroundColor:'#0f1116',show:true,webPreferences:{preload:fileURLToPath(new URL('./preload.cjs',import.meta.url)),nodeIntegration:false,contextIsolation:true,sandbox:true}});
+    window=new BrowserWindow({width:1240,height:860,minWidth:1000,minHeight:700,title:'Seed Hosting',icon:image,frame:false,fullscreen:true,fullscreenable:true,backgroundColor:'#0f1116',show:true,webPreferences:{preload:fileURLToPath(new URL('./preload.cjs',import.meta.url)),nodeIntegration:false,contextIsolation:true,sandbox:true}});
     window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
     window.webContents.on('will-navigate',event=>event.preventDefault());
     window.on('close',event=>{if(!quitAllowed){event.preventDefault();window.hide();}});
@@ -132,7 +135,35 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
           if(!await confirm('Delete “'+target.name+'” from this PC?','This permanently deletes this app’s managed copy of that server, its saved backups and its ownership record on this PC. Other servers, your group, your playit tunnel and the folder you originally imported are not touched. This cannot be undone.'))return null;
           return backend.deleteServer(p.id);
         }
-        case 'getState':return backend.getState();
+        case 'getServerDashboard':return backend.getServerDashboard(p.id);
+        case 'listServerFiles':return backend.listServerFiles(p.id,p.path);
+        case 'readServerFile':return backend.readServerFile(p.id,p.path);
+        case 'writeServerFile':case 'saveServerSettings':case 'saveServerSchedule':case 'deleteServerSchedule':case 'runServerSchedule':case 'managePlayer':{
+          const state=await backend.getState();
+          if(!state.server||state.server.id!==p.id)throw new Error('The selected server changed. Refresh before continuing.');
+          const prompts:Record<string,[string,string]>={
+            writeServerFile:['Save changes to “'+p.path+'” for '+state.server.name+'?','Only the managed copy is edited. The server must be stopped and owned here; a rollback copy is saved first. This can change server behavior.'],
+            saveServerSettings:['Save Minecraft settings for '+state.server.name+'?','These settings apply on the next start. The managed server must be stopped and owned here. A rollback copy of server.properties is saved first. No router/firewall settings are changed.'],
+            saveServerSchedule:['Save a schedule for '+state.server.name+'?','Schedules run only while Seed Hosting is open, including in the tray. An enabled schedule may stop this server, save a stopped-world backup, or send the exact console command you selected. No server starts automatically and no OS task is created.'],
+            deleteServerSchedule:['Delete this server schedule?','The local schedule is removed. Existing world files and backups are not changed.'],
+            runServerSchedule:['Run this server schedule now?','Its configured backup, graceful stop, or console command will run once. Ownership and server state are checked again before execution.'],
+            managePlayer:['Send “'+p.action+'” for '+p.name+'?','This sends a Minecraft player command only to '+state.server.name+' while it is running and owned here. Console shows the result; membership in your hosting group is unchanged.'],
+          };
+          const prompt=prompts[method]!;
+          if(method==='saveServerSchedule'&&p.schedule.command)prompt[1]+='\nCommand: '+p.schedule.command;
+          if(!await confirm(prompt[0],prompt[1]))return null;
+          if(method==='writeServerFile')return backend.writeServerFile(p.id,p.path,p.text,p.expectedHash);
+          if(method==='saveServerSettings')return backend.saveServerSettings(p.id,p.settings);
+          if(method==='saveServerSchedule')return backend.saveServerSchedule(p.id,p.schedule);
+          if(method==='deleteServerSchedule')return backend.deleteServerSchedule(p.id,p.scheduleId);
+          if(method==='runServerSchedule')return backend.runServerSchedule(p.id,p.scheduleId);
+          return backend.managePlayer(p.id,p.action,p.name);
+        }
+        case 'getState':{
+          const state=await backend.getState();
+          const checks=onboardingChecks(state.onboarding,{...state,alwaysOn:await alwaysOn.status()});
+          return {...state,onboarding:{...state.onboarding,checks,completed:checks.ready==='complete'}};
+        }
         case 'alwaysOnStatus':return alwaysOn.status();
         case 'alwaysOnEnable':{
           const status=await alwaysOn.status();
@@ -158,7 +189,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         case 'pairAlwaysOn':
           if(!await confirm('Connect to your always-on PC?','Seed Hosting will look for the always-on PC that shows this code on your network, check that it really knows the code, and connect to it. From then on your world is kept there when you stop playing, and friends join one address.'))return null;
           return backend.pairAlwaysOn(p as {code:string;name:string});
-        case 'searchSetupMods':return backend.searchSetupMods(p as {query:string;gameVersion:string;offset:number});
+        case 'searchSetupMods':return backend.searchSetupMods(p as {query:string;gameVersion:string;offset:number;sort?:ModSort});
         case 'setupFabricMods':return backend.setupFabricMods(p as {projectIds:string[]});
         case 'listServerVersions':return new ServerSetupClient().listVersions();
         case 'discoverJava':return discoverJava(path.join(root,'runtimes'));
@@ -176,7 +207,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         }
         case 'configureSimpleProfile':
           if(!await confirm('Check Java and save this launch profile?', 'Seed Hosting will execute '+p.javaExecutable+' with -version, without a shell, then save Java and RAM. Only approve a trusted installed runtime. Nothing starts automatically.'))return;
-          return backend.configureSimpleProfile(p as {javaExecutable:string;memoryMiB:number});
+          return backend.configureSimpleProfile(p as unknown as SimpleProfileInput);
         case 'saveGameGateway':return backend.saveGameGateway(p as {enabled:boolean;localPort:number});
         case 'checkGameGateway':return backend.checkGameGateway();
         case 'openSetupLink':{
@@ -184,7 +215,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
           if(!url)throw new Error('Invalid setup link');
           return shell.openExternal(url);
         }
-        case 'saveOnboarding':return backend.saveOnboarding(p);
+        case 'saveOnboarding':return backend.saveOnboarding(p,await alwaysOn.status());
         case 'listSnapshots':return backend.listSnapshots();
         case 'restoreSnapshot':
           if(!await confirm('Restore this saved world revision?', 'Stop hosting first. Seed Hosting will preserve a safety snapshot and the previous folder, then restore into a separate managed folder. Hosting ownership is not rewound. Nothing starts automatically.'))return;
@@ -205,7 +236,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         case 'startPeerListener':return backend.startPeerListener();
         case 'sendSnapshot':return backend.sendSnapshot(p.fingerprint);
         case 'handoff':if(await confirm('Transfer hosting ownership to this peer?','Stop the server first. A fresh snapshot will be captured and shared, including server configuration/player data. This PC becomes fenced before transfer. If acknowledgment is lost or the peer declines, local hosting remains blocked until ownership is reconciled.'))return backend.handoff(p.fingerprint);return;
-        case 'searchMods':return backend.searchMods(p as {query:string;offset:number});
+        case 'searchMods':return backend.searchMods(p as {query:string;offset:number;sort?:ModSort});
         case 'saveModTarget':return backend.saveModTarget(p as any);
         case 'installMod':
           if(!await confirm('Install this Modrinth mod and its required dependencies?', 'Files are filtered for your selected Minecraft version and loader and verified against Modrinth’s SHA-512 checksums. Mods run code; a valid checksum does not make a mod safe. Server/client placement follows its published metadata unless you choose a destination. Nothing starts automatically.'))return;

@@ -1,0 +1,64 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { SeedHostApplication } from '../dist/src/core/application.js';
+import { createIdentity } from '../dist/src/core/peer-transport.js';
+import cp from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+
+test('unresolved journal prevents actual app launch and snapshot without changing ownership', async t => {
+  const root = await fs.mkdtemp(path.join(process.env.TMPDIR, 'server-file-recovery-app-'));
+  const source = path.join(root, 'source'); await fs.mkdir(source);
+  await fs.writeFile(path.join(source, 'eula.txt'), 'eula=true\n');
+  await fs.writeFile(path.join(source, 'server.properties'), 'motd=Original\n');
+  const app = new SeedHostApplication(path.join(root, 'profile'), await createIdentity());
+  t.after(async () => { await app.close(); await fs.rm(root, { recursive: true, force: true }); });
+  await app.open(); await app.importExisting(source, true);
+  await app.saveProfile({ executable: process.execPath, args: [path.resolve('tools/fake-java-server.mjs'), '--lifetime-ms=30000'] });
+  const server = (await app.getState()).server;
+  const journal = path.join(server.serverDir, '.seedhost-transaction-malformed.journal');
+  await fs.writeFile(journal, 'malformed durable evidence');
+  await assert.rejects(app.startServer(true), /recovery|transaction/i);
+  assert.ok(!app.process?.pid);
+  await assert.rejects(app.createSnapshot(), /recovery|transaction/i);
+  const after = (await app.getState()).server;
+  assert.equal(after.snapshotId, server.snapshotId);
+  assert.equal(after.ownership.state, 'owned');
+  await assert.rejects(app.readServerFile(server.id, 'server.properties'), /recovery/i);
+  assert.equal(await fs.readFile(journal, 'utf8'), 'malformed durable evidence');
+});
+
+test('a killed settings save is not repaired by read-only UI; next authorized settings save recovers it', async t => {
+  const root = await fs.mkdtemp(path.join(process.env.TMPDIR, 'settings-crash-recovery-'));
+  const source = path.join(root, 'source'); await fs.mkdir(source);
+  await fs.writeFile(path.join(source, 'eula.txt'), 'eula=true\n');
+  await fs.writeFile(path.join(source, 'server.properties'), 'motd=Original\n');
+  const app = new SeedHostApplication(path.join(root, 'profile'), await createIdentity());
+  const original = cp.execFile;
+  t.after(async () => { cp.execFile = original; syncBuiltinESMExports(); await app.close(); await fs.rm(root, { recursive: true, force: true }); });
+  await app.open(); await app.importExisting(source, true);
+  await app.saveProfile({ executable: process.execPath, args: [path.resolve('tools/fake-java-server.mjs'), '--lifetime-ms=30000'] });
+  const server = (await app.getState()).server;
+  cp.execFile = (...args) => {
+    const i = args[1].indexOf('-EncodedCommand') + 1;
+    const script = Buffer.from(args[1][i], 'base64').toString('utf16le');
+    args[1][i] = Buffer.from(script.replace('Rename(temp,p);published=true;', 'System.Diagnostics.Process.GetCurrentProcess().Kill();System.Threading.Thread.Sleep(10000);Rename(temp,p);published=true;'), 'utf16le').toString('base64');
+    return original(...args);
+  }; syncBuiltinESMExports();
+  await assert.rejects(app.saveServerSettings(server.id, { motd: 'Lost save' }), /helper failed/i);
+  cp.execFile = original; syncBuiltinESMExports();
+  const file = path.join(server.serverDir, 'server.properties');
+  await assert.rejects(fs.stat(file), { code: 'ENOENT' });
+  await assert.rejects(app.startServer(true), /recovery|transaction/i);
+  await assert.rejects(app.createSnapshot(), /recovery|transaction/i);
+  await assert.rejects(app.readServerFile(server.id, 'server.properties'), /recovery|transaction/i);
+  assert.match((await app.getServerDashboard(server.id)).settingsError, /recovery|transaction/i);
+  await assert.rejects(fs.stat(file), { code: 'ENOENT' });
+  await app.saveServerSettings(server.id, { motd: 'Recovered save' });
+  assert.equal(await fs.readFile(file, 'utf8'), 'motd=Recovered save\n');
+  const backups = (await fs.readdir(server.serverDir)).filter(n => n.startsWith('.seedhost-backup-'));
+  assert.equal(backups.length, 1);
+  assert.equal(await fs.readFile(path.join(server.serverDir, backups[0]), 'utf8'), 'motd=Original\n');
+  assert.ok(!(await fs.readdir(server.serverDir)).some(n => n.startsWith('.seedhost-transaction-')));
+});

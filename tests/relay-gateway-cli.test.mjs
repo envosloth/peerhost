@@ -6,7 +6,7 @@ import path from 'node:path';
 import { once } from 'node:events';
 const cli = path.resolve('dist/src/relay/cli.js');
 
-test('CLI opts into a separate loopback player listener and stops both cleanly', async t => {
+test('CLI opts into a separate loopback player listener and closes it on process termination', async t => {
   const root = await mkdtemp(path.join(process.env.TMPDIR ?? '.test-data', 'relay-gateway-cli-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const child = spawn(process.execPath, [cli, 'serve', '--root', root, '--port', '0', '--game-port', '0']);
@@ -19,5 +19,8 @@ test('CLI opts into a separate loopback player listener and stops both cleanly',
     child.once('close', code => { clearTimeout(timer); reject(new Error(`relay exited ${code}: ${stderr}`)); });
   });
   assert.equal(match[1], '127.0.0.1'); assert.ok(Number(match[2]) > 0);
-  const exited = once(child, 'close'); child.kill('SIGTERM'); assert.equal((await exited)[0], 0);
+  const exited = once(child, 'close'); child.kill('SIGTERM');
+  const [code, signal] = await exited;
+  if (process.platform === 'win32') assert.deepEqual([code, signal], [null, 'SIGTERM']);
+  else assert.deepEqual([code, signal], [0, null]);
 });

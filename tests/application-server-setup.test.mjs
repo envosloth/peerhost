@@ -1,7 +1,8 @@
 import test from 'node:test';
+import { javaProbeFixture } from './java-probe-fixture.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { mkdtemp, mkdir, writeFile, chmod, rm, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, readFile, readdir, lstat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { SeedHostApplication } from '../dist/src/core/application.js';
@@ -11,8 +12,7 @@ import { readSnapshot, materializeSnapshot } from '../dist/src/core/snapshots.js
 
 async function fixture(t, { tamper = false, delay = 0 } = {}) {
   const dir = await mkdtemp(path.join(process.env.TMPDIR, 'ph-app-setup-'));
-  const java = path.join(dir, 'java');
-  await writeFile(java, `#!${process.execPath}\nprocess.stderr.write('openjdk version "21.0.4"\\n');\n`); await chmod(java, 0o700);
+  const java = await javaProbeFixture(dir, { server: false });
   const jar = Buffer.from('Verified fixture bytes, NOT Minecraft');
   const hash = (bytes, algorithm = 'sha1') => createHash(algorithm).update(bytes).digest('hex');
   let origin;
@@ -62,7 +62,11 @@ test('Fabric creation captures its mod target in the adopted first revision', as
 test('failed adoption retains preparation evidence and fences possibly committed authority', async t => {
   const f = await fixture(t);
   await mkdir(path.join(f.root, 'state.json'));
-  await assert.rejects(f.app.createServer(f.input), /EISDIR|directory/i);
+  await assert.rejects(f.app.createServer(f.input), error =>
+    process.platform === 'win32'
+      ? error.code === 'EPERM' && error.syscall === 'rename' && error.dest === path.join(f.root, 'state.json')
+      : /EISDIR|directory/i.test(error.message));
+  assert.ok((await lstat(path.join(f.root, 'state.json'))).isDirectory(), 'the conflicting target remains untouched');
   const server = (await f.app.getState()).server;
   assert.equal(server.ownership.state, 'uncertain');
   const staging = (await readdir(f.root)).filter(x => x.startsWith('server-setup-'));
@@ -82,7 +86,7 @@ test('application creation locks preparation and adds a second server without di
   assert.equal(library.servers.length, 2);
   assert.notEqual(library.server.id, before.id);
   // The first server keeps its own lineage entry, folder and revision.
-  assert.deepEqual(library.servers.find(entry => entry.id === before.id), { id: before.id, name: before.name, active: false });
+  assert.deepEqual(library.servers.find(entry => entry.id === before.id), { id: before.id, name: before.name, active: false, state: 'offline', ownerName: 'this PC', configured: true });
   assert.ok((await readdir(before.serverDir)).includes('server.jar'), 'the first server keeps its own managed copy');
   const corrupt = await fixture(t, { tamper: true });
   await assert.rejects(corrupt.app.createServer(corrupt.input), /integrity/);

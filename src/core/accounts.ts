@@ -17,8 +17,8 @@ export function accountUsername(value: unknown): string {
   if (typeof value !== 'string' || !/^[a-zA-Z0-9_]{3,24}$/.test(value)) throw new Error('Username must be 3–24 letters, numbers or underscores');
   return value.toLowerCase();
 }
-function password(value: unknown): string {
-  if (typeof value !== 'string' || value.length < 12 || value.length > 128 || value.includes('\0')) throw new Error('Use a password of 12–128 characters');
+export function accountPassword(value: unknown): string {
+  if (typeof value !== 'string' || value.length < 4 || value.length > 128 || /\p{Cc}/u.test(value)) throw new Error('Use a password of 4–128 characters with no control characters');
   return value;
 }
 const digest = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -78,7 +78,7 @@ export class AccountService {
     if(op==='register'||op==='login') {
       if(Object.keys(p).sort().join(',')!=='password,username')throw new Error('Invalid account request');
       this.limit('auth:'+ip,10);
-      const username=accountUsername(p.username), secret=password(p.password);
+      const username=accountUsername(p.username), secret=accountPassword(p.password);
       if(this.hashing>=2)throw new Error('Service is busy; try again shortly');
       if(op==='register' && db.prepare('SELECT 1 FROM accounts WHERE username=?').get(username))throw new Error('That username is taken');
       if(op==='register' && Number(db.prepare('SELECT COUNT(*) AS n FROM accounts').get()!.n)>=100000)throw new Error('Service is full');

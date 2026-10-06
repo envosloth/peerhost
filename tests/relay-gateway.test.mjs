@@ -87,7 +87,7 @@ test('no ledger, parked or unacknowledged claims never authorize a tunnel', asyn
 test('invite-bootstrap connections stay excluded after enrollment on a second socket', async t => {
   const f = await fixture(t); const route = await checkout(f); await f.relay.listenGame();
   const stranger = await createIdentity();
-  await assert.rejects(connectPeer(stranger, f.peer.fingerprint, f.peer.host, f.peer.port), /disconnect/);
+  await assert.rejects(connectPeer(stranger, f.peer.fingerprint, f.peer.host, f.peer.port), error => error.code === 'PEER_AUTHORIZATION_DENIED');
   const { joinRelayInvite } = await import('../dist/src/core/relay-client.js');
   const invite = await f.relay.createInvite();
   const bootstrap = await connectPeer(stranger, f.peer.fingerprint, f.peer.host, f.peer.port); t.after(() => bootstrap.destroy());

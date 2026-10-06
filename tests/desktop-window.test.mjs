@@ -1,22 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
 import { _electron as electron } from 'playwright';
-import { dismissInitialSetup } from '../tools/desktop-test-setup.mjs';
+import { dismissInitialSetup, openSelectedServer } from '../tools/desktop-test-setup.mjs';
 
 // Real Electron app with an isolated profile. Exercises window chrome, splash, page tabs and appearance only;
 // no server process is started.
 const electronPath = createRequire(import.meta.url)('electron');
 async function launch(name) {
-  await mkdir('.test-data', { recursive: true });
-  const root = await mkdtemp(path.resolve('.test-data/window-' + name + '-'));
-  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  assert.ok(process.env.TMPDIR?.includes('hermes'), 'Window checks require isolated Hermes scratch');
+  const root = await mkdtemp(path.join(process.env.TMPDIR, 'seedhost-window-' + name + '-'));
+  const env = { ...process.env, SEEDHOST_TEST_LOOPBACK: '1' }; delete env.ELECTRON_RUN_AS_NODE; delete env.SEEDHOST_ACCOUNT_SERVICE;
   const args = [...(process.platform === 'linux' ? ['--password-store=gnome-libsecret'] : []), path.resolve('dist/apps/desktop/main.js'), '--profile-root=' + path.join(root, 'profile')];
   const app = await electron.launch({ executablePath: electronPath, args, env });
-  return { app, page: await app.firstWindow() };
+  const page = await app.firstWindow(); await page.bringToFront();
+  console.log('VISIBLE isolated Electron window QA: ' + root);
+  return { app, page, root };
 }
 const win = (app) => app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; return { fullScreen: w.isFullScreen(), minimized: w.isMinimized(), visible: w.isVisible(), count: BrowserWindow.getAllWindows().length }; });
 
@@ -57,7 +59,7 @@ async function layoutProblems(page, rootSelector = 'body') {
 }
 
 test('splash, borderless/fullscreen toggle, page tabs, appearance, minimize, close-to-tray and layout integrity', { timeout: 180000 }, async () => {
-  const { app, page } = await launch('chrome');
+  const { app, page, root } = await launch('chrome');
   const errors = []; page.on('pageerror', (e) => errors.push(String(e)));
   try {
     assert.equal((await win(app)).count, 1, 'the splash lives inside the single app window, not a second BrowserWindow');
@@ -85,20 +87,19 @@ test('splash, borderless/fullscreen toggle, page tabs, appearance, minimize, clo
     });
     assert.deepEqual(chrome, { sidebarTop: 0, inMain: true, background: 'rgba(0, 0, 0, 0)', border: '0px' });
     const mode = page.locator('#window-mode');
-    assert.equal(await mode.getAttribute('data-mode'), 'borderless');
-    assert.match(await mode.getAttribute('aria-label'), /fullscreen/i, 'borderless offers only fullscreen');
-    await mode.click();
-    await page.waitForFunction(() => document.querySelector('#window-mode')?.getAttribute('data-mode') === 'fullscreen');
+    assert.equal(await mode.getAttribute('data-mode'), 'fullscreen', 'a fresh launch occupies fullscreen');
     assert.equal((await win(app)).fullScreen, true);
     assert.match(await mode.getAttribute('aria-label'), /borderless/i, 'fullscreen offers only borderless');
-    assert.deepEqual(await layoutProblems(page), [], 'fullscreen layout');
     await mode.click();
     await page.waitForFunction(() => document.querySelector('#window-mode')?.getAttribute('data-mode') === 'borderless');
     assert.equal((await win(app)).fullScreen, false);
+    assert.match(await mode.getAttribute('aria-label'), /fullscreen/i, 'borderless offers only fullscreen');
     await page.keyboard.press('F11');
     await page.waitForFunction(() => document.querySelector('#window-mode')?.getAttribute('data-mode') === 'fullscreen');
+    assert.deepEqual(await layoutProblems(page), [], 'fullscreen layout');
     await page.keyboard.press('Escape');
     await page.waitForFunction(() => document.querySelector('#window-mode')?.getAttribute('data-mode') === 'borderless');
+    assert.equal((await win(app)).fullScreen, false);
 
     // Tiled Wayland windows ignore application-requested sizing; float only this isolated test process.
     if (process.platform === 'linux' && process.env.HYPRLAND_INSTANCE_SIGNATURE) {
@@ -115,25 +116,93 @@ test('splash, borderless/fullscreen toggle, page tabs, appearance, minimize, clo
     await page.waitForFunction(() => innerWidth <= 1000);
 
     // Each sidebar tab owns one page; only that page shows, only that tab is marked, focus stays on it.
-    const pages = ['operate', 'peers', 'settings'];
+    const pages = ['home', 'settings'];
     const pageState = () => page.evaluate((names) => names.map((n) => ({ n, selected: document.getElementById(n + '-tab').getAttribute('aria-selected'), shown: !document.getElementById(n + '-panel').hidden })), pages);
-    assert.deepEqual((await pageState()).filter((p) => p.shown).map((p) => p.n), ['operate'], 'starts on My server');
-    assert.equal(await page.locator('#console-tab').isHidden(), true, 'console page appears once a server exists');
+    assert.deepEqual((await pageState()).filter((p) => p.shown).map((p) => p.n), ['home'], 'starts on Home');
+    const serverTabs = ['operate', 'console', 'players', 'backups', 'scheduler', 'peers', 'mods', 'tunnels', 'server-settings', 'server-files'];
+    for (const name of serverTabs) assert.equal(await page.locator('#' + name + '-tab').isHidden(), true, name + ' is hidden without an opened server');
+    await page.locator('#nav-setup').click();
+    await page.locator('[data-setup-step="friends"]').click();
+    await page.waitForFunction(() => !document.querySelector('#setup-friends').hidden && document.querySelector('#activity-message').textContent.startsWith('Ready'));
+    assert.equal(await page.locator('#setup-friends #account-card').isVisible(), true, 'serverless username invitation setup stays accessible');
+    assert.equal(await page.locator('#account-open').isVisible(), true, 'username sign-in remains reachable without server tabs');
+    await page.locator('#setup-later').click();
+    await page.waitForFunction(() => !document.querySelector('#setup-dialog').open);
+    for (const name of ['operate', 'players', 'backups', 'scheduler', 'mods', 'tunnels', 'server-settings', 'server-files']) assert.equal(await page.locator('#' + name + '-tab').isDisabled(), true, name + ' needs a server');
     for (const name of pages) {
       await page.locator('#' + name + '-tab').click();
       for (const p of await pageState()) assert.deepEqual([p.selected, p.shown], p.n === name ? ['true', true] : ['false', false], 'after clicking ' + name + ': ' + p.n);
       assert.equal(await page.evaluate(() => document.activeElement?.id), name + '-tab', 'focus stays on the clicked tab');
       assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('.nav-tab.is-active')].map((e) => e.id)), [name + '-tab'], 'the active outline follows the click');
     }
+
+    // First-run guide: a roomy two-column layout; game type and memory are picked with tiles / chips that drive
+    // the underlying form values in both directions, and nothing inside the dialog overlaps at either size.
+    await page.locator('#nav-setup').click();
+    await page.waitForFunction(() => document.querySelector('#setup-dialog').open);
+    assert.equal(await page.locator('.setup-rail').isVisible(), true, 'guide has a side rail with the steps');
+    assert.equal(await page.locator('.setup-rail [data-setup-step]').count(), 5);
+    await page.locator('[data-setup-step="server"]').click();
+    await page.waitForFunction(() => !document.querySelector('#setup-server').hidden && document.querySelector('#activity-message').textContent.startsWith('Ready'));
+    // A saved draft resumes straight into the create form; otherwise pick "Create a new world" first.
+    if (await page.locator('#setup-choose-create').isVisible()) await page.locator('#setup-choose-create').click();
+    await page.waitForFunction(() => !document.querySelector('#setup-create-form').hidden);
+    await page.locator('label.option-tile:has(input[value="fabric"])').click();
+    assert.equal(await page.locator('#setup-loader').inputValue(), 'fabric', 'game type tile sets the form value');
+    assert.equal(await page.locator('#setup-memory, #setup-memory-chips').count(), 0, 'Create no longer offers a duplicate RAM choice');
+    // The rail's decoration is a sunflower-seed spiral, not a grid.
+    assert.ok(await page.locator('.setup-rail .phyllo circle').count() > 60, 'seed-spiral pattern is drawn');
+    // Creating a world is interactive: a live preview follows every choice, dice suggest a name, readiness is explained.
+    await page.locator('#setup-name').fill('Mossy Hollow');
+    assert.equal(await page.locator('#world-preview-name').textContent(), 'Mossy Hollow');
+    assert.match(await page.locator('#world-preview-meta').textContent(), /Fabric.*memory adjustable next/);
+    await page.locator('#setup-random-name').click();
+    const rolled = await page.locator('#setup-name').inputValue();
+    assert.ok(rolled && rolled !== 'Mossy Hollow', 'dice suggest a different name');
+    assert.equal(await page.locator('#world-preview-name').textContent(), rolled);
+    await page.waitForFunction(() => document.querySelector('#setup-version').value);
+    assert.match(await page.locator('#world-preview-ready').textContent(), /Ready to create/, 'no Java or EULA chores block a named world');
+    for (const [w, h] of [[1000, 700], [1240, 860]]) {
+      await app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setSize(w, h), [w, h]);
+      await page.waitForFunction((w) => innerWidth <= w, w);
+      assert.deepEqual(await layoutProblems(page, '#setup-dialog'), [], 'create form at ' + w);
+      for (const stage of ['runtime', 'friends', 'gateway', 'ready', 'server']) {
+        await page.locator(`[data-setup-step="${stage}"]`).click();
+        await page.waitForFunction((stage) => !document.querySelector('#setup-' + stage).hidden && document.querySelector('#activity-message').textContent.startsWith('Ready'), stage);
+        assert.deepEqual(await layoutProblems(page, '#setup-dialog'), [], stage + ' stage at ' + w);
+      }
+    }
+    // The single memory slider lives on the Memory step only (no duplicate control on Create).
+    await page.locator('[data-setup-step="runtime"]').click();
+    await page.waitForFunction(() => !document.querySelector('#setup-runtime').hidden);
+    assert.equal(await page.locator('#setup-runtime-memory').getAttribute('type'), 'range');
+    assert.match(await page.locator('#setup-memory-value').textContent(), /2 GB/);
+    assert.equal(await page.locator('#setup-memory-chips, #setup-memory.select-bridge').count(), 0, 'no duplicate chip/select memory control remains');
+    await page.locator('#setup-save-close').click();
+    await page.waitForFunction(() => !document.querySelector('#setup-dialog').open);
+    // Import a disposable stopped source through real native consent/IPC before entering server-only pages.
+    const source = path.join(root, 'Window fixture - NOT Minecraft');
+    await mkdir(source); await writeFile(path.join(source, 'eula.txt'), 'eula=true\n');
+    await writeFile(path.join(source, 'fixture.txt'), 'Disposable window navigation fixture.\n');
+    await app.evaluate(({ dialog }, source) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [source] }); dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false }); }, source);
+    await page.locator('#home-tab').click(); await page.locator('#import-server').click();
+    await page.waitForFunction(() => document.querySelector('#server-list .is-current button[data-action="open"]'));
+    await page.reload();
+    await page.waitForFunction(() => document.querySelector('#splash')?.hasAttribute('hidden'));
+    for (const name of serverTabs) assert.equal(await page.locator('#' + name + '-tab').isHidden(), true, name + ' stays hidden on Home with remembered selection');
+    await openSelectedServer(page);
+    for (const name of serverTabs) assert.equal(await page.locator('#' + name + '-tab').isVisible(), true, name + ' is exposed by Open server');
+    await page.screenshot({ path: path.join(root, 'opened-server.png') });
     // Status lights follow real state: a loopback-only peer listener lights the listener LED.
     await page.locator('#peers-tab').click(); await page.locator('#advanced-peers').evaluate((el) => { el.open = true; });
     assert.equal(await page.locator('#listener-led').getAttribute('class'), 'led');
     await page.locator('#start-listener').click();
     await page.waitForFunction(() => document.querySelector('#listener-status').textContent === 'LISTENING');
     await page.waitForFunction(() => document.querySelector('#listener-led').classList.contains('led-info'), undefined, { timeout: 5000 });
+    await page.locator('#settings-tab').click();
     await page.locator('#settings-tab').focus(); await page.keyboard.press('ArrowUp');
-    assert.equal(await page.evaluate(() => document.activeElement?.id), 'peers-tab', 'arrow keys skip the hidden console tab');
-    assert.equal(await page.locator('#peers-panel').isHidden(), false);
+    assert.equal(await page.evaluate(() => document.activeElement?.id), 'home-tab', 'arrow keys skip every hidden server tab on app settings');
+    assert.equal(await page.locator('#home-panel').isHidden(), false);
 
     const categories = ['appearance', 'network', 'app'];
     for (const theme of ['dark', 'light']) {
@@ -148,54 +217,15 @@ test('splash, borderless/fullscreen toggle, page tabs, appearance, minimize, clo
         assert.equal(await page.locator('#settings-savebar').isHidden(), cat === 'appearance', 'Save settings only where saved preferences live');
         assert.deepEqual(await layoutProblems(page), [], theme + ' settings/' + cat + ' at minimum size');
       }
+      await openSelectedServer(page);
       await page.locator('#peers-tab').click();
       await page.locator('#advanced-peers').evaluate((el) => { el.open = true; });
       await page.locator('#add-peer-details').evaluate((el) => { el.open = true; });
       assert.deepEqual(await layoutProblems(page), [], theme + ' friends page at minimum size');
-      await page.locator('#operate-tab').click();
-      assert.deepEqual(await layoutProblems(page), [], theme + ' server page at minimum size');
+      await page.locator('#home-tab').click();
+      assert.deepEqual(await layoutProblems(page), [], theme + ' home page at minimum size');
     }
-    // First-run guide: a roomy two-column layout; game type and memory are picked with tiles / chips that drive
-    // the underlying form values in both directions, and nothing inside the dialog overlaps at either size.
-    await page.locator('#nav-setup').click();
-    await page.waitForFunction(() => document.querySelector('#setup-dialog').open);
-    assert.equal(await page.locator('.setup-rail').isVisible(), true, 'guide has a side rail with the steps');
-    assert.equal(await page.locator('.setup-rail [data-setup-step]').count(), 5);
-    // A saved draft resumes straight into the create form; otherwise pick "Create a new world" first.
-    if (await page.locator('#setup-choose-create').isVisible()) await page.locator('#setup-choose-create').click();
-    await page.waitForFunction(() => !document.querySelector('#setup-create-form').hidden);
-    await page.locator('label.option-tile:has(input[value="fabric"])').click();
-    assert.equal(await page.locator('#setup-loader').inputValue(), 'fabric', 'game type tile sets the form value');
-    await page.locator('#setup-memory-chips label:has(input[value="4096"])').click();
-    assert.equal(await page.locator('#setup-memory').inputValue(), '4096', 'memory chip sets the form value');
-    await page.locator('#setup-memory').selectOption('3072');
-    assert.equal(await page.locator('#setup-memory-chips input[value="3072"]').isChecked(), true, 'form value reflects back onto the chips');
-    // The rail's decoration is a sunflower-seed spiral, not a grid.
-    assert.ok(await page.locator('.setup-rail .phyllo circle').count() > 60, 'seed-spiral pattern is drawn');
-    // Creating a world is interactive: a live preview follows every choice, dice suggest a name, readiness is explained.
-    await page.locator('#setup-name').fill('Mossy Hollow');
-    assert.equal(await page.locator('#world-preview-name').textContent(), 'Mossy Hollow');
-    await page.locator('#setup-memory-chips label:has(input[value="4096"])').click();
-    assert.match(await page.locator('#world-preview-meta').textContent(), /Fabric.*4 GB/);
-    await page.locator('#setup-random-name').click();
-    const rolled = await page.locator('#setup-name').inputValue();
-    assert.ok(rolled && rolled !== 'Mossy Hollow', 'dice suggest a different name');
-    assert.equal(await page.locator('#world-preview-name').textContent(), rolled);
-    await page.waitForFunction(() => document.querySelector('#setup-version').value);
-    assert.match(await page.locator('#world-preview-ready').textContent(), /Ready to create/, 'no Java or EULA chores block a named world');
-    await page.locator('#setup-memory').selectOption('3072');
-    for (const [w, h] of [[1000, 700], [1240, 860]]) {
-      await app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setSize(w, h), [w, h]);
-      await page.waitForFunction((w) => innerWidth <= w, w);
-      assert.deepEqual(await layoutProblems(page, '#setup-dialog'), [], 'create form at ' + w);
-      for (const stage of ['runtime', 'friends', 'gateway', 'ready', 'server']) {
-        await page.locator(`[data-setup-step="${stage}"]`).click();
-        await page.waitForFunction((stage) => !document.querySelector('#setup-' + stage).hidden && document.querySelector('#activity-message').textContent.startsWith('Ready'), stage);
-        assert.deepEqual(await layoutProblems(page, '#setup-dialog'), [], stage + ' stage at ' + w);
-      }
-    }
-    await page.locator('#setup-save-close').click();
-    await page.waitForFunction(() => !document.querySelector('#setup-dialog').open);
+
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1000, 700));
     await page.locator('#settings-tab').click(); await page.locator('#settings-cat-appearance').click();
     await page.locator('#appearance-density [value="compact"]').check();
@@ -215,5 +245,10 @@ test('splash, borderless/fullscreen toggle, page tabs, appearance, minimize, clo
     const closed = await win(app);
     assert.equal(closed.visible, false, 'X hides to tray by default'); assert.equal(closed.count, 1, 'app keeps running');
     assert.deepEqual(errors, []);
+    await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; w.show(); w.focus(); });
+    await page.bringToFront(); await page.screenshot({ path: path.join(root, 'window-verified.png') });
+    console.log('WINDOW PASS: visible real Electron navigation/chrome/layout; NOT Minecraft. ARTIFACT_DIR=' + root);
+    const hold = Number(process.env.SEEDHOST_QA_HOLD_SECONDS || 0);
+    if (hold) { console.log('Holding visible window for ' + hold + ' seconds.'); await new Promise(resolve => setTimeout(resolve, hold * 1000)); }
   } finally { await app.close(); }
 });

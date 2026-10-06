@@ -9,10 +9,18 @@ import { PublicAddress } from '../dist/src/core/public-address.js';
 const scratch = process.env.TMPDIR;
 assert.ok(scratch);
 const KEY = 'c'.repeat(64), AGENT = '239a25b9-9377-4d34-be26-94f11ec1813e', TUNNEL = '493875ca-042a-49ea-87ce-0734209d40f8';
-// A stand-in "agent": a Node script that proves it was given the key file, then stays running like the real one.
-const agentScript = Buffer.from(`#!${process.execPath}
+// A genuine native executable on Windows; POSIX retains its executable Node script.
+// Both read --secret-path, record only synthetic-key acceptance, and stay alive.
+const agentScript = process.platform === 'win32'
+  ? await (await import('./windows-agent-fixture.mjs')).windowsAgentFixture()
+  : Buffer.from(`#!${process.execPath}
 const fs = require('fs'); const a = process.argv; const secret = a[a.indexOf('--secret-path') + 1];
-fs.writeFileSync(require('path').join(require('path').dirname(secret), 'agent-saw-key'), fs.readFileSync(secret, 'utf8').trim() === '${KEY}' ? 'yes' : 'no');
+const dir = require('path').dirname(secret);
+const valid = fs.readFileSync(secret, 'utf8').trim() === '${KEY}';
+fs.writeFileSync(require('path').join(dir, 'agent-saw-key'), valid ? 'yes' : 'no');
+if (!valid) process.exit(3);
+fs.writeFileSync(require('path').join(dir, 'agent-pid'), String(process.pid));
+fs.writeFileSync(a[a.indexOf('-l') + 1], 'mock agent started; synthetic key accepted\\n');
 setInterval(() => {}, 1000);
 `);
 function vault() {
@@ -26,7 +34,7 @@ async function setup(t, overrides = {}) {
   let tunnels = [], setupState = 'WaitingForUserVisit', approveAfter = 2, polls = 0;
   const deps = {
     vault: vault(), target: () => ({ host: '127.0.0.1', port: 25566 }),
-    binary: { url: 'https://github.com/fixture/playit', sha256: createHash('sha256').update(agentScript).digest('hex'), file: 'playit-fixture' },
+    binary: { url: 'https://github.com/fixture/playit', sha256: createHash('sha256').update(agentScript).digest('hex'), file: process.platform === 'win32' ? 'playit-fixture.exe' : 'playit-fixture' },
     fetchBinary: async () => { calls.push('download'); return agentScript; },
     openBrowser: async (url) => { opened.push(url); },
     claim: async (route, payload) => {
@@ -66,24 +74,41 @@ test('one click: download, browser approval, hidden agent, tunnel to this PC, ve
   assert.ok(calls.includes('/tunnels/create')); assert.ok(calls.includes('probe:mossy-hollow.tun.ply.gg'));
   const dir = path.join(root, 'public-address');
   assert.equal(await readFile(path.join(dir, 'agent-saw-key'), 'utf8'), 'yes', 'agent was started with the approved key');
+  const pid = Number(await readFile(path.join(dir, 'agent-pid'), 'utf8'));
+  assert.ok(Number.isInteger(pid) && pid > 0, 'real mock agent reported its process ID');
+  assert.doesNotThrow(() => process.kill(pid, 0), 'mock agent stays alive');
+  assert.equal((await readFile(path.join(dir, 'agent.log'), 'utf8')).includes(KEY), false, 'agent log does not contain the key');
+  assert.equal(JSON.stringify(status).includes(KEY), false, 'public status does not expose the key');
   const saved = await readFile(path.join(dir, 'playit.json'), 'utf8');
   assert.equal(saved.includes(KEY), false, 'key is stored encrypted only');
-  assert.equal((await stat(path.join(dir, 'playit.json'))).mode & 0o777, 0o600);
+  // POSIX-only: Windows stat/chmod mode bits do not establish NTFS ACL confinement.
+  // Plaintext absence, encrypted storage and actual native startup are checked everywhere.
+  if (process.platform !== 'win32') assert.equal((await stat(path.join(dir, 'playit.json'))).mode & 0o777, 0o600, 'POSIX credential file is owner-only');
+  else t.diagnostic('Windows credential encryption verified; NTFS ACL confinement is not verified by POSIX mode bits.');
   // Turning it off and on again reuses the approved agent and tunnel: no browser, no download, no new tunnel.
   await pa.disable();
   assert.equal(pa.status().state, 'off');
+  await assert.rejects(readFile(path.join(dir, 'agent-key.txt')), { code: 'ENOENT' }, 'temporary plaintext key removed on stop');
+  await rm(path.join(dir, 'agent-saw-key'));
+  await rm(path.join(dir, 'agent-pid'));
   const before = { opened: opened.length, creates: calls.filter(c => c === '/tunnels/create').length, downloads: calls.filter(c => c === 'download').length };
   await pa.enable();
   assert.equal((await settle(['reachable', 'error'])).state, 'reachable');
+  assert.equal(await readFile(path.join(dir, 'agent-saw-key'), 'utf8'), 'yes', 'resumed agent read the saved approved key');
+  const resumedPid = Number(await readFile(path.join(dir, 'agent-pid'), 'utf8'));
+  assert.ok(Number.isInteger(resumedPid) && resumedPid > 0);
+  assert.doesNotThrow(() => process.kill(resumedPid, 0), 'resumed mock agent stays alive');
   assert.deepEqual({ opened: opened.length, creates: calls.filter(c => c === '/tunnels/create').length, downloads: calls.filter(c => c === 'download').length }, before);
 });
 
 test('a tampered download is refused and never run', async t => {
-  const { pa, calls, settle } = await setup(t, { deps: { fetchBinary: async () => Buffer.from('#!/bin/sh\necho evil\n') } });
+  const { root, pa, calls, opened, settle } = await setup(t, { deps: { fetchBinary: async () => Buffer.from('#!/bin/sh\necho evil\n') } });
   await pa.enable();
   const status = await settle(['error']);
   assert.match(status.detail, /checksum/);
   assert.equal(calls.includes('/claim/setup'), false, 'no approval is requested for an unverified app');
+  assert.deepEqual(opened, [], 'no browser consent requested for a tampered download');
+  await assert.rejects(readFile(path.join(root, 'public-address', 'agent-saw-key')), { code: 'ENOENT' }, 'tampered agent never started');
 });
 
 test('a declined approval stops cleanly without saving anything', async t => {

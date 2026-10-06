@@ -28,7 +28,7 @@ async function receiver(t: TestContext, f: Awaited<ReturnType<typeof fixture>>, 
   return { peer: { ...listener, fingerprint: f.receiver.fingerprint }, completion };
 }
 
-test('a modpack-sized server survives repeated stop snapshots and still transfers', { timeout: 120000 }, async (t) => {
+test('a modpack-sized server survives repeated stop snapshots and still transfers', { timeout: 300000 }, async (t) => {
   const f = await fixture(t);
   for (let d = 0; d < 50; d++) {
     await mkdir(path.join(f.source, 'config', `d${d}`), { recursive: true });

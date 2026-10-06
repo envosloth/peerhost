@@ -6,6 +6,14 @@ import path from 'node:path';
 
 export type ModLoader = 'fabric' | 'quilt' | 'forge' | 'neoforge';
 export type ModSide = 'server' | 'client';
+// Modrinth v2 supports these upstream indexes, not global alphabetical sorting.
+// https://docs.modrinth.com/api/operations/searchprojects/
+export const MOD_SORTS = ['popularity', 'downloads', 'title-asc', 'title-desc', 'relevance', 'follows', 'newest', 'updated'] as const;
+export type ModSort = typeof MOD_SORTS[number];
+export function validateModSort(value: unknown): ModSort {
+  if (typeof value !== 'string' || !(MOD_SORTS as readonly string[]).includes(value)) throw new Error('Invalid Modrinth sort');
+  return value as ModSort;
+}
 export const MOD_LOADERS: readonly ModLoader[] = ['fabric', 'quilt', 'forge', 'neoforge'];
 export interface ModTarget { loader: ModLoader | null; gameVersion: string | null }
 
@@ -149,10 +157,12 @@ export class ModrinthClient {
     return [loaders, [`versions:${target.gameVersion}`], ['project_type:mod']];
   }
 
-  async search(query: string, offset: number, target: { loader: ModLoader; gameVersion: string }, limit = 20): Promise<{ hits: ModSearchHit[]; total: number }> {
+  async search(query: string, offset: number, target: { loader: ModLoader; gameVersion: string }, limit = 20, sort: ModSort = query ? 'relevance' : 'downloads'): Promise<{ hits: ModSearchHit[]; total: number; sort: ModSort; sortScope: 'page' | 'catalogue' }> {
     assertModTarget(target);
+    sort = validateModSort(sort);
     if (typeof query !== 'string' || query.length > 200 || !Number.isSafeInteger(offset) || offset < 0 || offset > 100000 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('Invalid mod query or offset');
-    const params = new URLSearchParams({ query, offset: String(offset), limit: String(limit), index: query ? 'relevance' : 'downloads',
+    const index = sort === 'popularity' ? 'follows' : sort.startsWith('title-') ? 'downloads' : sort;
+    const params = new URLSearchParams({ query, offset: String(offset), limit: String(limit), index,
       facets: JSON.stringify(ModrinthClient.facets(target)) });
     const value = await this.json(`/search?${params}`) as { hits?: unknown[]; total_hits?: unknown };
     if (!value || !Array.isArray(value.hits)) throw new Error('Modrinth returned an unexpected search response');
@@ -170,7 +180,11 @@ export class ModrinthClient {
         description: str(hit.description, 300), downloads: Number.isSafeInteger(hit.downloads) ? hit.downloads as number : 0, iconUrl,
         placement: placementFor(str(hit.client_side, 20), str(hit.server_side, 20)) });
     }
-    return { hits, total: Number.isSafeInteger(value.total_hits) ? value.total_hits as number : hits.length };
+    if (sort === 'title-asc' || sort === 'title-desc') {
+      const compare = new Intl.Collator('en', { sensitivity: 'base', numeric: true }).compare;
+      hits.sort((a, b) => (sort === 'title-desc' ? -1 : 1) * (compare(a.title, b.title) || a.projectId.localeCompare(b.projectId, 'en')));
+    }
+    return { hits, total: Number.isSafeInteger(value.total_hits) ? value.total_hits as number : hits.length, sort, sortScope: sort.startsWith('title-') ? 'page' : 'catalogue' };
   }
 
   async project(key: string): Promise<ModProject> {

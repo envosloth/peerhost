@@ -3,18 +3,24 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { openSelectedServer } from '../tools/desktop-test-setup.mjs';
 
 // Beginner-UX renderer contract with a TEST-ONLY bridge. Not backend or Minecraft verification.
 let browser;
-before(async () => { browser = await chromium.launch({ executablePath: existsSync(chromium.executablePath()) ? chromium.executablePath() : '/usr/bin/chromium', headless: true }); });
+before(async () => { browser = await chromium.launch({ executablePath: existsSync(chromium.executablePath()) ? chromium.executablePath() : '/usr/bin/chromium', headless: false }); });
 after(async () => { await browser?.close(); });
 const progress = (step = 'server') => ({ version: 1, step, dismissed: false, completed: false, skipped: [], draft: { name: 'My Minecraft server', loader: 'vanilla', gameVersion: '', memoryMiB: 2048 }, error: null });
 const versions = Array.from({ length: 15 }, (_, i) => ({ id: `1.21.${15 - i}` }));
-function appState(server = null, extra = {}) { return { version: 'test', deviceId: 'a'.repeat(64), server, peers: [], logs: [], settings: {}, relay: null, onboarding: progress(), gateway: { enabled: false, localPort: 25565, state: 'off', detail: '' }, lanAddresses: ['192.168.1.20'], ...extra }; }
-function server() { return { name: 'Weekend world', state: 'offline', serverDir: '/fixture/server', storeDir: '/fixture/store', snapshotId: 's1', ownership: { state: 'owned', owner: 'a'.repeat(64) }, profile: { executable: '/fixture/java21', args: ['-Xmx2048M', '-jar', 'server.jar', 'nogui'] }, mods: { server: [], client: [] } }; }
+function appState(server = null, extra = {}) { return { version: 'test', deviceId: 'a'.repeat(64), server, servers: server ? [{ id: server.id, name: server.name, active: true, state: server.state, configured: true }] : [], peers: [], logs: [], settings: {}, relay: null, onboarding: progress(), gateway: { enabled: false, localPort: 25565, state: 'off', detail: '' }, lanAddresses: ['192.168.1.20'], ...extra }; }
+function server() { return { id: 'beginner-fixture', name: 'Weekend world', state: 'offline', serverDir: '/fixture/server', storeDir: '/fixture/store', snapshotId: 's1', ownership: { state: 'owned', owner: 'a'.repeat(64) }, profile: { executable: '/fixture/java21', args: ['-Xmx2048M', '-jar', 'server.jar', 'nogui'] }, mods: { server: [], client: [] } }; }
 async function renderer(t, state = appState()) {
   const page = await browser.newPage({ viewport: { width: 1240, height: 860 } });
-  t.after(() => page.close());
+  await page.bringToFront();
+  console.log('VISIBLE renderer contract (TEST-ONLY bridge): ' + t.name);
+  t.after(async () => {
+    if (!page.isClosed() && process.env.TMPDIR) await page.screenshot({ path: process.env.TMPDIR + '/seedhost-beginner-' + t.name.replace(/[^a-z0-9]+/gi, '-').slice(0, 90) + '.png' });
+    await page.close();
+  });
   const errors = []; page.on('pageerror', e => errors.push(e.message));
   t.after(() => assert.deepEqual(errors, [], 'no renderer exceptions'));
   await page.route('https://**/*', route => route.abort());
@@ -37,6 +43,20 @@ async function renderer(t, state = appState()) {
 }
 const settled = page => page.waitForFunction(() => document.querySelector('#activity-message').textContent.startsWith('Ready'));
 
+test('Home hides all server sections, including a remembered selection, until its library card is opened', async t => {
+  const page = await renderer(t, appState(server(), { onboarding: { ...progress('ready'), dismissed: true } }));
+  const names = ['operate', 'console', 'players', 'backups', 'scheduler', 'peers', 'mods', 'tunnels', 'server-settings', 'server-files'];
+  for (const reload of [false, true]) {
+    if (reload) { await page.reload(); await settled(page); }
+    assert.equal(await page.locator('#home-panel').isVisible(), true);
+    for (const name of names) assert.equal(await page.locator('#' + name + '-tab').isHidden(), true, name + ' hidden on Home');
+    await openSelectedServer(page);
+    for (const name of names) assert.equal(await page.locator('#' + name + '-tab').isVisible(), true, name + ' exposed only after Open');
+    await page.locator('#home-tab').click();
+    for (const name of names) assert.equal(await page.locator('#' + name + '-tab').isHidden(), true, name + ' hidden again on Home');
+  }
+});
+
 test('first run starts with a plain choice, not a form', async t => {
   const page = await renderer(t);
   await page.waitForFunction(() => document.querySelector('#setup-dialog').open);
@@ -49,15 +69,14 @@ test('first run starts with a plain choice, not a form', async t => {
   assert.match(await page.locator('[data-setup-step="gateway"]').textContent(), /optional/i);
 });
 
-test('new world form picks sensible defaults: latest release, automatic Java, RAM in GB', async t => {
+test('new world form picks sensible defaults: latest release, automatic Java, one memory choice only on the Memory step', async t => {
   const page = await renderer(t);
   await page.locator('#setup-choose-create').click();
   assert.equal(await page.locator('#setup-create-form').isVisible(), true);
   await page.waitForFunction(() => document.querySelector('#setup-version').value === '1.21.15');
   assert.equal(await page.locator('#setup-java').count(), 0, 'Java is automatic, not a choice');
-  assert.equal(await page.locator('#setup-memory').evaluate(e => e.tagName), 'SELECT');
-  assert.equal(await page.locator('#setup-memory').inputValue(), '2048');
-  assert.match(await page.locator('#setup-memory option:checked').textContent(), /2 GB/);
+  assert.equal(await page.locator('#setup-memory, #setup-memory-chips').count(), 0, 'Create no longer duplicates the memory choice');
+  assert.match(await page.locator('#setup-create-form').textContent(), /Starts with 2 GB of memory.*Memory step/s);
   assert.ok(await page.locator('#setup-version option').count() <= 11, 'only recent releases by default');
   await page.locator('#setup-all-versions').check();
   assert.equal(await page.locator('#setup-version option').count(), 16, 'every release on request');
@@ -100,7 +119,9 @@ test('Operate without a server shows a getting-started checklist', async t => {
 
 test('Operate with a server uses plain words and explains how to join', async t => {
   const page = await renderer(t, appState(server(), { onboarding: { ...progress('ready'), dismissed: true } }));
+  await openSelectedServer(page);
   assert.equal(await page.getByRole('button', { name: 'Start server', exact: true }).count(), 1);
+  await page.locator('#backups-tab').click();
   assert.equal(await page.getByRole('button', { name: 'Save backup', exact: true }).count(), 1);
   assert.equal(await page.locator('#snapshot-history-title').textContent(), 'Backups');
   assert.equal(await page.locator('#server-details').evaluate(d => d.open), false, 'paths and IDs are folded away');
@@ -144,6 +165,7 @@ test('joining a group while this PC already has the world does not say to receiv
       return call(method, payload);
     };
   }, relay);
+  await openSelectedServer(page);
   await page.locator('#peers-tab').click();
   if (await page.locator('#friends-intent-join').isVisible()) await page.locator('#friends-intent-join').click();
   await page.locator('#friend-code').fill('SEEDHOST-' + 'A'.repeat(40));

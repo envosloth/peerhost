@@ -57,7 +57,10 @@ test('playit is opt-in; importing an agent stores only an encrypted backend cred
   const state = await app.status(); assert.equal(state.connected, true); assert.equal(state.state, 'unchecked');
   assert.equal(JSON.stringify(state).includes(secret), false);
   const stored = await readFile(path.join(root, 'playit.json'), 'utf8'); assert.equal(stored.includes(secret), false);
-  assert.equal((await stat(path.join(root, 'playit.json'))).mode & 0o777, 0o600);
+  // POSIX-only: Node's Windows mode bits do not prove owner-only NTFS ACLs.
+  // Encryption/plaintext absence above remains asserted on every platform.
+  if (process.platform !== 'win32') assert.equal((await stat(path.join(root, 'playit.json'))).mode & 0o777, 0o600, 'POSIX credential file is owner-only');
+  else t.diagnostic('Windows credential encryption verified; NTFS ACL confinement is not verified by POSIX mode bits.');
   const { PlayitIntegration } = await module(); assert.equal((await new PlayitIntegration(root, deps).status()).connected, true);
   await app.disconnect(); assert.equal((await app.status()).state, 'off');
   assert.deepEqual(calls, ['/v1/agents/rundata']);

@@ -63,7 +63,8 @@
     saveModTarget: 'Couldn’t save mod compatibility', createInvite: 'Couldn’t create an invitation', joinWithInvite: 'Couldn’t join the group',
     parkAtRelay: 'Couldn’t hand off to the always-on PC', claimFromRelay: 'Couldn’t take over hosting', saveOnboarding: 'Couldn’t save your setup progress',
     saveGameGateway: 'Couldn’t save the player address', checkGameGateway: 'Couldn’t test the player address', recoverStopped: 'Couldn’t recover ownership',
-    selectServer: 'Couldn’t switch servers', deleteServer: 'Couldn’t delete the server',
+    selectServer: 'Couldn’t switch servers', deleteServer: 'Couldn’t delete the server', managePlayer: 'Couldn’t manage the player',
+    saveServerSchedule: 'Couldn’t save the schedule', deleteServerSchedule: 'Couldn’t delete the schedule', runServerSchedule: 'Couldn’t run the schedule',
     alwaysOnEnable: 'Couldn’t make this the always-on PC', alwaysOnDisable: 'Couldn’t turn off the always-on PC', alwaysOnNewCode: 'Couldn’t make a new code',
     pairAlwaysOn: 'Couldn’t connect to the always-on PC', publicAddressEnable: 'Couldn’t set up the public address', publicAddressDisable: 'Couldn’t turn off the public address', setupFabricMods: 'Couldn’t install the mods',
   };
@@ -140,7 +141,7 @@
   const setupSteps = ['server', 'runtime', 'friends', 'gateway', 'ready'];
   const DEFAULT_SERVER_NAME = 'My Minecraft server';
   const RECENT_RELEASES = 10;
-  const MEMORY_CHOICES = [1024, 1536, 2048, 3072, 4096, 6144, 8192, 12288, 16384];
+
   let setupDraft = null;
   let setupAutoChecked = false;
   let setupReturnFocus = null;
@@ -153,6 +154,20 @@
   let setupGatewayDirty = false;
   let setupGatewayCheck = null;
   let setupGatewayContext = null;
+  let setupCustomJavaDirty = false;
+  // Display only the supported single-token prefix. The core validator is authoritative on save.
+  const customJvmNames = new Set(['UseG1GC', 'UseZGC', 'UseShenandoahGC', 'UseParallelGC', 'UseSerialGC', 'MaxGCPauseMillis', 'DisableExplicitGC', 'AlwaysPreTouch', 'UseStringDeduplication', 'ParallelRefProcEnabled', 'UnlockExperimentalVMOptions', 'UnlockDiagnosticVMOptions', 'G1NewSizePercent', 'G1MaxNewSizePercent', 'G1HeapRegionSize', 'G1ReservePercent', 'G1HeapWastePercent', 'G1MixedGCCountTarget', 'InitiatingHeapOccupancyPercent', 'G1MixedGCLiveThresholdPercent', 'G1RSetUpdatingPauseTimePercent', 'SurvivorRatio', 'PerfDisableSharedMem', 'MaxTenuringThreshold', 'ParallelGCThreads', 'ConcGCThreads', 'UseNUMA', 'UseNUMAInterleaving']);
+  function profileCustomJavaArgs() {
+    const args = state?.server?.profile?.args || [];
+    const end = args.findIndex(arg => !arg.startsWith('-') || ['-jar', '-cp', '-classpath', '--class-path', '-p', '--module-path', '-m', '--module', '--'].includes(arg) || /^(?:--class-path|--module-path|--module)=/.test(arg));
+    return args.slice(0, end < 0 ? args.length : end).filter(arg => {
+      const property = /^-D([A-Za-z0-9_.-]{1,128})=(.*)$/.exec(arg);
+      if (property) return property[1] === 'java.awt.headless' || !/^(?:java|javax|jdk|sun)\./i.test(property[1]);
+      const flag = /^-XX:(?:[+-]([A-Za-z][A-Za-z0-9]{0,63})|([A-Za-z][A-Za-z0-9]{0,63})=([A-Za-z0-9.+-]{1,64}))$/.exec(arg);
+      return Boolean(flag && customJvmNames.has(flag[1] || flag[2])) || /^(?:-ea|-da|-server|-Xss\d+[kKmMgG])$/.test(arg);
+    });
+  }
+  $('setup-custom-java-args').addEventListener('input', () => { setupCustomJavaDirty = true; $('setup-custom-java-args').removeAttribute('aria-invalid'); });
   const defaultSetup = () => ({ step: 'server', dismissed: false, completed: false, skipped: [], draft: { name: DEFAULT_SERVER_NAME, loader: 'vanilla', gameVersion: '', memoryMiB: 2048 } });
   const setupPrepared = () => Boolean(state?.server?.profile?.executable && state.server.profile.args?.length && !state.server.modInstallError);
   const formatMemory = (mib) => mib % 1024 === 0 ? `${mib / 1024} GB` : `${(mib / 1024).toFixed(1)} GB`;
@@ -162,13 +177,19 @@
     const match = flag && /^-Xmx(\d+)([mMgG])$/.exec(flag);
     return match ? Number(match[1]) * (match[2].toLowerCase() === 'g' ? 1024 : 1) : null;
   }
-  // RAM is chosen from friendly GB steps; an unusual saved value stays selectable rather than being rewritten.
+  // Keep unusual imported values exact. Opening the guide never rewrites the launch profile.
   function fillMemory(id, selected) {
-    const values = [...new Set([...MEMORY_CHOICES, ...(Number.isSafeInteger(selected) ? [selected] : [])])].sort((x, y) => x - y);
-    $(id).replaceChildren(...values.map(mib => { const option = element('option', '', `${formatMemory(mib)}${mib === 2048 ? ' · recommended' : ''}`); option.value = String(mib); return option; }));
+    $(id).step = Number.isSafeInteger(selected) && selected % 512 !== 0 ? '1' : '512';
     $(id).value = String(Number.isSafeInteger(selected) ? selected : 2048);
-    syncBridges();
+    renderMemoryValue();
   }
+  function renderMemoryValue() {
+    const memory = Number($('setup-runtime-memory').value);
+    const label = `${formatMemory(memory)} (${memory.toLocaleString()} MiB)`;
+    $('setup-memory-value').textContent = label;
+    $('setup-runtime-memory').setAttribute('aria-valuetext', label);
+  }
+  $('setup-runtime-memory').addEventListener('input', renderMemoryValue);
   // Tiles and chips are the visible controls. Each hidden <select> stays the single form value the guide
   // reads and validates; picks flow into it and programmatic changes flow back onto the tiles.
   function syncBridges() {
@@ -200,13 +221,12 @@
   function renderWorldPreview() {
     const name = $('setup-name').value.trim();
     $('world-preview-name').textContent = name || 'Untitled world';
-    const memory = Number($('setup-memory').value);
-    $('world-preview-meta').textContent = [$('setup-loader').value === 'fabric' ? 'Fabric · mods ready' : 'Vanilla', $('setup-version').value || 'pick a version', memory ? formatMemory(memory) : 'pick memory'].join(' · ');
+    $('world-preview-meta').textContent = [$('setup-loader').value === 'fabric' ? 'Fabric · mods ready' : 'Vanilla', $('setup-version').value || 'pick a version', 'memory adjustable next'].join(' · ');
     const missing = [!name && 'a name', !$('setup-version').value && 'a version'].filter(Boolean);
     $('world-preview-ready').textContent = missing.length ? 'Still needed: ' + missing.join(', ') : 'Ready to create ✓';
     $('world-preview-ready').classList.toggle('is-ready', !missing.length);
   }
-  for (const id of ['setup-name', 'setup-loader', 'setup-version', 'setup-memory']) {
+  for (const id of ['setup-name', 'setup-loader', 'setup-version']) {
     for (const type of ['input', 'change']) $(id).addEventListener(type, renderWorldPreview);
   }
   const NAME_START = ['Mossy', 'Sunny', 'Willow', 'Amber', 'Clover', 'Maple', 'Misty', 'Pebble', 'Fern', 'Honey', 'Cedar', 'Bramble', 'Starlit', 'Copper', 'Juniper', 'Sprout'];
@@ -246,7 +266,7 @@
     select.addEventListener('change', syncBridges);
   }
   function setupPayload() {
-    return { step: setupDraft.step, dismissed: setupDraft.dismissed, completed: setupDraft.completed, skipped: [...setupDraft.skipped], draft: { name: $('setup-name').value, loader: $('setup-loader').value, gameVersion: $('setup-version').value, memoryMiB: Number($('setup-memory').value) } };
+    return { step: setupDraft.step, dismissed: setupDraft.dismissed, completed: setupDraft.completed, skipped: [...setupDraft.skipped], draft: { name: $('setup-name').value, loader: $('setup-loader').value, gameVersion: $('setup-version').value, memoryMiB: Number($('setup-runtime-memory').value) } };
   }
   function renderVersions() {
     const selected = $('setup-version').value || setupDraft?.draft.gameVersion || '';
@@ -259,26 +279,45 @@
     $('setup-version').value = selected || (shown.includes(setupLatest) ? setupLatest : '');
   }
   function stepDone(step) {
-    if (step === 'server') return Boolean(state?.server);
-    if (step === 'runtime') return setupPrepared();
-    if (step === 'friends') return Boolean(state?.relay);
-    if (step === 'gateway') return state?.gateway?.enabled === true || alwaysOnStatus?.running === true;
-    return state?.onboarding?.completed === true;
+    const checks = setupChecks();
+    return checks[step] === 'complete' || checks[step] === 'skipped';
+  }
+  // Configuration alone, without the saved completed flag: the payload asks to complete, so it cannot read its own prior state.
+  function setupResolved() {
+    const checks = setupChecks();
+    return checks.server === 'complete' && checks.runtime === 'complete' && [checks.friends, checks.gateway].every(check => check === 'complete' || check === 'skipped');
+  }
+  // Configured setup, not visited stages. The main process reports the same derivation after persistence.
+  function setupChecks() {
+    const server = state?.server;
+    const runtime = server?.modInstallError ? 'unavailable' : setupPrepared() ? 'complete' : 'pending';
+    const gatewayConfigured = Boolean(alwaysOnStatus?.running && !alwaysOnStatus.error || state?.gateway?.enabled === true && state?.relay && !state?.gateway?.error);
+    const gateway = gatewayConfigured ? 'complete' : setupDraft?.skipped.includes('gateway') ? 'skipped' : state?.gateway?.error || alwaysOnStatus?.error ? 'unavailable' : 'pending';
+    return {
+      server: server ? 'complete' : 'pending',
+      runtime,
+      friends: state?.relay ? 'complete' : setupDraft?.skipped.includes('friends') ? 'skipped' : 'pending',
+      gateway,
+      ready: state?.onboarding?.completed && !server?.modInstallError && Boolean(server?.profile?.executable && server.profile.args?.length) && runtime === 'complete' && ['complete', 'skipped'].includes(state?.relay ? 'complete' : setupDraft?.skipped.includes('friends') ? 'skipped' : 'pending') && ['complete', 'skipped'].includes(gateway) ? 'complete' : 'pending',
+    };
   }
   function renderReadySummary() {
     const server = state?.server;
     const java = server?.profile?.executable ? setupJava.find(j => j.executable === server.profile.executable) : null;
     const memory = profileMemoryMiB();
+    const checks = setupChecks();
+    const optional = [checks.friends, checks.gateway];
     const rows = [
       [Boolean(server), server ? `Server: ${server.name}` : 'Server: not created yet — go back to “Your server”.'],
-      [setupPrepared(), setupPrepared() ? `Runs with ${java ? `Java ${java.major}` : 'your chosen Java'}${memory ? ` and ${formatMemory(memory)} of memory` : ''}.` : 'Java & memory: not set yet.'],
-      [Boolean(state?.relay), state?.relay ? `Friends: in group “${state.relay.name}”.` : setupDraft?.skipped.includes('friends') ? 'Friends: skipped — add them any time from the Friends tab.' : 'Friends: not set up (optional).'],
-      [state?.gateway?.enabled === true, state?.gateway?.enabled ? 'Always-on PC: player address turned on.' : setupDraft?.skipped.includes('gateway') ? 'Always-on PC: skipped — you can add one later.' : 'Always-on PC: not set up (optional).'],
+      [setupPrepared(), setupPrepared() ? `Runs with ${java ? `Java ${java.major}` : 'your chosen Java'}${memory ? ` and ${formatMemory(memory)} of memory` : ''}.` : server?.modInstallError ? `Java & memory: unavailable until this is repaired — ${server.modInstallError}` : 'Java & memory: not set yet.'],
+      [checks.friends === 'complete', state?.relay ? `Friends: in group “${state.relay.name}”.` : checks.friends === 'skipped' ? 'Friends: skipped — add them any time from the Friends tab.' : 'Friends: not set up yet — finish the step or explicitly skip it.'],
+      [checks.gateway === 'complete', checks.gateway === 'unavailable' ? `Always-on PC: unavailable until this is repaired — ${state?.gateway?.error || alwaysOnStatus?.error}` : checks.gateway === 'complete' ? 'Always-on PC: ready to give players one address.' : checks.gateway === 'skipped' ? 'Always-on PC: skipped — you can add one later.' : 'Always-on PC: not set up yet — finish the step or explicitly skip it.'],
     ];
     const signature = JSON.stringify(rows);
     if ($('setup-ready-list').dataset.signature === signature) return;
     $('setup-ready-list').dataset.signature = signature;
     $('setup-ready-list').replaceChildren(...rows.map(([done, text]) => { const item = element('li', done ? 'is-done' : '', text); return item; }));
+    $('setup-ready-copy').textContent = state?.onboarding?.completed && optional.every(check => check === 'complete' || check === 'skipped') ? 'Setup is complete. You can reopen this guide any time from the sidebar.' : 'Finish your server and memory, then either set up Friends and the always-on PC or skip those optional steps. Nothing is falsely marked done.';
   }
   function renderSetup() {
     const blocked = !bridgeReady || isBusy();
@@ -290,18 +329,23 @@
     }
     if (!$('setup-dialog').open || !setupDraft) return;
     const step = setupDraft.step, server = state.server;
-    if (step === 'friends') { if ($('friends-controls').parentElement !== $('setup-friends-slot')) $('setup-friends-slot').append($('friends-controls')); }
-    else if ($('friends-controls').parentElement !== $('friends-home').parentElement) $('friends-home').after($('friends-controls'));
+    // The guide's Friends stage hosts the username account flow (accounts.js binds by element id, so the node is safe to
+    // move). The invitation-code controls stay on the Friends page and are never moved into the guide.
+    if (step === 'friends') { if ($('account-card').parentElement !== $('setup-friends-slot')) $('setup-friends-slot').append($('account-card')); }
+    else if ($('account-card').parentElement !== $('friends-home').parentElement) $('friends-home').before($('account-card'));
     for (const panel of document.querySelectorAll('[data-setup-panel]')) panel.hidden = panel.dataset.setupPanel !== step;
     for (const button of document.querySelectorAll('[data-setup-step]')) {
       button.setAttribute('aria-current', button.dataset.setupStep === step ? 'step' : 'false');
       button.dataset.done = String(stepDone(button.dataset.setupStep));
+      button.dataset.status = setupChecks()[button.dataset.setupStep];
+      button.title = { complete: 'Configured', skipped: 'Skipped — you can set this up any time', pending: 'Not set up yet', unavailable: 'Unavailable until the problem is repaired' }[button.dataset.status];
       button.disabled = blocked;
     }
     $('setup-title').textContent = server ? 'Setup guide' : 'Welcome to Seed Hosting';
-    for (const id of ['setup-back', 'setup-later', 'setup-save-close', 'setup-skip', 'setup-next']) $(id).disabled = blocked;
+    for (const id of ['setup-back', 'setup-later', 'setup-save-close', 'setup-skip', 'setup-unskip', 'setup-next']) $(id).disabled = blocked;
     $('setup-back').hidden = step === 'server' && (setupMode !== 'create' || Boolean(server));
-    $('setup-skip').hidden = !['friends', 'gateway'].includes(step) || stepDone(step);
+    $('setup-skip').hidden = !['friends', 'gateway'].includes(step) || setupChecks()[step] === 'complete';
+    $('setup-unskip').hidden = !['friends', 'gateway'].includes(step) || !setupDraft.skipped.includes(step);
     $('setup-next').hidden = step === 'server' && !server;
     $('setup-next').textContent = step === 'ready' ? 'Go to my server' : step === 'server' ? 'Continue' : 'Next';
     $('setup-later').hidden = step === 'ready';
@@ -310,14 +354,14 @@
     $('setup-choices').hidden = Boolean(server) || setupMode === 'create';
     $('setup-create-form').hidden = Boolean(server) || setupMode !== 'create';
     $('setup-name').disabled = blocked || Boolean(server);
-    for (const id of ['setup-loader', 'setup-version', 'setup-all-versions', 'setup-memory', 'setup-create']) $(id).disabled = blocked || Boolean(server);
+    for (const id of ['setup-loader', 'setup-version', 'setup-all-versions', 'setup-create']) $(id).disabled = blocked || Boolean(server);
     $('setup-existing').hidden = !server;
     $('setup-existing').textContent = server ? `✓ “${server.name}” is ready on this PC. Continue to check its Java and memory.` : '';
     $('setup-import').disabled = blocked || Boolean(server);
     $('setup-choose-create').disabled = blocked || Boolean(server);
     $('setup-choose-join').disabled = blocked;
     // Runtime stage.
-    for (const id of ['setup-runtime-java', 'setup-runtime-memory', 'setup-runtime-pick', 'setup-profile-save']) $(id).disabled = blocked || !server || !isStopped() || !ownsServer() || Boolean(server.modInstallError);
+    for (const id of ['setup-runtime-java', 'setup-runtime-memory', 'setup-custom-java-args', 'setup-runtime-pick', 'setup-profile-save']) $(id).disabled = blocked || !server || !isStopped() || !ownsServer() || Boolean(server.modInstallError);
     $('setup-runtime-feedback').textContent = !server ? 'Create or import a server first.' : !isStopped() ? 'Stop the server before changing Java or memory.' : !ownsServer() ? 'Another PC is hosting this world right now, so its settings can’t be changed here.' : server.modInstallError ? server.modInstallError : $('setup-runtime-feedback').textContent || '';
     // Always-on PC stage.
     renderAlwaysOn(blocked);
@@ -331,7 +375,7 @@
     $('setup-gateway-status').textContent = setupGatewayCheck || `Not checked yet · player address is ${state.gateway?.enabled ? 'on' : 'off'}${state.gateway?.detail ? ` (${state.gateway.detail})` : ''}.`;
     $('setup-status').textContent = blocked ? busyLabels[pendingMethod || state?.busy] || 'Saving…' : 'Progress is saved automatically.';
     // Ready stage.
-    $('setup-ready-title').textContent = setupPrepared() ? 'You’re all set' : 'Almost there';
+    $('setup-ready-title').textContent = state?.onboarding?.completed && setupChecks().ready === 'complete' ? 'You’re all set' : 'Almost there';
     renderReadySummary();
     syncBridges();
     $('setup-random-name').disabled = $('setup-name').disabled;
@@ -345,8 +389,9 @@
       setupMode = setupDraft.draft.gameVersion || setupDraft.draft.name !== DEFAULT_SERVER_NAME ? 'create' : 'choose';
       $('setup-name').value = setupDraft.draft.name;
       $('setup-loader').value = setupDraft.draft.loader;
-      fillMemory('setup-memory', setupDraft.draft.memoryMiB);
       fillMemory('setup-runtime-memory', profileMemoryMiB() ?? setupDraft.draft.memoryMiB);
+      setupCustomJavaDirty = false;
+      $('setup-custom-java-args').value = JSON.stringify(profileCustomJavaArgs(), null, 2);
       $('setup-runtime-feedback').textContent = '';
       delete $('setup-storage-status').dataset.checked;
       setupGatewayDirty = false;
@@ -374,7 +419,7 @@
     const payload = setupPayload();
     if (skipped && !payload.skipped.includes(payload.step)) payload.skipped.push(payload.step);
     payload.step = step; payload.dismissed = close;
-    payload.completed = step === 'ready' && close && setupPrepared();
+    payload.completed = step === 'ready' && close && setupResolved();
     $('setup-error').hidden = true;
     const saved = await runAction('saveOnboarding', payload, () => {
       const actual = state.onboarding;
@@ -398,14 +443,19 @@
   });
   $('import-server-empty').addEventListener('click', () => { openSetup('server'); $('setup-import').focus(); });
   $('setup-choose-create').addEventListener('click', () => { if ($('setup-choose-create').disabled) return; setupMode = 'create'; renderSetup(); $('setup-name').focus(); });
-  $('setup-choose-join').addEventListener('click', () => { if (!$('setup-choose-join').disabled) void saveSetup('friends').then(() => selectFriendIntent('join')); });
+  $('setup-choose-join').addEventListener('click', async () => {
+    if ($('setup-choose-join').disabled) return;
+    await saveSetup('friends');
+    if (!$('setup-dialog').open || setupDraft?.step !== 'friends') return;
+    await routeGuideToAccountJoin();
+  });
   $('setup-all-versions').addEventListener('change', renderVersions);
   for (const button of document.querySelectorAll('[data-setup-step]')) button.addEventListener('click', () => saveSetup(button.dataset.setupStep));
   for (const id of ['setup-save-close', 'setup-later']) $(id).addEventListener('click', () => saveSetup(setupDraft.step, true));
   $('setup-dialog').addEventListener('cancel', event => { event.preventDefault(); void saveSetup(setupDraft.step, true); });
   $('setup-close-unsaved').addEventListener('click', () => closeSetup());
   $('setup-dialog').addEventListener('close', () => {
-    $('friends-home').after($('friends-controls'));
+    $('friends-home').before($('account-card'));
     invitation = null; inviteCopyStatus = ''; joinNotice = ''; $('invite-code').value = ''; $('friend-code').value = ''; $('friend-name').value = '';
     for (const id of ['friend-name', 'friend-code']) { $(id).removeAttribute('aria-invalid'); $(`${id}-error`).hidden = true; $(`${id}-error`).textContent = ''; }
     invalidateInvitation(); renderFriends();
@@ -414,8 +464,28 @@
     if (setupDraft.step === 'server' && setupMode === 'create') { setupMode = 'choose'; return renderSetup(); }
     return saveSetup(setupSteps[Math.max(0, setupSteps.indexOf(setupDraft.step) - 1)]);
   });
+  // “Join a friend’s world” lands on the username flow: sign in when signed out, otherwise add by username / check invitations.
+  async function routeGuideToAccountJoin() {
+    $('account-card').scrollIntoView({ block: 'nearest' });
+    let account = null;
+    try { account = await window.seedhost.call('accountStatus'); } catch { account = null; }
+    if (account && account.signedIn) {
+      if (!$('username-friend-form').hidden) return $('friend-username').focus();
+      if (!$('account-create-group').hidden) return $('account-start-group').focus();
+      return $('account-refresh').focus();
+    }
+    // Signed out (or status unavailable): surface the sign-in prompt when this build can, otherwise focus its call to action.
+    // Focus the opener before its programmatic click so native dialog dismissal returns to the guide's sign-in action.
+    $('account-open').focus();
+    if (!$('account-open').disabled) $('account-open').click();
+  }
   $('setup-next').addEventListener('click', () => saveSetup(setupSteps[Math.min(4, setupSteps.indexOf(setupDraft.step) + 1)], setupDraft.step === 'ready'));
   $('setup-skip').addEventListener('click', () => saveSetup(setupSteps[setupSteps.indexOf(setupDraft.step) + 1], false, true));
+  $('setup-unskip').addEventListener('click', () => {
+    if (!setupDraft || isBusy() || !setupDraft.skipped.includes(setupDraft.step)) return;
+    setupDraft.skipped = setupDraft.skipped.filter(name => name !== setupDraft.step);
+    return saveSetup(setupDraft.step);
+  });
   $('setup-import').addEventListener('click', async () => { if (!$('setup-import').disabled) { await runAction('importServer'); if (state.server) await saveSetup('runtime'); } });
 
   async function loadSetupMetadata() {
@@ -454,13 +524,21 @@
     renderSetupJava(); $('setup-runtime-java').value = java.executable;
   }));
   $('setup-runtime-form').addEventListener('submit', event => {
-    event.preventDefault(); if ($('setup-profile-save').disabled) return;
+    event.preventDefault(); if (!$('setup-dialog').open || setupDraft?.step !== 'runtime' || $('setup-profile-save').disabled) return;
     const javaExecutable = $('setup-runtime-java').value, memoryMiB = Number($('setup-runtime-memory').value);
     if (!javaExecutable) return invalid('setup-runtime-java', 'Choose which Java to use.');
     if (!Number.isSafeInteger(memoryMiB) || memoryMiB < 512 || memoryMiB > 65536) return invalid('setup-runtime-memory', 'Choose an amount of memory.');
-    return runAction('configureSimpleProfile', { javaExecutable, memoryMiB }, () => {
+    let customJavaArgs;
+    if (setupCustomJavaDirty) {
+      try { customJavaArgs = JSON.parse($('setup-custom-java-args').value); }
+      catch { return invalid('setup-custom-java-args', 'Enter valid JSON: an array of JVM argument strings.'); }
+      if (!Array.isArray(customJavaArgs) || customJavaArgs.length > 32 || customJavaArgs.some(arg => typeof arg !== 'string' || arg.length > 1024 || /[\x00-\x1f\x7f]/.test(arg)) || customJavaArgs.join('').length > 8192) return invalid('setup-custom-java-args', 'Custom Java arguments must be a bounded JSON string array without control characters.');
+    }
+    return runAction('configureSimpleProfile', { javaExecutable, memoryMiB, ...(customJavaArgs ? { customJavaArgs } : {}) }, () => {
       if (state.server?.profile?.executable !== javaExecutable || profileMemoryMiB() !== memoryMiB) throw new Error('Saved Java and RAM profile could not be confirmed.');
-      fillMemory('setup-memory', memoryMiB);
+      if (customJavaArgs && JSON.stringify(profileCustomJavaArgs()) !== JSON.stringify(customJavaArgs)) throw new Error('Saved custom Java arguments could not be confirmed.');
+      setupCustomJavaDirty = false;
+      $('setup-custom-java-args').value = JSON.stringify(profileCustomJavaArgs(), null, 2);
       $('setup-runtime-feedback').textContent = `Saved · ${formatMemory(memoryMiB)} of memory.`;
     });
   });
@@ -498,7 +576,7 @@
     const draft = setupPayload().draft;
     if (!draft.name.trim() || /[\0\r\n]/.test(draft.name)) return invalid('setup-name', 'Give your server a name.');
     if (!draft.gameVersion) return invalid('setup-version', 'Choose a Minecraft version.');
-    if (!Number.isSafeInteger(draft.memoryMiB) || draft.memoryMiB < 512 || draft.memoryMiB > 65536) return invalid('setup-memory', 'Choose an amount of memory.');
+    if (!Number.isSafeInteger(draft.memoryMiB) || draft.memoryMiB < 512 || draft.memoryMiB > 65536) return invalid('setup-runtime-memory', 'Choose an amount of memory on the Memory step.');
     $('setup-error').hidden = true;
     // Empty Java = automatic. Pressing Create is the EULA agreement shown beside the button.
     await runAction('createServer', { ...draft, javaExecutable: '', eulaAccepted: true });
@@ -516,34 +594,46 @@
   // ---------- Setup guide: pick Fabric mods before the world exists ----------
   const setupPickedMods = new Map(); // projectId → title, in pick order
   const setupModTitles = new Map();
-  let setupModHits = [], setupModLoading = false, setupModQuery = null, setupModVersion = null, setupModRequest = 0, setupModNotice = '';
-  async function searchSetupMods() {
+  let setupModHits = [], setupModLoading = false, setupModQuery = null, setupModContext = null, setupModRequest = 0, setupModNotice = '';
+  let setupModOffset = 0, setupModTotal = 0, setupModSort = 'downloads';
+  const sortScopeNote = sort => sort.startsWith('title-') ? ' Alphabetical order applies only to this loaded page, not the full Modrinth catalogue; pages are selected by downloads.' : '';
+  const sortLabel = id => $(id).selectedOptions[0]?.textContent || 'Downloads';
+  async function searchSetupMods(offset = 0, query = $('setup-mod-query').value.trim(), sort = $('setup-mod-sort').value) {
     const gameVersion = $('setup-version').value;
     if (!gameVersion || $('setup-loader').value !== 'fabric') return;
-    const query = $('setup-mod-query').value.trim();
     const token = ++setupModRequest;
-    setupModLoading = true; setupModNotice = ''; renderSetup();
+    const context = setupModContext;
+    setupModLoading = true; setupModNotice = ''; setupModQuery = query; setupModSort = sort; setupModHits = []; renderSetup();
     try {
-      const result = await window.seedhost.call('searchSetupMods', { query, gameVersion, offset: 0 });
-      if (token !== setupModRequest) return;
-      if (!Array.isArray(result?.hits)) throw new Error('Modrinth returned an invalid search result.');
-      setupModHits = result.hits; setupModQuery = query; setupModVersion = gameVersion;
+      const result = await window.seedhost.call('searchSetupMods', { query, gameVersion, offset, sort });
+      if (token !== setupModRequest || context !== setupModContext) return;
+      if (!Array.isArray(result?.hits) || !Number.isSafeInteger(result.total) || result.total < 0) throw new Error('Modrinth returned an invalid search result.');
+      setupModHits = result.hits; setupModOffset = offset; setupModTotal = result.total;
       if (!setupModHits.length) setupModNotice = query ? `No Fabric mods for ${gameVersion} match “${query}”.` : `No Fabric mods found for ${gameVersion}.`;
     } catch (error) {
-      if (token !== setupModRequest) return;
-      setupModHits = []; setupModNotice = `Couldn’t reach Modrinth: ${errorMessage(error)} You can add mods later too.`;
+      if (token !== setupModRequest || context !== setupModContext) return;
+      setupModHits = []; setupModOffset = 0; setupModTotal = 0; setupModNotice = `Couldn’t reach Modrinth: ${errorMessage(error)} You can add mods later too.`;
     } finally { if (token === setupModRequest) { setupModLoading = false; renderSetup(); } }
   }
   function renderSetupMods(blocked, server) {
     const fabric = $('setup-loader').value === 'fabric';
+    const version = $('setup-version').value;
+    const context = JSON.stringify([fabric, version]);
+    if (setupModContext !== context) {
+      setupModContext = context; setupModRequest++; setupModLoading = false;
+      setupModHits = []; setupModQuery = null; setupModOffset = 0; setupModTotal = 0; setupModNotice = '';
+      setupPickedMods.clear();
+    }
     $('setup-mods').hidden = !fabric || Boolean(server);
     if ($('setup-mods').hidden) return;
-    const version = $('setup-version').value;
-    // A different Minecraft version invalidates picks: mods are version-specific.
-    if (setupModVersion && version !== setupModVersion) { setupModHits = []; setupModVersion = null; setupModQuery = null; if (setupPickedMods.size) { setupPickedMods.clear(); setupModNotice = 'Minecraft version changed, so your mod picks were cleared.'; } }
     if (version && !setupModLoading && setupModQuery === null && !setupModNotice) queueMicrotask(() => void searchSetupMods());
-    for (const id of ['setup-mod-query', 'setup-mod-search']) $(id).disabled = blocked || !version;
-    $('setup-mod-status').textContent = !version ? 'Choose a Minecraft version to see compatible mods.' : setupModLoading ? 'Searching Modrinth…' : setupModNotice || (setupModQuery ? `Results for “${setupModQuery}”` : `Most popular Fabric mods for ${version}`);
+    for (const id of ['setup-mod-query', 'setup-mod-sort']) $(id).disabled = blocked || !version;
+    $('setup-mod-search').disabled = blocked || !version || setupModLoading;
+    $('setup-mod-status').textContent = (!version ? 'Choose a Minecraft version to see compatible mods.' : setupModLoading ? 'Searching Modrinth…' : setupModNotice || `${setupModQuery ? `Results for “${setupModQuery}”` : `Fabric mods for ${version}`} · ${sortLabel('setup-mod-sort')}.`) + sortScopeNote(setupModSort);
+    $('setup-mod-list').setAttribute('aria-busy', String(setupModLoading));
+    $('setup-mod-previous').disabled = blocked || setupModLoading || setupModOffset === 0;
+    $('setup-mod-next').disabled = blocked || setupModLoading || !setupModHits.length || setupModOffset + MOD_PAGE_SIZE >= setupModTotal || setupModOffset + MOD_PAGE_SIZE > 10000;
+    $('setup-mod-page').textContent = setupModHits.length ? `${setupModOffset + 1}–${setupModOffset + setupModHits.length} of ${setupModTotal.toLocaleString()}` : 'No results loaded';
     const signature = JSON.stringify([setupModHits.map(h => h.projectId), [...setupPickedMods.keys()], blocked]);
     if ($('setup-mod-list').dataset.signature !== signature) {
       $('setup-mod-list').dataset.signature = signature;
@@ -567,6 +657,10 @@
     $('setup-mod-picked').textContent = setupPickedMods.size ? `${setupPickedMods.size} mod${setupPickedMods.size === 1 ? '' : 's'} will be installed: ${[...setupPickedMods.values()].join(', ')}` : '';
   }
   $('setup-mod-search').addEventListener('click', () => void searchSetupMods());
+  $('setup-mod-sort').addEventListener('change', () => void searchSetupMods(0));
+  $('setup-mod-next').addEventListener('click', () => { if (!$('setup-mod-next').disabled) void searchSetupMods(setupModOffset + MOD_PAGE_SIZE, setupModQuery, setupModSort); });
+  $('setup-mod-previous').addEventListener('click', () => { if (!$('setup-mod-previous').disabled) void searchSetupMods(Math.max(0, setupModOffset - MOD_PAGE_SIZE), setupModQuery, setupModSort); });
+  for (const id of ['setup-loader', 'setup-version']) $(id).addEventListener('change', () => renderSetup());
   $('setup-mod-query').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); void searchSetupMods(); } });
   $('setup-mod-list').addEventListener('click', event => {
     const button = event.target.closest('button[data-setup-mod]');
@@ -794,34 +888,7 @@
     $('join-help').replaceChildren(heading, list, note);
   }
   // One row per server on this PC. Only the server in use can run; deleting is guarded in the backend.
-  function renderServers(blocked) {
-    const servers = Array.isArray(state?.servers) ? state.servers : [];
-    $('server-library').hidden = servers.length === 0;
-    $('add-server').disabled = blocked;
-    const signature = JSON.stringify([servers, blocked]);
-    if ($('server-list').dataset.signature === signature) return;
-    $('server-list').dataset.signature = signature;
-    const rows = servers.map((entry) => {
-      const row = element('li', entry.active ? 'server-row is-current' : 'server-row');
-      const label = element('span', 'server-row-name', entry.name || 'Untitled server');
-      row.append(label);
-      if (entry.active) row.append(element('span', 'subtle-label', 'In use'));
-      const actions = element('span', 'server-row-actions');
-      if (!entry.active) {
-        const use = element('button', 'button button-small', 'Use this server');
-        use.type = 'button'; use.dataset.action = 'select'; use.dataset.id = entry.id;
-        use.disabled = blocked; use.title = `Switch to ${entry.name}`;
-        actions.append(use);
-      }
-      const remove = element('button', 'button button-small button-danger', 'Delete…');
-      remove.type = 'button'; remove.dataset.action = 'delete'; remove.dataset.id = entry.id;
-      remove.disabled = blocked; remove.title = `Delete ${entry.name} from this PC`;
-      actions.append(remove);
-      row.append(actions);
-      return row;
-    });
-    $('server-list').replaceChildren(...rows);
-  }
+  function renderServers(blocked) { window.seedDashboard.renderServers(state, blocked); }
   function renderGettingStarted() {
     const checks = { server: Boolean(state?.server), start: state?.server?.state === 'running', friends: Boolean(state?.relay), relay: state?.gateway?.enabled === true };
     for (const item of $('getting-started').querySelectorAll('li')) item.classList.toggle('is-done', checks[item.dataset.check] === true);
@@ -886,20 +953,20 @@
     for (const id of ['mods-details', 'profile-details', 'console-section', 'server-status']) $(id).hidden = !server;
     $('console-tab').hidden = !server;
     if (!server && $('console-tab').getAttribute('aria-selected') === 'true') selectPage('operate');
-    const logs = state?.logs || [];
+    const logs = window.seedDashboard.logsFor(state);
     $('console-peek').hidden = !server || !logs.length;
     $('console-peek-line').textContent = logs.length ? logs[logs.length - 1] : 'No process output yet.';
     $('console-state').textContent = server?.state === 'running' ? 'Running' : server ? PROCESS_LABELS[server.state] || 'Unknown' : 'Not running';
     $('console-state').className = server?.state === 'running' ? 'badge is-running' : ['starting', 'stopping'].includes(server?.state) ? 'badge is-working' : 'badge';
     $('server-command').disabled = blocked || server?.state !== 'running';
     $('send-command').disabled = $('server-command').disabled || !$('server-command').value.trim();
-    const logText = (state?.logs || []).join('\n');
+    const logText = logs.join('\n');
     if (logText !== lastLogs) {
       $('console-lines').textContent = logText;
       lastLogs = logText;
       if ($('follow-logs').checked) $('console-output').scrollTop = $('console-output').scrollHeight;
     }
-    $('console-empty').hidden = Boolean(state?.logs?.length);
+    $('console-empty').hidden = Boolean(logs.length);
     $('device-fingerprint').value = state?.deviceId || '';
     $('copy-fingerprint').disabled = !bridgeReady || !state?.deviceId;
     $('start-listener').disabled = blocked || Boolean(state?.peerEndpoint);
@@ -946,6 +1013,7 @@
     if (selectedSend) $('send-dialog-snapshot').textContent = `Snapshot: ${selectedSend.snapshotId}${sendStillCurrent ? '' : ' · State changed. Cancel and review again.'}`;
     $('settings-savebar').hidden = settingsCategory === 'appearance' && !settingsDirty;
     renderMarquee();
+    window.seedDashboard.update(state, blocked);
   }
 
   let renderedMods = null;
@@ -990,6 +1058,7 @@
   let modOffset = 0;
   let modTotal = 0;
   let modQuery = '';
+  let modSort = 'downloads';
   let modNotice = '';
   let renderedCatalogue = null;
   const targetReady = () => !state?.server?.modsError && Boolean(state?.server?.modTarget?.loader && state?.server?.modTarget?.gameVersion);
@@ -1023,10 +1092,11 @@
     $('mod-target-feedback').textContent = state?.server?.modsError ? `Mods unavailable: ${state.server.modsError} Mod actions are blocked until metadata can be read safely.` : !state?.server ? 'Import a modded server to browse compatible mods.' : modTargetDirty ? 'Unsaved compatibility · save to update results. This does not install or change the loader.' : targetReady() ? `Showing mods for ${target.loader} ${target.gameVersion}${target.detected ? ' · detected from server' : ' · saved target'}.` : 'Loader or version could not be detected. Set both above; this does not install the loader.';
     const searchable = bridgeReady && targetReady() && !modTargetDirty;
     $('mod-query').disabled = !searchable;
+    $('mod-sort').disabled = !searchable;
     $('search-mods').disabled = !searchable || modLoading;
     $('search-mods').textContent = modLoading ? 'Searching…' : 'Search';
     $('mod-results').setAttribute('aria-busy', String(modLoading));
-    $('mod-search-status').textContent = state?.server?.modsError ? 'Mod browsing is blocked while mod metadata is unavailable.' : !targetReady() ? 'Save compatibility to browse mods.' : modTargetDirty ? 'Save compatibility before searching or installing.' : modLoading ? 'Loading compatible mods from Modrinth…' : modNotice || (modLoaded ? modHits.length ? `${modQuery ? `Results for “${modQuery}”` : 'Popular on Modrinth'} · ${modTotal.toLocaleString()} compatible projects. Placement follows each project’s server/client requirements.` : 'No compatible mods found. Try a different search or compatibility target.' : 'Open Mods to browse popular compatible mods.');
+    $('mod-search-status').textContent = (state?.server?.modsError ? 'Mod browsing is blocked while mod metadata is unavailable.' : !targetReady() ? 'Save compatibility to browse mods.' : modTargetDirty ? 'Save compatibility before searching or installing.' : modLoading ? 'Loading compatible mods from Modrinth…' : modNotice || (modLoaded ? modHits.length ? `${modQuery ? `Results for “${modQuery}”` : 'Mods on Modrinth'} · ${sortLabel('mod-sort')} · ${modTotal.toLocaleString()} compatible projects. Placement follows each project’s server/client requirements.` : 'No compatible mods found. Try a different search or compatibility target.' : 'Open Mods to browse compatible mods.')) + sortScopeNote(modSort);
     const signature = JSON.stringify([modHits, state?.server?.mods]);
     if (signature !== renderedCatalogue) {
       renderedCatalogue = signature;
@@ -1065,19 +1135,20 @@
     }
     for (const button of $('mod-results').querySelectorAll('button[data-slug]')) button.disabled = !bridgeReady || Boolean(state?.server?.modsError);
     $('mod-previous').disabled = !searchable || modLoading || !modLoaded || modOffset === 0;
-    $('mod-next').disabled = !searchable || modLoading || !modLoaded || modOffset + MOD_PAGE_SIZE >= modTotal;
+    $('mod-next').disabled = !searchable || modLoading || !modLoaded || !modHits.length || modOffset + MOD_PAGE_SIZE >= modTotal || modOffset + MOD_PAGE_SIZE > 10000;
     $('mod-page').textContent = modLoaded && modHits.length ? `${modOffset + 1}–${modOffset + modHits.length} of ${modTotal.toLocaleString()}` : 'No results loaded';
   }
 
-  async function searchMods(offset = 0, query = $('mod-query').value.trim()) {
+  async function searchMods(offset = 0, query = $('mod-query').value.trim(), sort = $('mod-sort').value) {
     if (!bridgeReady || !targetReady() || modTargetDirty) return;
     const token = ++modRequest;
     const context = modContext;
     modLoading = true;
+    modHits = []; modSort = sort;
     modNotice = '';
     renderModBrowser();
     try {
-      const result = await window.seedhost.call('searchMods', { query, offset });
+      const result = await window.seedhost.call('searchMods', { query, offset, sort });
       if (token !== modRequest || context !== modContext) return;
       if (!Array.isArray(result?.hits) || !Number.isSafeInteger(result.total) || result.total < 0) throw new Error('Modrinth returned an invalid search result.');
       modHits = result.hits;
@@ -1117,8 +1188,9 @@
     });
   });
   $('mod-search-form').addEventListener('submit', (event) => { event.preventDefault(); if (!$('search-mods').disabled) void searchMods(0); });
-  $('mod-next').addEventListener('click', () => { if (!$('mod-next').disabled) void searchMods(modOffset + MOD_PAGE_SIZE, modQuery); });
-  $('mod-previous').addEventListener('click', () => { if (!$('mod-previous').disabled) void searchMods(Math.max(0, modOffset - MOD_PAGE_SIZE), modQuery); });
+  $('mod-sort').addEventListener('change', () => void searchMods(0));
+  $('mod-next').addEventListener('click', () => { if (!$('mod-next').disabled) void searchMods(modOffset + MOD_PAGE_SIZE, modQuery, modSort); });
+  $('mod-previous').addEventListener('click', () => { if (!$('mod-previous').disabled) void searchMods(Math.max(0, modOffset - MOD_PAGE_SIZE), modQuery, modSort); });
   $('mod-results').addEventListener('click', async (event) => {
     const button = event.target.closest('button');
     if (!button || button.disabled) return;
@@ -1147,7 +1219,7 @@
     if (!bridgeReady || isBusy()) return;
     if ($('setup-dialog').open && !closeSetup()) return;
     playHelpRequested = true;
-    selectPage('operate'); renderJoinHelp();
+    selectPage(state?.server ? 'operate' : 'home'); renderJoinHelp();
     $('join-help').scrollIntoView({ block: 'center' });
   });
   let checkedInvitation = null;
@@ -1451,7 +1523,8 @@
       // A polling read begun before the mutation must finish before the read-back.
       if (refreshInFlight) await refreshInFlight;
       const verified = await refresh();
-      if (!verified) return false;
+      // Native dialog cancellation is null, not a successful mutation.
+      if (!verified || result === null) return false;
       if (onVerified) await onVerified(result);
       if (state?.relay) void refreshFriends();
       return true;
@@ -1601,9 +1674,7 @@
     }
     return select;
   }
-  selectPage = tabGroup(['operate', 'console', 'peers', 'settings'], (n) => `${n}-tab`, (n) => `${n}-panel`, (name) => {
-    if (name === 'console' && $('follow-logs').checked) $('console-output').scrollTop = $('console-output').scrollHeight;
-  });
+  selectPage = window.seedDashboard.bind({ runAction, refresh, showError });
   selectCategory = tabGroup(['appearance', 'network', 'app'], (n) => `settings-cat-${n}`, (n) => `settings-${n}`, (name) => {
     settingsCategory = name;
     $('settings-savebar').hidden = name === 'appearance' && !settingsDirty;

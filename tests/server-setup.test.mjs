@@ -1,6 +1,7 @@
 import test from 'node:test';
+import { javaProbeFixture } from './java-probe-fixture.mjs';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, chmod, rm, readFile, readdir, mkdir, symlink } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, readFile, readdir, mkdir, symlink } from 'node:fs/promises';
 import path from 'node:path';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
@@ -16,12 +17,18 @@ async function root(t) {
   t.after(() => rm(dir, { recursive: true, force: true }));
   return dir;
 }
-async function javaFixture(dir, version = '21.0.4', body) {
-  const executable = path.join(dir, 'java fixture ; no shell');
-  await writeFile(executable, `#!${process.execPath}\n${body ?? `if (JSON.stringify(process.argv.slice(2)) !== '["-version"]') process.exit(5); process.stderr.write('openjdk version "${version}" 2024-07-16\\n');`}\n`);
-  await chmod(executable, 0o700);
-  return executable;
+async function javaFixture(dir, version = '21.0.4', options = {}) {
+  return javaProbeFixture(dir, { executable: path.join(dir, 'java fixture ; no shell' + (process.platform === 'win32' ? '.exe' : '')), version, server: false, ...options });
 }
+test('native Java fixture rejects extra probe arguments and propagates nonzero exits', async t => {
+  const { javaProbeFixture } = await import('./java-probe-fixture.mjs');
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const run = promisify(execFile);
+  const executable = await javaProbeFixture(await root(t), { server: false, exitCode: 7 });
+  await assert.rejects(run(executable, ['-version', 'unexpected'], { timeout: 1000 }), error => error.code === 5);
+  await assert.rejects(run(executable, ['-version']), error => error.code === 7);
+});
 const hash = (value, algorithm = 'sha1') => createHash(algorithm).update(value).digest('hex');
 async function fixture(t, options = {}) {
   const dir = await root(t); const requests = []; let origin;
@@ -165,7 +172,7 @@ test('prepare validates input and trusted staging before any network or filesyst
   for (const patch of [{ name: '../world' }, { name: 'CON' }, { name: 'world.' }, { name: '  ' }, { name: 'a'.repeat(101) }, { name: 'a\n' }, { gameVersion: '../x' }, { loader: 'forge' }, { memoryMiB: 255 }, { memoryMiB: 2048.5 }, { memoryMiB: 1048577 }, { eulaAccepted: 'true' }, { javaExecutable: 'java' }, { javaExecutable: '/tmp/x.cmd' }, { extra: true }]) {
     await assert.rejects(f.client.prepare(f.staging, { ...f.input, ...patch }), /Invalid|Choose/);
   }
-  const link = path.join(f.dir, 'stage-link'); await symlink(f.staging, link);
+  const link = path.join(f.dir, 'stage-link'); await symlink(f.staging, link, process.platform === 'win32' ? 'junction' : 'dir');
   for (const stage of ['relative', link, f.input.javaExecutable]) await assert.rejects(f.client.prepare(stage, f.input), /staging/);
   assert.deepEqual(f.requests, []); assert.deepEqual(await readdir(f.staging), []);
 });
@@ -216,14 +223,17 @@ test('discoverJava returns deduplicated working JAVA_HOME/PATH executables witho
   assert.equal(typeof api.discoverJava, 'function', 'discoverJava is implemented');
   const dir = await root(t);
   await mkdir(path.join(dir, 'bin'));
-  const executable = await javaFixture(path.join(dir, 'bin'));
-  await symlink(executable, path.join(dir, 'bin', 'java'));
+  const name = process.platform === 'win32' ? 'java.exe' : 'java';
+  const executable = process.platform === 'win32'
+    ? await javaProbeFixture(dir, { executable: path.join(dir, 'bin', name), server: false })
+    : await javaFixture(path.join(dir, 'bin'));
+  if (process.platform !== 'win32') await symlink(executable, path.join(dir, 'bin', name));
   const previous = { PATH: process.env.PATH, JAVA_HOME: process.env.JAVA_HOME };
   process.env.PATH = path.join(dir, 'bin') + path.delimiter + '.';
   process.env.JAVA_HOME = dir;
   try {
     assert.deepEqual(await api.discoverJava(), [{ executable, major: 21, version: '21.0.4' }]);
-    await rm(path.join(dir, 'bin', 'java'));
+    await rm(path.join(dir, 'bin', name));
     assert.deepEqual(await api.discoverJava(), []);
   } finally {
     for (const key of Object.keys(previous)) if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
@@ -231,9 +241,9 @@ test('discoverJava returns deduplicated working JAVA_HOME/PATH executables witho
 });
 test('probeJava bounds output/time and refuses non-native-selected paths', async t => {
   const dir = await root(t);
-  const executable = await javaFixture(dir, '', 'process.stdout.write("openjdk version \\\"21\\\"\\n" + "x".repeat(32768));');
+  const executable = await javaFixture(dir, '', { stdout: 'openjdk version "21"\n' + 'x'.repeat(32768), stderr: '' });
   await assert.rejects(api.probeJava(executable), /probe failed/);
-  await javaFixture(dir, '', 'setTimeout(() => process.stderr.write("openjdk version \\\"21\\\"\\n"), 6500);');
+  await javaFixture(dir, '21', { delayMs: 6500 });
   const before = Date.now();
   await assert.rejects(api.probeJava(executable), /probe failed/);
   assert.ok(Date.now() - before < 6000);
@@ -245,7 +255,7 @@ test('probeJava understands legacy and unquoted modern stdout, rejects malformed
   const dir = await root(t);
   const executable = await javaFixture(dir, '1.8.0_402');
   assert.equal((await api.probeJava(executable)).major, 8);
-  await javaFixture(dir, '', 'process.stdout.write("openjdk 25.0.1 2025-10-21\\n");');
+  await javaFixture(dir, '', { stdout: 'openjdk 25.0.1 2025-10-21\n', stderr: '' });
   assert.equal((await api.probeJava(executable)).major, 25);
   await javaFixture(dir, '21.bad');
   await assert.rejects(api.probeJava(executable), /version/);

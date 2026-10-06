@@ -1,7 +1,9 @@
 import type { TLSSocket } from 'node:tls';
-import { connectPeer, readFrame, writeFrame, type PeerIdentity } from './peer-transport.js';
+import { connectPeer, PeerTransportError, isRetryablePeerError, readFrame, writeFrame, type PeerIdentity } from './peer-transport.js';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { TransferPeer } from './transfers.js';
 import { decodeInvite, type CreatedInvite } from './invites.js';
+import { isPrivateEndpointHost } from './endpoints.js';
 import { friendName } from './relay-friends-store.js';
 
 /** Relay connections start with one of these frames; `park` and `claim` then run the ordinary transfer protocol. */
@@ -49,12 +51,31 @@ export async function joinRelayInvite(identity: PeerIdentity, code: string, name
   const memberName = friendName(name);
   if (invite.relayFingerprint === identity.fingerprint) throw new Error('Cannot join your own relay identity');
   let reply: Record<string, unknown>;
-  try {
-    reply = await friendRequest(identity, { fingerprint: invite.relayFingerprint, host: invite.host, port: invite.port },
-      { ...relayRequest('join'), token: invite.token.toString('hex'), name: memberName });
-  } catch (error) {
-    if (/disconnected before client acceptance/.test((error as Error).message)) throw new Error('Invite may be expired or already used; relay disconnected before accepting it');
-    throw error;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      reply = await friendRequest(identity, { fingerprint: invite.relayFingerprint, host: invite.host, port: invite.port },
+        { ...relayRequest('join'), token: invite.token.toString('hex'), name: memberName });
+      break;
+    } catch (error) {
+      // Only an explicit refusal from the pinned relay warrants this diagnostic. Admission
+      // precedes token disclosure, so the relay cannot identify which token condition failed.
+      if (error instanceof PeerTransportError && error.code === 'PEER_AUTHORIZATION_DENIED') {
+        throw new PeerTransportError(error.code, 'Invitation unavailable: expired, used, revoked or not valid');
+      }
+      // Join is replay-safe only with this exact token, certificate and pinned endpoint: the
+      // relay's durable receipt allows the same device to recover a lost response, never another.
+      if (attempt === 0 && isRetryablePeerError(error)) {
+        await delay(150);
+        decodeInvite(code); // Expiry still fails closed before a second token disclosure.
+        continue;
+      }
+      if (isRetryablePeerError(error)) {
+        const privateRoute = isPrivateEndpointHost(invite.host)
+          ? ` The invitation names a private address (${invite.host}), which only works when both PCs share the same home network or VPN. Ask the group owner for an invitation that uses a public ingress or Tailscale address.` : '';
+        throw new Error(`Could not complete invitation acceptance at ${invite.host}:${invite.port}: ${(error as Error).message}. This pinned relay must be reachable separately from the account directory and Minecraft player address.${privateRoute} Retry the same invitation on this PC.`, { cause: error });
+      }
+      throw error;
+    }
   }
   if (reply.type !== 'relay-joined' || typeof reply.relayName !== 'string') throw new Error('Invalid relay join reply');
   return { relayName: friendName(reply.relayName, 100) };

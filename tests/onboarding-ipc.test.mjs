@@ -27,6 +27,17 @@ test('new server and runtime setup IPC refuse URLs, filesystem destinations, she
   assert.throws(()=>call(method,{url:'https://evil.example',path:'/arbitrary'}),/Invalid/);
  }
  assert.deepEqual(call('configureSimpleProfile',{javaExecutable:'/native/java',memoryMiB:2048}),{javaExecutable:'/native/java',memoryMiB:2048});
+ // Custom JVM arguments are a bounded, supported single-token subset; the memory profile alone stays valid.
+ assert.deepEqual(call('configureSimpleProfile',{javaExecutable:'/native/java',memoryMiB:2048,customJavaArgs:['-XX:+UseG1GC','-Dmy.setting=value']}),{javaExecutable:'/native/java',memoryMiB:2048,customJavaArgs:['-XX:+UseG1GC','-Dmy.setting=value']});
+ for(const customJavaArgs of [['-Xmx8G'],['-Xms8G'],['-jar','evil.jar'],['-cp','evil'],['--class-path=evil'],['-Djava.class.path=evil'],['-Djava.system.class.loader=Evil'],['@evil.txt'],['nogui'],['java'],['-javaagent:evil.jar'],['-XX:OnError=evil'],['-XX:OnOutOfMemoryError=evil'],['-Dx=a\nb'],['-D' + 'x'.repeat(400) + '=1'],Array(33).fill('-ea'),null])
+  assert.throws(()=>call('configureSimpleProfile',{javaExecutable:'/native/java',memoryMiB:2048,customJavaArgs}),/Custom Java arguments/i);
+ // Sorting accepts the documented upstream indexes plus visibly page-scoped alphabetical; nothing free-form.
+ for(const method of ['searchSetupMods','searchMods']){
+  const base=method==='searchSetupMods'?{query:'x',gameVersion:'1.21.1',offset:0}:{query:'x',offset:0};
+  assert.deepEqual(call(method,{...base,sort:'title-asc'}),{...base,sort:'title-asc'});
+  assert.deepEqual(call(method,{...base,sort:'newest'}),{...base,sort:'newest'});
+  for(const sort of ['alphabetical-global','downloads desc','',42])assert.throws(()=>call(method,{...base,sort}),/sort/i);
+ }
  assert.deepEqual(call('saveGameGateway',{enabled:true,localPort:25565}),{enabled:true,localPort:25565});
  assert.throws(()=>call('saveGameGateway',{enabled:true,localPort:25565,host:'internal-admin'}),/Invalid/);
  assert.deepEqual(call('openSetupLink',{page:'eula'}),{page:'eula'});

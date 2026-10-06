@@ -17,9 +17,20 @@ export async function assertModInstallComplete(serverDir: string): Promise<void>
   throw new Error(repairMessage);
 }
 
+/**
+ * Flush handles must carry write access on Windows: fsync maps to FlushFileBuffers, which returns
+ * ERROR_ACCESS_DENIED (surfaced by Node as EPERM) for read-only handles. Directories additionally
+ * need FILE_FLAG_BACKUP_SEMANTICS (libuv supplies it) and, on POSIX, O_DIRECTORY so only a real
+ * directory can be the barrier target. No admin elevation is required for either.
+ */
+export function syncOpenFlags(kind: 'file' | 'directory'): number {
+  if (process.platform === 'win32') return constants.O_RDWR | (constants.O_NOFOLLOW ?? 0);
+  return (kind === 'directory' ? constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) : constants.O_RDONLY) | (constants.O_NOFOLLOW ?? 0);
+}
+
 /** Do not pretend durability on filesystems/platforms which cannot flush directories. */
 export async function syncModDirectory(directory: string): Promise<void> {
-  const handle = await open(directory, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0));
+  const handle = await open(directory, syncOpenFlags('directory'));
   try {
     if (!(await handle.stat()).isDirectory()) throw new Error('Mod transaction requires an ordinary directory');
     await handle.sync();

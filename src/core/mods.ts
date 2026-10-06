@@ -5,7 +5,7 @@ import path from 'node:path';
 import { validateRelativePath } from './paths.js';
 import { writeZip } from './zip.js';
 import type { ModSource } from './mod-index.js';
-import { assertModInstallComplete, beginModInstall, finishModInstall, modIndexFingerprint, syncModDirectory } from './mod-transaction.js';
+import { assertModInstallComplete, beginModInstall, finishModInstall, modIndexFingerprint, syncModDirectory, syncOpenFlags } from './mod-transaction.js';
 
 export type ModKind = 'server' | 'client';
 /** Client-only mods live here inside the managed server, so they travel with snapshots but are never loaded. */
@@ -123,7 +123,7 @@ export async function addModBatch(serverDir: string, items: Array<{ kind: ModKin
       await copyFile(mod.source, temporary, constants.COPYFILE_EXCL);
       const stagedMod = await inspectSource(temporary, mod.name);
       if (stagedMod.size !== mod.size) throw new Error(`${mod.name} changed during the copy`);
-      const handle = await open(temporary, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      const handle = await open(temporary, syncOpenFlags('file'));
       try { await handle.sync(); entry.identity = await handle.stat(); } finally { await handle.close(); }
     }
     for (const mod of staged) {

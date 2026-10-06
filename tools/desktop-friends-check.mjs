@@ -1,12 +1,15 @@
 // Visible Electron regressions. Real isolated profiles + real loopback RelayNode.
-// Only native dialog answers are substituted in real cases. Concurrency cases explicitly
-// install a TEST-ONLY preload bridge, never claimed as backend/network verification.
+// Native consent and labelled delivery timing seams exercise real backend results.
+// readback-rejected separately labels TEST-ONLY falsification; it is not persistence proof.
+// Username cases use the actual TLS AccountService and RelayNode, never fabricated replies.
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { _electron as electron } from 'playwright';
+import { randomBytes } from 'node:crypto';
+import { AccountService } from '../dist/src/core/accounts.js';
 import { RelayNode } from '../dist/src/core/relay.js';
 import { createIdentity } from '../dist/src/core/peer-transport.js';
 import { dismissInitialSetup } from './desktop-test-setup.mjs';
@@ -14,12 +17,41 @@ import { dismissInitialSetup } from './desktop-test-setup.mjs';
 const project = fileURLToPath(new URL('../', import.meta.url));
 const packaged = process.argv.find(value => value.startsWith('--packaged='))?.slice('--packaged='.length);
 const executablePath = packaged || createRequire(import.meta.url)('electron');
-const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE; delete env.SEEDHOST_ACCOUNT_SERVICE;
+env.SEEDHOST_TEST_LOOPBACK = '1';
 const scratch = process.env.TMPDIR || path.join(process.env.LOCALAPPDATA, 'hermes/cache/scratch');
 await mkdir(scratch, { recursive: true });
+env.TMP = scratch; env.TEMP = scratch; env.TMPDIR = scratch;
 const root = await mkdtemp(path.join(scratch, 'seed-friends-'));
 const apps = [], relays = [], pageErrors = [];
-let previousClipboard;
+const workspaceBaselines = new WeakMap();
+const serverTabs = ['operate', 'console', 'players', 'backups', 'scheduler', 'peers', 'mods', 'tunnels', 'server-settings', 'server-files'];
+async function assertLibraryNavigation(page) {
+  for (const name of serverTabs) assert.equal(await page.locator('#' + name + '-tab').isVisible(), false, name + ' must stay hidden outside an opened server');
+}
+async function enterPeers(page, app) {
+  await click(page, '#home-tab'); await assertLibraryNavigation(page);
+  if (!(await state(page)).server) {
+    console.log('STEP import disposable stopped workspace fixture (NOT Minecraft); native folder/consent answers only.');
+    const source = path.join(root, 'workspace-' + apps.indexOf(app));
+    await mkdir(source, { recursive: true }); await writeFile(path.join(source, 'eula.txt'), 'eula=true\n');
+    await app.evaluate(({ dialog }, source) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [source] }); }, source);
+    await click(page, '#import-server'); await idle(page);
+    await wait(page, () => document.querySelector('#server-list .is-current button[data-action="open"]'));
+  }
+  // A remembered selection is not an opened workspace: use the real library action.
+  await assertLibraryNavigation(page);
+  await click(page, '#server-list .is-current button[data-action="open"]');
+  for (const name of serverTabs) assert.equal(await page.locator('#' + name + '-tab').isVisible(), true);
+  await click(page, '#peers-tab');
+  if (!workspaceBaselines.has(page)) workspaceBaselines.set(page, await state(page));
+}
+function assertWorkspaceUnchanged(page, saved) {
+  const before = workspaceBaselines.get(page);
+  assert.deepEqual(saved.server, before.server, 'Friends must not download, start, or replace the disposable server');
+  assert.deepEqual(saved.servers, before.servers, 'Friends must not add or alter managed servers');
+}
+let previousClipboard, accountService;
 const wait = (page, expression, arg) => page.waitForFunction(expression, arg, { timeout: 12000 });
 const state = page => page.evaluate(() => window.seedhost.call('getState'));
 async function click(page, selector) {
@@ -35,16 +67,28 @@ async function shot(page, name) {
   await page.evaluate(() => Promise.all(document.getAnimations().filter(animation => animation.effect?.getComputedTiming().iterations !== Infinity).map(animation => animation.finished.catch(() => {}))));
   await page.screenshot({ path: target }); console.log('SCREENSHOT=' + target);
 }
-async function launch(name) {
+async function launch(name, online = false, workspace = !online) {
+  if (online) {
+    if (!accountService) {
+      accountService = new AccountService(path.join(root, 'account-directory'), await createIdentity());
+      await accountService.listen({ host: '127.0.0.1', port: 0 });
+    }
+    const profile = path.join(root, name); await mkdir(profile, { recursive: true });
+    await writeFile(path.join(profile, 'account-service.json'), JSON.stringify({ ...accountService.endpoint, fingerprint: accountService.identity.fingerprint }));
+    await writeFile(path.join(profile, 'onboarding.json'), JSON.stringify({ version: 1, step: 'server', dismissed: true, completed: false, skipped: [], draft: { name: 'My Minecraft server', loader: 'vanilla', gameVersion: '', memoryMiB: 2048 } }));
+  }
   const args = [...(process.platform === 'linux' ? ['--password-store=gnome-libsecret'] : []), ...(packaged ? [] : [path.join(project, 'dist/apps/desktop/main.js')]), '--profile-root=' + path.join(root, name)];
   const app = await electron.launch({ executablePath, args, env });
   apps.push(app); const page = await app.firstWindow();
   page.on('pageerror', error => pageErrors.push(String(error)));
   await wait(page, () => document.querySelector('#activity-message').textContent === 'Ready');
   await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response: 1 }); });
-  await page.bringToFront(); await dismissInitialSetup(page);
+  await page.bringToFront();
+  if (online) { await wait(page, () => document.querySelector('#account-dialog').open); await click(page, '#account-offline'); }
+  await dismissInitialSetup(page);
   if (previousClipboard === undefined) previousClipboard = await app.evaluate(({ clipboard }) => clipboard.readText());
-  await click(page, '#peers-tab');
+  await assertLibraryNavigation(page);
+  if (workspace) await enterPeers(page, app);
   return { app, page };
 }
 async function relay(name = 'Garden <friends>') {
@@ -52,6 +96,36 @@ async function relay(name = 'Garden <friends>') {
   await node.open(); await node.listen(); relays.push(node); return node;
 }
 async function idle(page) { await wait(page, () => document.querySelector('#activity-message').textContent === 'Ready'); }
+async function signup(page, username) {
+  await openFriendsGuide(page);
+  assert.equal((await state(page)).server, null, 'username setup remains reachable without a server');
+  await click(page, '#account-open');
+  await fill(page, '#account-username', username);
+  // Disposable loopback-only credentials, never a user account or logged secret.
+  await fill(page, '#account-password', randomBytes(24).toString('hex'));
+  await click(page, '#account-submit');
+  await wait(page, () => !document.querySelector('#account-dialog').open && document.querySelector('#account-heading').textContent.startsWith('@'));
+  assert.equal((await page.evaluate(() => window.seedhost.call('accountStatus'))).username, username);
+  await click(page, '#setup-save-close'); await wait(page, () => !document.querySelector('#setup-dialog').open);
+}
+async function openFriendsGuide(page) {
+  await click(page, '#nav-setup'); await click(page, '[data-setup-step="friends"]'); await idle(page);
+  assert.equal(await page.locator('#setup-friends-slot #account-card').count(), 1);
+  assert.equal(await page.locator('#setup-friends-slot #friends-controls').count(), 0);
+  assert.equal(await page.locator('#peers-panel #friends-controls').count(), 1);
+}
+async function usernamePair(prefix) {
+  const owner = await launch(prefix + '-owner', true), recipient = await launch(prefix + '-recipient', true);
+  await signup(owner.page, prefix + '_owner'); await signup(recipient.page, prefix + '_recipient');
+  const node = await relay('Username Garden');
+  await node.setMemberInvites(true);
+  const ownerDevice = (await state(owner.page)).deviceId;
+  await node.trust(prefix + '_owner', ownerDevice); await node.setOwner(ownerDevice);
+  await owner.page.evaluate(async peer => { await window.seedhost.call('addPeer', peer); await window.seedhost.call('saveRelay', { fingerprint: peer.fingerprint, parkOnStop: true }); }, { fingerprint: node.identity.fingerprint, name: node.name, ...node.endpoint });
+  await owner.page.reload(); await idle(owner.page); await enterPeers(owner.page, owner.app);
+  await wait(owner.page, () => !document.querySelector('#username-friend-form').hidden);
+  return { owner, recipient, node };
+}
 async function chooseJoin(page) { await click(page, '#friends-intent-join'); }
 async function check(page, code, name = 'Sam') {
   await chooseJoin(page); await fill(page, '#friend-code', code); await fill(page, '#friend-name', name);
@@ -78,83 +152,108 @@ async function waitForHeldMutation(app) {
   }
   throw new Error('TEST-ONLY scheduling did not receive the real mutation result');
 }
-async function attemptPendingGuideExit(page) {
-  await page.bringToFront(); await page.locator('#friends-play-only').scrollIntoViewIfNeeded();
-  if (await page.locator('#friends-play-only').isEnabled()) await click(page, '#friends-play-only');
-  else {
-    console.log('ACTION play-only disabled; TEST-ONLY event dispatch verifies the handler also refuses guide exit.');
-    await page.bringToFront();
-    await page.locator('#friends-play-only').dispatchEvent('click');
-  }
-  assert.equal(await page.locator('#setup-dialog').evaluate(dialog => dialog.open), true, 'pending mutation must keep the guide open');
-  assert.equal(await page.locator('#setup-friends-slot #friends-controls').count(), 1, 'pending guide retains its Friends controls');
-  assert.equal(await page.locator('#friends-play-only').isDisabled(), true, 'play-only must visibly pause during mutation');
-  for (const selector of ['#setup-save-close', '#setup-later', '#setup-next', '#setup-skip']) assert.equal(await page.locator(selector).isDisabled(), true, selector + ' must not exit a pending guide');
-  console.log('ACTION Escape must not exit a pending guide.');
-  await page.bringToFront(); await page.keyboard.press('Escape');
-  assert.equal(await page.locator('#setup-dialog').evaluate(dialog => dialog.open), true, 'Escape must not exit a pending guide');
+// The redesigned guide hosts the username account card on the Friends stage. Pending account
+// work is scoped to the account card / sign-in dialog: cards lock their own controls (and the
+// dialog refuses Escape) until the verified result arrives; the guide footer is not a barrier
+// for account work. Codes stay Friends-page-only and are never moved into the guide.
+async function assertGuideUsernameStage(page) {
+  assert.equal(await page.locator('#setup-dialog').evaluate(dialog => dialog.open), true, 'guide stays open');
+  assert.equal(await page.locator('#setup-friends-slot #account-card').count(), 1, 'guide hosts the username account card');
+  assert.equal(await page.locator('#setup-friends-slot #friends-controls').count(), 0, 'code controls are never moved into the guide');
+  assert.equal(await page.locator('#peers-panel #friends-controls').count(), 1, 'codes stay on the Friends page');
 }
+async function releaseMutation(app, page) {
+  console.log('TEST-ONLY IPC scheduling: release original completed method result.');
+  await app.evaluate(() => globalThis.__heldMutation.release());
+  await idle(page);
+}
+const assertNoInviteCode = (value, label) => assert.ok(!value.includes('SEEDHOST-'), label + ' must not surface an invitation code');
 
 const cases = {
-  async ['pending-create']() {
-    console.log('STEP pending create: real approval/backend plus TEST-ONLY result scheduling; all guide exits pause and private fields stay until completion.');
-    const { app, page } = await launch('pending-create'), node = await relay('Pending Create Garden');
-    await node.setMemberInvites(true); await node.trust('Host', (await state(page)).deviceId);
-    await page.evaluate(async peer => { await window.seedhost.call('addPeer', peer); await window.seedhost.call('saveRelay', { fingerprint: peer.fingerprint, parkOnStop: true }); }, { fingerprint: node.identity.fingerprint, name: node.name, ...node.endpoint });
-    await page.reload(); await idle(page); await click(page, '#peers-tab');
-    await click(page, '#nav-setup'); await click(page, '[data-setup-step="friends"]'); await idle(page);
-    await click(page, '#create-invite');
-    await wait(page, () => document.querySelector('#invite-code').value.startsWith('SEEDHOST-'));
-    const previousCode = await page.locator('#invite-code').inputValue();
-    await holdMutationResult(app, 'createInvite');
-    await click(page, '#create-invite'); await waitForHeldMutation(app);
-    assert.ok(!(await state(page)).busy, 'real backend completed; the renderer is still waiting for result delivery');
-    await shot(page, 'pending-create-before-exit');
-    await attemptPendingGuideExit(page);
-    assert.ok(await page.locator('#invite-code').inputValue() === previousCode, 'pending creation must retain the previous private invitation');
-    await shot(page, 'pending-create-exit-blocked');
-    console.log('TEST-ONLY IPC scheduling: release the original real create result.');
-    await app.evaluate(() => globalThis.__heldMutation.release()); await idle(page);
-    assert.equal(await page.locator('#setup-dialog').evaluate(dialog => dialog.open), true);
-    const nextCode = await page.locator('#invite-code').inputValue();
-    assert.ok(nextCode.startsWith('SEEDHOST-') && nextCode !== previousCode, 'real creation result is shown in the still-open guide');
-    assert.equal(node.trusted.length, 1, 'creating invitations does not enroll another member');
-    assert.equal(await page.locator('#friends-play-only').isEnabled(), true);
-    await shot(page, 'pending-create-resolved-open-guide');
-    await click(page, '#friends-play-only'); await wait(page, () => !document.querySelector('#setup-dialog').open);
-    assert.equal(await page.locator('#invite-code').inputValue(), '', 'post-completion exit clears the private invitation');
-    assert.equal(await page.locator('#join-help').isVisible(), true);
-    await shot(page, 'pending-create-completed-exit-cleared');
+  async ['pending-send']() {
+    console.log('STEP pending username send: the real TLS directory and relay complete first; the pending card locks itself, keeps the private typed username, and only a verified result clears it.');
+    const { owner: { app, page }, recipient, node } = await usernamePair('send');
+    await openFriendsGuide(page); await fill(page, '#friend-username', 'send_recipient');
+    await holdMutationResult(app, 'accountSend');
+    await click(page, '#username-invite'); await waitForHeldMutation(app);
+    const requests = await recipient.page.evaluate(() => window.seedhost.call('accountRequests'));
+    assert.equal(requests.length, 1, 'real directory delivery preceded the held result'); assert.equal(requests[0].from, 'send_owner');
+    assert.equal(node.trusted.length, 1, 'sending by username never enrolls the recipient');
+    assert.ok(!(await state(page)).busy, 'real backend completed; only result delivery is paused');
+    await assertGuideUsernameStage(page);
+    assert.equal(await page.locator('#username-invite').isDisabled(), true, 'pending send cannot be re-triggered');
+    assert.equal(await page.locator('#friend-username').isDisabled(), true, 'pending send locks its input');
+    assert.equal(await page.locator('#account-refresh').isDisabled(), true);
+    assert.equal(await page.locator('#account-signout').isDisabled(), true, 'the card exit pauses while its action is pending');
+    assert.equal(await page.locator('#friend-username').inputValue(), 'send_recipient', 'private typed username is kept while pending');
+    assertNoInviteCode(await page.evaluate(() => JSON.stringify(localStorage)), 'local storage');
+    assertNoInviteCode((await state(page)).logs.join('\n'), 'app logs');
+    await shot(page, 'pending-username-send');
+    await releaseMutation(app, page);
+    await wait(page, () => document.querySelector('#account-friend-feedback').textContent.includes('Invitation sent to @send_recipient'));
+    assert.equal(await page.locator('#friend-username').inputValue(), '', 'only verified delivery clears the typed username');
+    await assertGuideUsernameStage(page);
+    await shot(page, 'pending-send-resolved');
+    await click(page, '#setup-save-close'); await wait(page, () => !document.querySelector('#setup-dialog').open);
+    assert.equal(await page.locator('#peers-panel #account-card').count(), 1, 'closing restores the card to the Friends page');
+    assert.match(await page.locator('#peers-panel #account-friend-feedback').textContent(), /Invitation sent to @send_recipient/);
   },
-  async ['pending-join']() {
-    console.log('STEP pending join: real approval/enrollment plus TEST-ONLY result scheduling; guide/input survives attempted exit and confirms real saved group on completion.');
-    const { app, page } = await launch('pending-join'), node = await relay('Pending Join Garden'), invite = await node.createInvite({ hours: 1 });
-    await click(page, '#nav-setup'); await click(page, '[data-setup-step="friends"]'); await idle(page);
-    await check(page, invite.code, 'Pending host'); await wait(page, () => !document.querySelector('#join-friend').disabled);
-    await holdMutationResult(app, 'joinWithInvite');
-    await click(page, '#join-friend'); await waitForHeldMutation(app);
+  async ['pending-accept']() {
+    console.log('STEP pending username accept: real TLS inbox and enrollment complete first; the pending row locks accept/decline and keeps its context, and nothing downloads or starts.');
+    const { owner, recipient: { app, page }, node } = await usernamePair('accept');
+    await fill(owner.page, '#friend-username', 'accept_recipient'); await click(owner.page, '#username-invite');
+    await wait(owner.page, () => document.querySelector('#account-friend-feedback').textContent.includes('Invitation sent'));
+    await openFriendsGuide(page); await click(page, '#account-refresh');
+    await page.locator('#account-inbox [data-account-accept]').waitFor({ state: 'visible' });
+    const before = (await page.locator('#account-inbox').textContent()).trim();
+    await holdMutationResult(app, 'accountAccept');
+    await click(page, '#account-inbox [data-account-accept]'); await waitForHeldMutation(app);
+    assert.equal(node.trusted.length, 2, 'actual enrollment finished before the held result');
     const saved = await state(page), peer = saved.peers.find(entry => entry.fingerprint === node.identity.fingerprint);
-    assert.equal(node.trusted.length, 1, 'actual backend enrollment finished before the held result');
     assert.equal(saved.relay.fingerprint, node.identity.fingerprint); assert.equal(peer.host, node.endpoint.host); assert.equal(peer.port, node.endpoint.port);
-    assert.ok(!saved.busy, 'real backend completed; renderer mutation still pending');
-    await shot(page, 'pending-join-before-exit');
-    await attemptPendingGuideExit(page);
-    assert.ok(await page.locator('#friend-code').inputValue() === invite.code, 'pending join must retain the exact private input');
-    assert.equal(await page.locator('#friend-name').inputValue(), 'Pending host');
-    await shot(page, 'pending-join-exit-blocked');
-    console.log('TEST-ONLY IPC scheduling: release the original real join result.');
-    await app.evaluate(() => globalThis.__heldMutation.release()); await idle(page);
-    await wait(page, () => document.querySelector('#friend-feedback').textContent.startsWith('Joined'));
-    assert.equal(await page.locator('#setup-dialog').evaluate(dialog => dialog.open), true);
-    assert.equal(await page.locator('#friend-code').inputValue(), '', 'only verified success clears the invitation');
-    assert.equal(await page.locator('#friend-name').inputValue(), 'Pending host');
-    await chooseJoin(page); assert.equal(await page.locator('#join-friend-feedback').textContent(), '');
-    await shot(page, 'pending-join-resolved-open-guide');
-    await click(page, '#friends-play-only'); await wait(page, () => !document.querySelector('#setup-dialog').open);
-    assert.equal(await page.locator('#friend-name').inputValue(), '', 'completed guide exit clears the remaining draft');
-    assert.equal(await page.locator('#friend-code').inputValue(), '');
-    assert.equal(await page.locator('#join-help').isVisible(), true);
-    await shot(page, 'pending-join-completed-exit-cleared');
+    assert.equal(saved.server, null, 'accepting an invitation never downloads or starts a world'); assert.equal(saved.gateway.enabled, false);
+    assert.deepEqual(await page.evaluate(() => window.seedhost.call('accountRequests')), [], 'the real acceptance dismissed the directory request');
+    await assertGuideUsernameStage(page);
+    assert.equal(await page.locator('#account-inbox [data-account-accept]').isDisabled(), true, 'pending acceptance cannot be repeated');
+    assert.equal(await page.locator('#account-inbox [data-account-decline]').isDisabled(), true, 'pending acceptance locks decline too');
+    assert.equal((await page.locator('#account-inbox').textContent()).trim(), before, 'pending acceptance keeps the pre-accept inbox context');
+    await shot(page, 'pending-username-accept');
+    await releaseMutation(app, page);
+    await wait(page, () => document.querySelector('#account-friend-feedback').textContent.includes('Joined'));
+    assert.equal(await page.locator('#account-inbox [data-account-accept]').count(), 0, 'verified acceptance clears the request row');
+    assert.equal((await state(page)).onboarding.checks.friends, 'complete');
+    assert.equal(await page.locator('#setup-dialog').evaluate(d => d.open), true);
+    await shot(page, 'pending-accept-resolved');
+    await click(page, '#setup-save-close'); await wait(page, () => !document.querySelector('#setup-dialog').open);
+    assert.equal(await page.locator('#peers-panel #account-card').count(), 1);
+  },
+  async ['pending-signin']() {
+    console.log('STEP pending username sign-in: real TLS registration; while the account dialog works, its exits pause, Escape is refused, and the typed username stays.');
+    const { app, page } = await launch('pending-signin', true);
+    assert.equal((await state(page)).server, null, 'fresh-profile sign-in needs no server');
+    await openFriendsGuide(page);
+    await click(page, '#setup-friends-slot #account-open');
+    await wait(page, () => document.querySelector('#account-dialog').open);
+    await fill(page, '#account-username', 'pending_signup');
+    await fill(page, '#account-password', randomBytes(24).toString('hex'));
+    await holdMutationResult(app, 'accountRegister');
+    await click(page, '#account-submit'); await waitForHeldMutation(app);
+    assert.equal(await page.locator('#account-dialog').evaluate(dialog => dialog.open), true);
+    assert.equal(await page.locator('#account-submit').isDisabled(), true, 'pending registration cannot be resubmitted');
+    assert.equal(await page.locator('#account-offline').isDisabled(), true, 'the dialog exit pauses while registering');
+    assert.equal(await page.locator('#account-username').inputValue(), 'pending_signup', 'typed username survives the pending registration');
+    console.log('ACTION Escape must not dismiss a working account dialog.');
+    await page.bringToFront(); await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#account-dialog').evaluate(dialog => dialog.open), true, 'Escape must not exit a pending sign-in');
+    assert.equal(await page.locator('#setup-dialog').evaluate(dialog => dialog.open), true, 'the guide stays open behind the refused Escape');
+    await shot(page, 'pending-username-signin');
+    await releaseMutation(app, page);
+    await wait(page, () => !document.querySelector('#account-dialog').open && document.querySelector('#account-heading').textContent.startsWith('@'));
+    assert.equal((await page.evaluate(() => window.seedhost.call('accountStatus'))).username, 'pending_signup');
+    assert.equal(await page.locator('#setup-dialog').evaluate(dialog => dialog.open), true, 'the guide continues after sign-in');
+    assert.equal(await page.locator('#setup-friends-slot #username-friend-form').isVisible() || await page.locator('#setup-friends-slot #account-start-group').isVisible(), true);
+    await shot(page, 'pending-signin-resolved');
+    await click(page, '#setup-save-close'); await wait(page, () => !document.querySelector('#setup-dialog').open);
   },
   async preview() {
     console.log('STEP preview: local decoding never enrolls or changes settings; full verification details.');
@@ -176,13 +275,13 @@ const cases = {
     assert.match(await page.locator('#invitation-preview').textContent(), /not a connection check.*verify with.*friend/is);
     assert.equal(await page.locator('#join-friend').isEnabled(), true);
     assert.equal(node.trusted.length, 0, 'preview must not redeem or enroll');
-    assert.equal((await state(page)).relay, null); assert.equal((await state(page)).server, null);
+    assert.equal((await state(page)).relay, null); assertWorkspaceUnchanged(page, await state(page));
     assert.equal(await page.locator('#invitation-preview friends').count(), 0, 'group name renders literal text');
     const storage = await page.evaluate(() => JSON.stringify(localStorage)); assert.ok(!storage.includes(invite.code)); assert.ok(!storage.includes('River'));
     await shot(page, 'local-preview-full-fingerprint');
   },
   async stale() {
-    console.log('STEP stale: real Electron + TEST-ONLY IPC scheduling bridge; late preview cannot replace newer input or a closed wizard.');
+    console.log('STEP stale: completed real preview results delivered out of order; late result cannot replace input or survive guide close.');
     const { app, page } = await launch('stale'); const node = await relay();
     const first = await node.createInvite({ hours: 1 }), second = await node.createInvite({ hours: 1 });
     await check(page, first.code); await wait(page, () => !document.querySelector('#invitation-preview').hidden);
@@ -193,9 +292,11 @@ const cases = {
     await app.evaluate(({ ipcMain }) => {
       const original = ipcMain._invokeHandlers.get('seedhost:call'); globalThis.__previewQueue = [];
       ipcMain.removeHandler('seedhost:call');
-      ipcMain.handle('seedhost:call', (event, method, payload) => method !== 'previewInvite' ? original(event, method, payload) : new Promise((resolve, reject) => {
-        globalThis.__previewQueue.push(() => Promise.resolve(original(event, method, payload)).then(resolve, reject));
-      }));
+      ipcMain.handle('seedhost:call', async (event, method, payload) => {
+              const result = await original(event, method, payload);
+              if (method !== 'previewInvite') return result;
+              return new Promise(resolve => globalThis.__previewQueue.push(() => resolve(result)));
+            });
     });
     const queued = async count => { for (let n = 0; n < 100; n++) { if (await app.evaluate(() => globalThis.__previewQueue.length) === count) return; await new Promise(resolve => setTimeout(resolve, 20)); } throw new Error('preview scheduling bridge did not queue'); };
     await check(page, first.code); await queued(1);
@@ -209,8 +310,9 @@ const cases = {
     assert.equal(await page.locator('#join-friend').isEnabled(), true, 'old result must not replace the checked newer code');
     await fill(page, '#friend-name', 'Changed name');
     assert.equal(await page.locator('#invitation-preview').isVisible(), false, 'display-name changes require a fresh review');
-    await click(page, '#nav-setup'); await click(page, '[data-setup-step="friends"]'); await idle(page);
     await check(page, first.code); await queued(3);
+    // Legacy preview is requested on Friends, then a username-guide visit/close invalidates it.
+    await openFriendsGuide(page);
     await click(page, '#setup-save-close'); await wait(page, () => !document.querySelector('#setup-dialog').open);
     await app.evaluate(() => globalThis.__previewQueue[2]()); await page.waitForTimeout(100);
     assert.equal(await page.locator('#friend-code').inputValue(), '');
@@ -226,8 +328,9 @@ const cases = {
     for (const [width, height] of [[1000, 700], [1240, 860]]) for (const theme of ['light', 'dark']) {
       console.log('ACTION window bounds ' + width + 'x' + height + ' ' + theme);
       await app.evaluate(({ BrowserWindow }, bounds) => BrowserWindow.getAllWindows()[0].setBounds(bounds), { width, height });
-      await click(page, '#settings-tab'); await click(page, `input[name="theme"][value="${theme}"]`);
-      await click(page, '#peers-tab');
+      await click(page, '#settings-tab'); await assertLibraryNavigation(page);
+      await click(page, `input[name="theme"][value="${theme}"]`);
+      await enterPeers(page, app);
       const overflow = await page.evaluate(() => ['#friends-controls', '#peers-panel', '.friends-configure'].filter(selector => { const el = document.querySelector(selector); return el.scrollWidth > el.clientWidth + 1; }));
       assert.deepEqual(overflow, [], 'no clipping at ' + width + ' ' + theme);
       await shot(page, `friends-${width}-${theme}`);
@@ -237,10 +340,12 @@ const cases = {
       assert.deepEqual(previewOverflow, [], 'full preview fits at ' + width + ' ' + theme);
       await page.locator('#invitation-preview').scrollIntoViewIfNeeded(); await shot(page, `friends-preview-${width}-${theme}`);
       await click(page, '#nav-setup'); await click(page, '[data-setup-step="friends"]'); await idle(page);
-      assert.equal(await page.locator('#setup-friends-slot #friends-controls').count(), 1);
+      assert.equal(await page.locator('#setup-friends-slot #account-card').count(), 1);
+      assert.equal(await page.locator('#setup-friends-slot #friends-controls').count(), 0);
+      assert.equal(await page.locator('#peers-panel #friends-controls').count(), 1);
       const wizardOverflow = await page.evaluate(() => ['#setup-dialog', '.setup-body', '#setup-friends-slot'].filter(selector => { const el = document.querySelector(selector); return el.scrollWidth > el.clientWidth + 1; }));
       assert.deepEqual(wizardOverflow, [], 'wizard controls fit at ' + width + ' ' + theme);
-      await page.locator('#friends-controls').scrollIntoViewIfNeeded();
+      await page.locator('#account-card').scrollIntoViewIfNeeded();
       await shot(page, `wizard-friends-${width}-${theme}`);
       await click(page, '#setup-save-close'); await wait(page, () => !document.querySelector('#setup-dialog').open);
     }
@@ -251,7 +356,7 @@ const cases = {
     await node.setMemberInvites(true);
     const deviceId = (await state(page)).deviceId; await node.trust('Host', deviceId);
     await page.evaluate(async peer => { await window.seedhost.call('addPeer', peer); await window.seedhost.call('saveRelay', { fingerprint: peer.fingerprint, parkOnStop: true }); }, { fingerprint: node.identity.fingerprint, name: node.name, ...node.endpoint });
-    await page.reload(); await idle(page); await click(page, '#peers-tab');
+    await page.reload(); await idle(page); await enterPeers(page, apps.find(app => app.windows().includes(page)));
     await click(page, '#create-invite');
     await wait(page, () => document.querySelector('#invite-code').value.startsWith('SEEDHOST-'));
     assert.equal(await page.locator('#invite-next-steps li').count(), 3, 'ready invitation needs three concise sharing steps');
@@ -277,7 +382,7 @@ const cases = {
     const node = await relay('Seed Members'), deviceId = (await state(page)).deviceId;
     await node.trust('You <literal>', deviceId); await node.trust('Other host', (await createIdentity()).fingerprint);
     await page.evaluate(async peer => { await window.seedhost.call('addPeer', peer); await window.seedhost.call('saveRelay', { fingerprint: peer.fingerprint, parkOnStop: true }); }, { fingerprint: node.identity.fingerprint, name: node.name, ...node.endpoint });
-    await page.reload(); await idle(page); await click(page, '#peers-tab');
+    await page.reload(); await idle(page); await enterPeers(page, apps.find(app => app.windows().includes(page)));
     await wait(page, () => document.querySelectorAll('#friend-list li').length === 2);
     assert.match(await page.locator('#group-status').textContent(), /Members confirmed/);
     assert.match(await page.locator('#friend-list').textContent(), /You.*Can host/s);
@@ -394,7 +499,7 @@ const cases = {
     await fill(page, '#friend-name', 'New name');
     assert.equal(await page.locator('#join-friend-feedback').textContent(), '', 'new input clears old join result');
   },
-  async readback() {
+  async ['readback-rejected']() {
     console.log('STEP readback: TEST-ONLY IPC falsification of each saved field after real enrollment; never claim verified join.');
     for (const field of ['fingerprint', 'host', 'port', 'parkOnStop']) {
       const { app, page } = await launch('readback-' + field); const node = await relay('Readback Garden');
@@ -420,7 +525,26 @@ const cases = {
       assert.match(await page.locator('#join-friend-feedback').textContent(), /couldn.t confirm.*kept/i);
       assert.equal(node.trusted.length, 1, 'test only falsifies readback, actual enrollment is real');
       await shot(page, 'readback-rejected-' + field);
+      console.log('PASS readback-rejected=' + field);
     }
+  },
+  async readback() {
+    console.log('STEP readback: real enrollment and unchanged persisted relay/peer settings after renderer restart; no falsified responses.');
+    const { page } = await launch('readback'), node = await relay('Readback Garden');
+    const invite = await node.createInvite({ hours: 1 }); await check(page, invite.code);
+    await wait(page, () => !document.querySelector('#join-friend').disabled);
+    await click(page, '#join-friend'); await idle(page);
+    await wait(page, () => document.querySelector('#friend-feedback').textContent.startsWith('Joined'));
+    const before = await state(page);
+    assert.equal(before.relay.fingerprint, node.identity.fingerprint); assert.equal(before.relay.parkOnStop, true);
+    const peer = before.peers.find(entry => entry.fingerprint === node.identity.fingerprint);
+    assert.equal(peer.host, node.endpoint.host); assert.equal(peer.port, node.endpoint.port);
+    await page.reload(); await idle(page); await enterPeers(page, apps.find(app => app.windows().includes(page)));
+    const after = await state(page);
+    assert.deepEqual(after.relay, before.relay); assert.deepEqual(after.peers, before.peers);
+    assert.equal(node.trusted.length, 1);
+    await wait(page, () => document.querySelector('#group-status').textContent === 'Members confirmed');
+    await shot(page, 'real-saved-readback');
   },
   async join() {
     console.log('STEP join: two real profiles, real invitation/copy/enrollment/member reads; nothing downloads or starts.');
@@ -429,7 +553,8 @@ const cases = {
     await check(a.page, initial.code, 'River <QA>'); await wait(a.page, () => !document.querySelector('#join-friend').disabled);
     await click(a.page, '#join-friend'); await idle(a.page);
     await wait(a.page, () => document.querySelector('#friend-feedback').textContent.startsWith('Joined'));
-    assert.match(await a.page.locator('#friend-feedback').textContent(), /Nothing was downloaded or started.*Next.*Take over hosting.*My server.*Start server/is);
+    assert.match(await a.page.locator('#friend-feedback').textContent(), /Joined the group.*world.*stays on this PC.*handed to the always.on PC.*take over hosting/is);
+    assertWorkspaceUnchanged(a.page, await state(a.page));
     assert.equal(await a.page.locator('#preview-fingerprint').textContent(), '', 'successful join clears preview secret context');
     await click(a.page, '#create-invite'); await wait(a.page, () => document.querySelector('#invite-code').value.startsWith('SEEDHOST-'));
     const invitation = await a.page.locator('#invite-code').inputValue(); await click(a.page, '#copy-invite');
@@ -448,9 +573,9 @@ const cases = {
       const saved = await state(instance.page), peer = saved.peers.find(peer => peer.fingerprint === node.identity.fingerprint);
       assert.equal(saved.relay.fingerprint, node.identity.fingerprint); assert.equal(saved.relay.parkOnStop, true);
       assert.equal(peer.host, node.endpoint.host); assert.equal(peer.port, node.endpoint.port);
-      assert.equal(saved.server, null); assert.equal(saved.gateway.enabled, false); assert.equal(saved.settings.persistentAddress, false);
+      assertWorkspaceUnchanged(instance.page, saved); assert.equal(saved.gateway.enabled, false); assert.equal(saved.settings.persistentAddress, false);
       assert.ok(!saved.logs.some(line => line.includes(invitation) || /Downloading|Starting server/.test(line)));
-      assert.ok(!(await readdir(path.join(root, instance === a ? 'join-a' : 'join-b'))).includes('servers'), 'joining creates no managed server');
+      assert.equal(saved.servers.length, 1, 'joining creates no additional managed server beyond the explicit workspace fixture');
     }
     await click(a.page, '#refresh-friends'); await wait(a.page, () => document.querySelectorAll('#friend-list li').length === 2);
     assert.deepEqual(node.trusted.map(member => member.name).sort(), ['River <QA>', 'Sam']);
@@ -491,9 +616,10 @@ const cases = {
     const { app, page } = await launch('stopped'); const node = await relay(), invite = await node.createInvite({ hours: 1 });
     const source = path.join(root, 'Stopped-guard fixture NOT Minecraft'); await mkdir(source); await writeFile(path.join(source, 'eula.txt'), 'eula=true\n');
     await app.evaluate(({ dialog }, source) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [source] }); }, source);
-    await click(page, '#operate-tab'); await click(page, '#import-server'); await idle(page);
+    await click(page, '#home-tab'); await click(page, '#import-server'); await idle(page);
     await page.evaluate(profile => window.seedhost.call('saveProfile', profile), { executable: process.execPath, args: [path.join(project, 'tools/fake-java-server.mjs')], startTimeoutSeconds: 10, stopTimeoutSeconds: 10 });
     await page.reload(); await idle(page);
+    await click(page, '#server-list .is-current button[data-action="open"]');
     try {
       await click(page, '#start-server'); await wait(page, () => document.querySelector('#server-status').textContent === 'Hosting');
       await click(page, '#peers-tab'); await check(page, invite.code); await wait(page, () => !document.querySelector('#invitation-preview').hidden);
@@ -509,7 +635,7 @@ const cases = {
   },
   async chooser() {
     console.log('STEP chooser: one intent panel; no-group actions; play-only and same wizard controls.');
-    const { page } = await launch('chooser');
+    let { page } = await launch('chooser');
     assert.equal(await page.locator('#friends-intent-join').count(), 1, 'missing clear two-button intent chooser');
     assert.equal(await page.locator('#friends-intent-invite').count(), 1);
     assert.equal(await page.locator('#join-friend-details').isVisible(), true);
@@ -526,17 +652,21 @@ const cases = {
     assert.equal(await page.locator('#join-friend-details').isVisible(), true);
     const before = await state(page);
     await click(page, '#friends-play-only');
-    assert.equal(await page.locator('#operate-panel').isVisible(), true);
+    assert.equal(await page.locator('#operate-panel').isVisible(), true, 'existing-server play-only action returns to its workspace');
+    await click(page, '#home-tab'); await assertLibraryNavigation(page);
     assert.equal(await page.locator('#join-help').isVisible(), true);
-    assert.match(await page.locator('#join-help').textContent(), /Minecraft.*address|address.*Minecraft/i);
+    assert.match(await page.locator('#join-help').textContent(), /Minecraft.*Multiplayer.*Add Server.*localhost/i);
     const after = await state(page); assert.deepEqual(after.settings, before.settings); assert.equal(after.relay, before.relay);
+    ({ page } = await launch('chooser-fresh-guide', false, false));
+    assert.equal((await state(page)).server, null, 'guide join choice needs no managed server');
     await click(page, '#nav-setup'); await click(page, '[data-setup-step="server"]'); await idle(page);
     if (await page.locator('#setup-back').isVisible()) await click(page, '#setup-back');
     await click(page, '#setup-choose-join');
-    await wait(page, () => document.querySelector('#friends-controls').parentElement.id === 'setup-friends-slot');
-    assert.equal(await page.locator('#friends-controls').count(), 1);
-    assert.equal(await page.locator('#friends-intent-join').getAttribute('aria-pressed'), 'true');
-    await shot(page, 'wizard-join-intent');
+    await wait(page, () => document.querySelector('#account-card').parentElement.id === 'setup-friends-slot');
+    assert.equal(await page.locator('#setup-friends-slot #account-open').isVisible(), true);
+    assert.equal(await page.locator('#peers-panel #friends-controls').count(), 1, 'legacy code controls stay on the Friends page');
+    assert.equal(await page.locator('#setup-friends-slot #friends-controls').count(), 0, 'no code controls inside the guide');
+    await shot(page, 'wizard-username-join-intent');
     await click(page, '#setup-save-close'); await wait(page, () => !document.querySelector('#setup-dialog').open);
     await wait(page, () => document.activeElement.id === 'nav-setup');
     assert.equal(await page.locator('#advanced-peers').getAttribute('open'), null);
@@ -562,5 +692,6 @@ try {
   if (apps[0] && previousClipboard !== undefined) await apps[0].evaluate(({ clipboard }, text) => clipboard.writeText(text), previousClipboard).catch(() => {});
   for (const app of apps.reverse()) await app.close().catch(() => {});
   for (const node of relays) await node.close();
+  await accountService?.close();
   console.log('ARTIFACT_DIR=' + root);
 }

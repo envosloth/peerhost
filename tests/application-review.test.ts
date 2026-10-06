@@ -25,7 +25,7 @@ for (const state of ['owned','offered','uncertain'] as const) {
       await app.importExisting(other,true);
       const after=await app.getState();
       assert.equal(after.servers.length,2);
-      assert.deepEqual(after.servers.find(entry=>entry.id===server.id),{id:server.id,name:server.name,active:false});
+      assert.deepEqual(after.servers.find(entry=>entry.id===server.id),{...before.servers.find(entry=>entry.id===server.id),active:false});
       assert.deepEqual(JSON.parse(await readFile(path.join(root,'profile','state.json'),'utf8')).servers.find((entry:any)=>entry.id===server.id),JSON.parse(disk).servers[0]);
       assert.equal(await readFile(path.join(server.serverDir,'world.bin'),'utf8'),'original world');
       const ledgerState=await new OwnershipLedger(server.ledgerFile,identity.fingerprint).status();
@@ -292,14 +292,15 @@ test('real A to B handoff cannot be undone by reimporting A while B hosts', asyn
     await a.handoff(ib.fingerprint); await idle(b);
     await b.saveProfile({executable:process.execPath,args:[fixture,'--lifetime-ms=30000']});
     await b.startServer(true);
-    const original=(await a.getState()).server!;
+    const originalState=await a.getState();
+    const original=originalState.server!;
     const originalFiles=await readdir(path.join(root,'a'));
     const metadata=await readFile(path.join(root,'a','state.json'),'utf8');
     // Importing the same folder again cannot launder the transferred lineage: it only adds a separate entry.
     await a.importExisting(source,true);
     const library=await a.getState();
     assert.equal(library.servers.length,2);
-    assert.deepEqual(library.servers.find(entry=>entry.id===original.id),{id:original.id,name:original.name,active:false});
+    assert.deepEqual(library.servers.find(entry=>entry.id===original.id),{...originalState.servers.find(entry=>entry.id===original.id),active:false});
     assert.notEqual(library.server!.id,original.id,'the new copy is the server in use, not a takeover of the old one');
     assert.equal((await new OwnershipLedger(original.ledgerFile,ia.fingerprint).status()).state,'transferred');
     assert.equal(await readFile(path.join(original.serverDir,'world.bin'),'utf8'),'original world');

@@ -29,11 +29,22 @@ export async function createIdentity(): Promise<PeerIdentity> {
 }
 
 const ACCEPTED = Buffer.from("SeedHost/1\n", "ascii");
+// Fixed-size, token-free admission refusal. Only interpreted after the server pin is checked.
+const REFUSED = Buffer.from("SeedHost/!\n", "ascii");
 const HANDSHAKE_TIMEOUT_MS = 5000;
 const FRAME_TIMEOUT_MS = 5000;
 const MAX_FRAME_BYTES = 1048576;
 const verifiedSockets = new WeakSet<TLSSocket>();
 const inviteSockets = new WeakSet<TLSSocket>();
+
+/** Typed transport failures are distinct from pin/protocol/authorization refusals. */
+export class PeerTransportError extends Error {
+  constructor(readonly code: string, message: string) { super(message); this.name = 'PeerTransportError'; }
+}
+export function isRetryablePeerError(error: unknown): boolean {
+  if (error instanceof PeerTransportError) return ['PEER_HANDSHAKE_TIMEOUT', 'PEER_FRAME_TIMEOUT', 'PEER_DISCONNECTED'].includes(error.code);
+  return error instanceof Error && ['ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EAI_AGAIN'].includes((error as NodeJS.ErrnoException).code ?? '');
+}
 
 /** Narrow bootstrap capability: never usable by ordinary framing or snapshot transfers. */
 function requireInviteSocket(socket: TLSSocket): void {
@@ -92,7 +103,8 @@ export async function listenPeer(
     void (async () => {
       const access = authorizeCertificate ? await authorizeCertificate(fingerprint)
         : trustedPins.some((pin) => timingSafeEqual(pin, hash)) ? 'trusted' : false;
-      if (!access || stopping || socket.destroyed) { socket.destroy(); return; }
+      if (stopping || socket.destroyed) { socket.destroy(); return; }
+      if (!access) { socket.end(REFUSED); return; }
       socket.disableRenegotiation();
       if (access === 'trusted') verifiedSockets.add(socket);
       else inviteSockets.add(socket);
@@ -154,19 +166,27 @@ export async function connectPeer(
       socket.destroy();
       reject(error);
     };
-    const disconnected = () => fail(new Error("Peer disconnected before client acceptance"));
+    const disconnected = () => fail(new PeerTransportError('PEER_DISCONNECTED', "Peer disconnected before client acceptance"));
     const accepted = () => {
       if (settled) return;
       // Exact-size reads preserve application bytes coalesced with the acceptance preface.
       const response = socket.read(ACCEPTED.length) as Buffer | null;
       if (!response) return;
+      if (response.length !== ACCEPTED.length) {
+        fail(new PeerTransportError('PEER_DISCONNECTED', 'Truncated peer acceptance preface'));
+        return;
+      }
+      if (response.equals(REFUSED)) {
+        fail(new PeerTransportError('PEER_AUTHORIZATION_DENIED', 'Peer refused admission; connection closed'));
+        return;
+      }
       if (!response.equals(ACCEPTED)) { fail(new Error("Peer rejected the transport protocol")); return; }
       settled = true;
       cleanup();
       verifiedSockets.add(socket);
       resolve(socket);
     };
-    const timer = setTimeout(() => fail(new Error("Peer handshake timed out")), HANDSHAKE_TIMEOUT_MS);
+    const timer = setTimeout(() => fail(new PeerTransportError('PEER_HANDSHAKE_TIMEOUT', "Peer handshake timed out")), HANDSHAKE_TIMEOUT_MS);
     socket.on("error", () => {});
     socket.once("error", fail);
     socket.once("end", disconnected);
@@ -231,8 +251,8 @@ function writePacket(socket: TLSSocket, packet: Buffer): Promise<void> {
       socket.destroy();
       reject(error);
     };
-    const disconnected = () => fail(new Error("Peer disconnected during a frame write"));
-    const timer = setTimeout(() => fail(new Error("Frame write timed out")), FRAME_TIMEOUT_MS);
+    const disconnected = () => fail(new PeerTransportError('PEER_DISCONNECTED', "Peer disconnected during a frame write"));
+    const timer = setTimeout(() => fail(new PeerTransportError('PEER_FRAME_TIMEOUT', "Frame write timed out")), FRAME_TIMEOUT_MS);
     socket.once("error", fail);
     socket.once("close", disconnected);
     if (socket.destroyed || !socket.writable || socket.writableEnded) { disconnected(); return; }
@@ -288,7 +308,7 @@ function readOneFrame(socket: TLSSocket, maxBytes: number, timeoutMs: number): P
       reject(error);
     };
     const missing = () => {
-      if (socket.destroyed || socket.readableEnded) fail(new Error("Peer disconnected during a frame"));
+      if (socket.destroyed || socket.readableEnded) fail(new PeerTransportError('PEER_DISCONNECTED', "Peer disconnected during a frame"));
     };
     const pump = () => {
       if (settled) return;
@@ -297,14 +317,14 @@ function readOneFrame(socket: TLSSocket, maxBytes: number, timeoutMs: number): P
           // Never drain the whole stream: later coalesced frames stay buffered with Node backpressure.
           const header = socket.read(4) as Buffer | null;
           if (!header) { missing(); return; }
-          if (header.length !== 4) throw new Error("Truncated frame header");
+          if (header.length !== 4) throw new PeerTransportError('PEER_DISCONNECTED', "Truncated frame header");
           length = header.readUInt32BE(0);
           if (length === 0) throw new Error("Empty frame is not valid JSON");
           if (length > maxBytes) throw new Error("Frame exceeds the configured byte limit");
         }
         const body = socket.read(length) as Buffer | null;
         if (!body) { missing(); return; }
-        if (body.length !== length) throw new Error("Truncated frame body");
+        if (body.length !== length) throw new PeerTransportError('PEER_DISCONNECTED', "Truncated frame body");
         const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
         settled = true;
         cleanup();
@@ -313,9 +333,9 @@ function readOneFrame(socket: TLSSocket, maxBytes: number, timeoutMs: number): P
     };
     const disconnected = () => {
       pump(); // Complete buffered frames still win over an EOF notification.
-      if (!settled) fail(new Error("Peer disconnected during a frame"));
+      if (!settled) fail(new PeerTransportError('PEER_DISCONNECTED', "Peer disconnected during a frame"));
     };
-    const timer = setTimeout(() => fail(new Error("Frame read timed out")), timeoutMs);
+    const timer = setTimeout(() => fail(new PeerTransportError('PEER_FRAME_TIMEOUT', "Frame read timed out")), timeoutMs);
     socket.on("readable", pump);
     socket.once("end", disconnected);
     socket.once("close", disconnected);

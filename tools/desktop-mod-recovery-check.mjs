@@ -1,6 +1,6 @@
 // Real Electron lifecycle with corrupt optional metadata; disposable fixture is NOT Minecraft.
 import assert from 'node:assert/strict';
-import { dismissInitialSetup } from './desktop-test-setup.mjs';
+import { dismissInitialSetup, reveal } from './desktop-test-setup.mjs';
 import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';
 import path from 'node:path';
 import {createRequire} from 'node:module';
@@ -20,6 +20,7 @@ try {
  await dismissInitialSetup(page);
  await page.locator('#import-server').click();
  await wait(()=>document.querySelector('#server-name').textContent==='NOT Minecraft');
+ await reveal(page,'#java-executable');
  await page.locator('#profile-details').evaluate(el=>el.open=true);
  await page.locator('#java-executable').fill(process.execPath);
  await page.locator('#java-args').fill(JSON.stringify([path.join(project,'tools/fake-java-server.mjs')]));

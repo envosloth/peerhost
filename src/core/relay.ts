@@ -24,13 +24,16 @@ export interface RelayOptions {
 const DEFAULT_PORT = 47625;
 const REQUEST_TIMEOUT_MS = 5000;
 
+// Older configs lack provenance: preserve their non-loopback routes as explicit advertisements.
+type RelayNodeConfig = RelayConfig & { advertiseSource?: 'explicit' | 'inferred' };
+
 /**
  * An always-on custodian for one server lineage. Hosts park the server here (a normal handoff with the relay as
  * the target), and any trusted host can later claim it (a normal handoff from the relay), so the PCs that run the
  * server never need to be online at the same time. The relay never runs Minecraft and never materializes a world.
  */
 export class RelayNode {
-  private config: RelayConfig = { version: 1, trusted: [], history: [] };
+  private config: RelayNodeConfig = { version: 1, trusted: [], history: [] };
   private listener?: { host: string; port: number; close: () => Promise<void> };
   /** Park and claim run one at a time, in arrival order. Status reads never wait. */
   private queue: Promise<void> = Promise.resolve();
@@ -89,9 +92,9 @@ export class RelayNode {
   async reload(): Promise<void> { this.config = await readRelayConfig(this.root, this.defaultName); }
 
   /** Reload inside the cross-process lock before every write, including transfer bookkeeping. */
-  private mutate<T>(work: (config: RelayConfig) => Promise<T>): Promise<T> {
+  private mutate<T>(work: (config: RelayNodeConfig) => Promise<T>): Promise<T> {
     return withRelayLock(this.root, async () => {
-      const config = await readRelayConfig(this.root, this.defaultName);
+      const config: RelayNodeConfig = await readRelayConfig(this.root, this.defaultName);
       const result = await work(config);
       config.redeemed = Object.fromEntries(Object.entries(config.redeemed ?? {}).filter(([, receipt]) => receipt.expiresAt > Date.now()));
       await durableJSON(path.join(this.root, 'relay.json'), config);
@@ -167,15 +170,16 @@ export class RelayNode {
 
   /** `token` lets a short pairing code stand in for the long invitation: both sides derive the same 16 bytes.
    * `minutes` gives a short-lived code (5–1440); otherwise `hours` (1–720) applies. */
-  async createInvite({ hours = 24, minutes, advertise, token, recipient }: { hours?: number; minutes?: number; advertise?: { host: string; port: number }; token?: Buffer; recipient?: string } = {}): Promise<CreatedInvite> {
+  async createInvite({ hours = 24, minutes, advertise, token, recipient, persistAdvertise = true }: { hours?: number; minutes?: number; advertise?: { host: string; port: number }; token?: Buffer; recipient?: string; persistAdvertise?: boolean } = {}): Promise<CreatedInvite> {
+    if (typeof persistAdvertise !== 'boolean') throw new Error('Persist advertised address must be true or false');
     if (recipient !== undefined && !fingerprintOK(recipient)) throw new Error('Invalid invite recipient');
     if (token !== undefined && (!Buffer.isBuffer(token) || token.length !== 16)) throw new Error('Invite token must be 16 bytes');
     if (minutes !== undefined && (!Number.isInteger(minutes) || minutes < 5 || minutes > 1440)) throw new Error('Invite minutes must be between 5 and 1440');
     if (minutes === undefined && (!Number.isFinite(hours) || hours < 1 || hours > 24 * 30)) throw new Error('Invite hours must be between 1 and 720');
-    return this.issueInvite(minutes !== undefined ? minutes / 60 : hours, advertise, null, token, recipient);
+    return this.issueInvite(minutes !== undefined ? minutes / 60 : hours, advertise, null, token, recipient, persistAdvertise);
   }
 
-  private issueInvite(hours: number, advertise: { host: string; port: number } | undefined, issuer: string | null, fixedToken?: Buffer, recipient?: string): Promise<CreatedInvite> {
+  private issueInvite(hours: number, advertise: { host: string; port: number } | undefined, issuer: string | null, fixedToken?: Buffer, recipient?: string, persistAdvertise = true): Promise<CreatedInvite> {
     if (!Number.isFinite(hours) || hours < 5 / 60 || hours > 24 * 30) return Promise.reject(new Error('Invite hours must be between 1 and 720'));
     return this.mutate(async (config) => {
       if (issuer !== null) {
@@ -188,7 +192,10 @@ export class RelayNode {
       const token = fixedToken ? Buffer.from(fixedToken) : randomBytes(16);
       const expiresAt = Math.floor(Date.now() / 1000 + hours * 3600) * 1000;
       const code = encodeInvite({ relayFingerprint: this.identity.fingerprint, ...endpoint, token, expiresAt: expiresAt / 1000, relayName: config.name ?? this.defaultName });
-      if (advertise) config.advertise = { ...advertise };
+      if (advertise && persistAdvertise) {
+        config.advertise = { ...advertise };
+        config.advertiseSource = 'explicit';
+      }
       const files = await readdir(this.invites);
       for (const file of files.filter((file) => /^[a-f0-9]{64}\.json$/.test(file))) {
         const record = await this.readInvite(file);
@@ -255,20 +262,37 @@ export class RelayNode {
   }
 
   /** Loopback by default. Binding a LAN address is an explicit choice of the person running the relay. */
-  async listen({ host = '127.0.0.1', port = 0, advertise }: { host?: string; port?: number; advertise?: { host: string; port: number } } = {}): Promise<void> {
+  async listen({ host = '127.0.0.1', port = 0, advertise, advertiseHost }: { host?: string; port?: number; advertise?: { host: string; port: number }; advertiseHost?: string } = {}): Promise<void> {
     if (this.listener) throw new Error('Relay is already listening');
     if (advertise !== undefined && !validAdvertise(advertise)) throw new Error('Invalid advertised relay address');
+    if (advertiseHost !== undefined && !validAdvertise({ host: advertiseHost, port: 1 })) throw new Error('Invalid fallback relay address');
     this.listener = await listenPeer(this.identity, [],
       (socket, source) => { void this.handle(socket, source); }, { host, port, authorizeCertificate: async (source) => {
         await this.reload();
         if (this.config.trusted.some((entry) => entry.fingerprint === source)) return 'trusted';
-        return await this.hasPendingInvite() ? 'invite' : false;
+        // Retained unexpired receipts allow a bounded bootstrap socket to return an
+        // explicit used-token refusal. This never grants membership: handle() still
+        // restricts bootstrap sockets to join, and redeemInvite binds receipt reuse
+        // to the original certificate. Expired receipts do not reopen admission.
+        const hasReceipt = Object.values(this.config.redeemed ?? {}).some(receipt => receipt.expiresAt > Date.now());
+        return await this.hasPendingInvite() || hasReceipt ? 'invite' : false;
       } });
     try {
       await this.mutate(async (config) => {
-        if (advertise) config.advertise = advertise;
-        else if (validAdvertise(this.endpoint)) config.advertise = this.endpoint;
-        else delete config.advertise; // Never retain a stale loopback endpoint behind a wildcard bind.
+        if (advertise) { config.advertise = { ...advertise }; config.advertiseSource = 'explicit'; }
+        // Only inferred endpoints follow the bind port; never rewrite deliberate public/proxy routes.
+        else if (config.advertise && (config.advertiseSource === 'explicit' ||
+          (config.advertiseSource === undefined && config.advertise.host !== 'localhost' && !/^127\./.test(config.advertise.host)))) { /* keep configured route */ }
+        else if (advertiseHost) {
+          config.advertise = { host: advertiseHost, port: this.listener!.port };
+          config.advertiseSource = 'inferred';
+        } else if (validAdvertise(this.endpoint)) {
+          config.advertise = this.endpoint;
+          config.advertiseSource = 'inferred';
+        } else {
+          delete config.advertise; // Never retain a stale inferred endpoint behind a wildcard bind.
+          delete config.advertiseSource;
+        }
       });
     } catch (error) { await this.close(); throw error; }
   }

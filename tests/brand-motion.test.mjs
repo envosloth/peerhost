@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 let browser;
 const artifacts=await mkdtemp(path.join(process.env.TMPDIR,'seedhost-brand-'));
-before(async()=>{browser=await chromium.launch({executablePath:'/usr/bin/chromium',headless:true});});
+before(async()=>{browser=await chromium.launch({headless:false});});
 after(async()=>{await browser?.close();console.log('BRAND_ARTIFACTS='+artifacts);});
 async function splash(t, reduced=false){
  const page=await browser.newPage({viewport:{width:1000,height:700},reducedMotion:reduced?'reduce':'no-preference'});t.after(()=>page.close());

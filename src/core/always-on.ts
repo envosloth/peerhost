@@ -8,6 +8,7 @@ import { RelayNode, DEFAULT_RELAY_PORT } from './relay.js';
 import { encodeInvite } from './invites.js';
 import { privateLanAddresses, tailnetAddresses } from './network-info.js';
 import type { PeerIdentity } from './peer-transport.js';
+import { validAdvertise } from './relay-friends-store.js';
 
 /*
  * One-click always-on PC.
@@ -124,7 +125,7 @@ export class AlwaysOnHost {
   private session?: { code: string; expiresAt: number; secrets: PairingSecrets };
   private error: string | null = null;
   private enabled = false;
-  constructor(readonly root: string, private readonly identity: PeerIdentity, private readonly options: { port?: number; gamePorts?: number[]; discoveryPort?: number; host?: string } = {}) {}
+  constructor(readonly root: string, private readonly identity: PeerIdentity, private readonly options: { port?: number; gamePorts?: number[]; discoveryPort?: number; host?: string; advertise?: { host: string; port: number } } = {}) {}
 
   private get settingsFile(): string { return path.join(this.root, 'always-on.json'); }
 
@@ -157,7 +158,10 @@ export class AlwaysOnHost {
     await this.relay.trust(name, fingerprint);
     if (!this.relay.owner) await this.relay.setOwner(fingerprint);
     const endpoint = this.relay.endpoint!;
-    return this.relay.createInvite({ minutes: 5, recipient: fingerprint, advertise: { host: endpoint.host === '0.0.0.0' ? this.advertiseHost() ?? '127.0.0.1' : endpoint.host, port: endpoint.port } });
+    // Enrollment on the creator's PC never needs public ingress or hairpin NAT, and must not
+    // replace the separately configured endpoint sent to friends.
+    return this.relay.createInvite({ minutes: 5, recipient: fingerprint, persistAdvertise: false,
+      advertise: { host: endpoint.host === '0.0.0.0' ? '127.0.0.1' : endpoint.host, port: endpoint.port } });
   }
 
   async disable(): Promise<AlwaysOnStatus> {
@@ -174,6 +178,16 @@ export class AlwaysOnHost {
   private async start(name?: string): Promise<void> {
     if (this.relay) { if (name) await this.relay.setName(name); return; }
     this.error = null;
+    let advertise = this.options.advertise;
+    if (advertise === undefined) {
+      try {
+        const value: unknown = JSON.parse(await readFile(path.join(this.root, 'relay-advertise.json'), 'utf8'));
+        if (!validAdvertise(value) || Object.keys(value).sort().join(',') !== 'host,port') throw new Error('Invalid relay-advertise.json; supply only a reachable TLS relay host and port');
+        advertise = { host: value.host, port: value.port };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Invalid relay-advertise.json; it was left unchanged', { cause: error });
+      }
+    }
     const relay = new RelayNode(this.root, this.identity, { log: () => undefined });
     await relay.open();
     if (name) await relay.setName(name);
@@ -182,7 +196,7 @@ export class AlwaysOnHost {
       // First free port from the usual one upward; paired PCs learn the actual port from the code lookup.
       let listenError: unknown;
       for (const port of this.options.port !== undefined ? [this.options.port] : [DEFAULT_RELAY_PORT, 47626, 47627, 47628, 47629]) {
-        try { await relay.listen({ host, port }); listenError = undefined; break; }
+        try { await relay.listen({ host, port, advertise, advertiseHost: this.advertiseHost() }); listenError = undefined; break; }
         catch (error) { listenError = error; }
       }
       if (listenError) throw new Error(`Couldn’t open Seed Hosting’s port: ${(listenError as Error).message}`);
@@ -233,7 +247,7 @@ export class AlwaysOnHost {
     if (!this.relay) throw new Error('Turn on “This PC is the always-on PC” first');
     const code = newPairingCode();
     const secrets = await pairingSecrets(code);
-    const created = await this.relay.createInvite({ minutes: CODE_MINUTES, token: secrets.token, advertise: this.relay.endpoint && this.advertiseHost() ? { host: this.advertiseHost()!, port: this.relay.endpoint.port } : undefined });
+    const created = await this.relay.createInvite({ minutes: CODE_MINUTES, token: secrets.token, persistAdvertise: false, advertise: this.relay.endpoint && this.advertiseHost() ? { host: this.advertiseHost()!, port: this.relay.endpoint.port } : undefined });
     this.session = { code, expiresAt: created.expiresAt, secrets };
     return this.status();
   }

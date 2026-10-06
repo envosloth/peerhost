@@ -1,0 +1,314 @@
+import test, { before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp } from 'node:fs/promises';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+import { _electron as electron } from 'playwright';
+
+// Headed Electron + REAL renderer, TEST-ONLY deterministic bridge; no backend/network/Minecraft claims.
+let app, page, root;
+const errors = [];
+before(async () => {
+  const scratch = process.env.TMPDIR || (process.platform === 'win32' && path.join(process.env.LOCALAPPDATA, 'hermes/cache/scratch'));
+  if (!scratch) throw new Error('Hermes scratch TMPDIR required');
+  root = await mkdtemp(path.join(scratch, 'seed-dashboard-renderer-'));
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  app = await electron.launch({ executablePath: createRequire(import.meta.url)('electron'), args: [path.resolve('tools/dashboard-fixture-main.cjs'), '--profile-root=' + root], env });
+  page = await app.firstWindow(); page.setDefaultTimeout(7000);
+  page.on('pageerror', e => errors.push(e.message));
+});
+after(async () => { if (app) { app.process().kill(); await app.close().catch(() => {}); } });
+async function reset() {
+  await page.bringToFront(); await page.evaluate(() => window.dashboardFixture.reset()); await page.reload();
+  await page.waitForFunction(() => document.querySelector('#splash').hidden);
+}
+async function click(selector) { await page.bringToFront(); await page.locator(selector).click(); }
+const fixture = () => page.evaluate(() => window.dashboardFixture.read());
+const settle = () => page.waitForFunction(() => document.querySelector('#activity-message').textContent === 'Ready');
+async function set(value) { await page.evaluate(v => window.dashboardFixture.set(v), value); await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange'))); await settle(); }
+
+// Each feature below is added and run RED before its implementation.
+test('Home begins with selectable server cards from the library and explicit one-running limit', async () => {
+  await reset(); console.log('TEST-ONLY renderer: Home/library selection');
+  assert.equal(await page.locator('#home-panel').count(), 1, 'Home exists');
+  assert.equal(await page.locator('#home-panel').isVisible(), true, 'fresh renderer opens Home');
+  assert.equal(await page.locator('#server-list .server-row').count(), 2);
+  assert.match(await page.locator('#server-list').textContent(), /Mossy Hollow.*Sky Islands/s);
+  assert.match(await page.locator('#server-list').textContent(), /Unknown/i, 'unknown owner is not inferred');
+  assert.match(await page.locator('#home-concurrency').textContent(), /one server.*time/i);
+  await click('#server-list [data-action="open"][data-id="bravo"]');
+  await page.waitForFunction(() => document.querySelector('#server-name').textContent === 'Sky Islands');
+  assert.equal((await fixture()).state.server.id, 'bravo');
+  assert.equal(await page.locator('#operate-panel').isVisible(), true);
+  await click('#home-tab');
+  assert.equal(await page.locator('#home-panel').isVisible(), true);
+  assert.deepEqual(errors, []);
+});
+
+test('server sections are hidden on Home until a server is opened, then hidden again on return', async () => {
+  await reset();
+  const sections = ['operate', 'console', 'players', 'backups', 'scheduler', 'peers', 'mods', 'tunnels', 'server-settings', 'server-files'];
+  for (const section of sections) assert.equal(await page.locator('#' + section + '-tab').isVisible(), false, section + ' must not appear on library Home');
+  assert.equal(await page.locator('#server-workspace-header').isVisible(), false);
+  await click('#server-list [data-action="open"][data-id="alpha"]');
+  for (const section of sections) assert.equal(await page.locator('#' + section + '-tab').isVisible(), true, section + ' appears in opened server workspace');
+  await click('#home-tab');
+  for (const section of sections) assert.equal(await page.locator('#' + section + '-tab').isVisible(), false, section + ' hides when returning Home');
+  assert.equal(await page.locator('#home-stop-first').isVisible(), false);
+  await page.screenshot({ path: path.join(root, 'home-without-server-options.png') });
+  console.log('SCREENSHOT=' + path.join(root, 'home-without-server-options.png'));
+});
+
+test('running server can be stopped from Home without opening its workspace or switching worlds', async () => {
+  await reset(); const f = await fixture(); f.state.server.state = 'running'; f.state.server.ownership.state = 'hosting'; f.state.servers[0].state = 'running';
+  await set({ state: f.state });
+  await click('#server-list [data-action="open"][data-id="alpha"]');
+  await click('#home-tab');
+  assert.equal(await page.locator('#home-panel').isVisible(), true);
+  assert.equal(await page.locator('#server-list [data-action="open"][data-id="bravo"]').isDisabled(), true, 'cannot switch while process runs');
+  assert.equal(await page.locator('#server-list [data-action="open"][data-id="alpha"]').isEnabled(), true, 'can reopen the active world');
+  assert.match(await page.locator('#home-selection-hint').textContent(), /Stop.*Mossy Hollow.*before.*switch/i);
+  assert.equal(await page.locator('#home-stop-first').isEnabled(), true);
+  await click('#home-stop-first');
+  const afterStop = await fixture();
+  assert.ok(afterStop.calls.some(c => c.method === 'stopServer'), 'Home must invoke the real stop action');
+  assert.equal(await page.locator('#home-stop-first').textContent(), 'Stop server');
+  assert.equal(await page.locator('#home-panel').isVisible(), true, 'stopping does not navigate away from Home');
+  assert.equal(await page.locator('#operate-panel').isVisible(), false, 'stopping does not open the server workspace');
+  assert.equal((await fixture()).calls.some(c => c.method === 'selectServer' && c.payload.id === 'bravo'), false);
+});
+
+test('Performance renders authoritative samples, never invented zeros, with selected-server dashboard request', async () => {
+  await reset(); await click('#server-list [data-action="open"][data-id="alpha"]');
+  assert.equal(await page.locator('#operate-tab .nav-text').textContent(), 'Performance');
+  assert.equal(await page.locator('#performance-cpu').count(), 1, 'performance metrics exist');
+  await page.waitForFunction(() => document.querySelector('#dashboard-status')?.textContent.includes('Updated'));
+  assert.equal(await page.locator('#performance-cpu').textContent(), 'Unavailable');
+  const f = await fixture(); f.dashboard.alpha.performance = { pid: 123, cpuPercent: 12.5, memoryMiB: 512, uptimeSeconds: 61, sampledAt: 1720000000000, error: null };
+  await set({ dashboard: f.dashboard }); await click('#dashboard-refresh');
+  await page.waitForFunction(() => document.querySelector('#performance-cpu').textContent === '12.5%');
+  assert.equal(await page.locator('#performance-memory').textContent(), '512 MiB');
+  assert.equal(await page.locator('#performance-uptime').textContent(), '61 s');
+  assert.equal(await page.locator('#performance-pid').textContent(), '123');
+  // A dashboard response that lands after the user switches worlds must never render into the new one.
+  const g = await fixture();
+  g.dashboard.alpha.performance = { pid: 111, cpuPercent: 33, memoryMiB: 100, uptimeSeconds: 5, sampledAt: 1720000000000, error: null };
+  g.dashboard.bravo.performance = { pid: 222, cpuPercent: 77, memoryMiB: 200, uptimeSeconds: 9, sampledAt: 1720000000001, error: null };
+  await set({ dashboard: g.dashboard, holdDashboard: null });
+  await page.evaluate(() => window.dashboardFixture.set({ holdDashboard: 'alpha' }));
+  await click('#dashboard-refresh');
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 60)));
+  await click('#home-tab'); await click('#server-list [data-action="open"][data-id="bravo"]');
+  await page.evaluate(() => window.dashboardFixture.release()); await settle();
+  await page.waitForFunction(() => document.querySelector('#performance-cpu').textContent === '77%');
+  assert.equal(await page.locator('#performance-cpu').textContent(), '77%', 'late bravo/alpha responses never cross servers');
+  assert.equal(await page.locator('#performance-pid').textContent(), '222');
+  assert.ok((await fixture()).calls.some(c => c.method === 'getServerDashboard' && c.payload.id === 'alpha'));
+  await page.screenshot({ path: path.join(root, 'performance.png') });
+  console.log('TEST-ONLY Electron Performance screenshot: ' + path.join(root, 'performance.png'));
+});
+
+test('every per-server section lays out at the minimum window size without clipping or overlap', async () => {
+  await reset(); await click('#server-list [data-action="open"][data-id="alpha"]');
+  await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; w.unmaximize(); w.setFullScreen(false); w.setContentSize(1000, 700); });
+  await page.waitForFunction(() => innerWidth <= 1000);
+  const audit = () => page.evaluate(() => {
+    const problems = [];
+    const describe = (e) => e.tagName.toLowerCase() + (e.id ? '#' + e.id : '');
+    const visible = (e) => { const r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return false; for (let n = e; n; n = n.parentElement) { const s = getComputedStyle(n); if (s.display === 'none' || s.visibility === 'hidden' || Number(s.opacity) === 0) return false; } return !e.closest('[hidden],#splash,dialog:not([open])'); };
+    const doc = document.documentElement;
+    if (doc.scrollWidth > doc.clientWidth + 1) problems.push('page scrolls horizontally');
+    for (const scroller of document.querySelectorAll('.page:not([hidden]), .sidebar')) if (scroller.scrollWidth > scroller.clientWidth + 1) problems.push('horizontal overflow in ' + describe(scroller));
+    const nodes = [...document.querySelectorAll('button,input:not([type=radio]),textarea,select,.badge,h1,h2,h3,summary,label,.chip,.led,.kbd,.metric dd')].filter((e) => visible(e) && !e.closest('dialog'));
+    for (const e of nodes) { const r = e.getBoundingClientRect(); if (r.right > innerWidth + 1 || r.left < -1) problems.push('outside viewport: ' + describe(e)); }
+    for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
+      const a = nodes[i], b = nodes[j];
+      if (a.contains(b) || b.contains(a)) continue;
+      if ((a.tagName === 'LABEL' && a.control === b) || (b.tagName === 'LABEL' && b.control === a)) continue;
+      const x = a.getBoundingClientRect(), y = b.getBoundingClientRect();
+      const w = Math.min(x.right, y.right) - Math.max(x.left, y.left), h = Math.min(x.bottom, y.bottom) - Math.max(x.top, y.top);
+      if (w > 1.5 && h > 1.5) problems.push('overlap: ' + describe(a) + ' × ' + describe(b));
+    }
+    return problems;
+  });
+  for (const name of ['home', 'operate', 'console', 'players', 'backups', 'scheduler', 'peers', 'mods', 'tunnels', 'server-settings', 'server-files']) {
+    if (name !== 'home' && !await page.locator('#' + name + '-tab').isVisible()) await click('#server-list [data-action="open"][data-id="alpha"]');
+    await click('#' + name + '-tab');
+    await page.evaluate(() => Promise.all(document.getAnimations().filter(a => a.effect?.getComputedTiming().iterations !== Infinity).map(a => a.finished.catch(() => {}))));
+    assert.deepEqual(await audit(), [], 'layout problems in ' + name);
+    await page.screenshot({ path: path.join(root, 'section-' + name + '.png') });
+  }
+  console.log('TEST-ONLY Electron layout screenshots: ' + root);
+});
+
+test('Console uses selected-server logs and preserves guarded process command submission', async () => {
+  await reset(); const f = await fixture(); f.state.server.state = 'running'; f.state.server.ownership.state = 'hosting'; await set({ state: f.state });
+  await click('#server-list [data-action="open"][data-id="alpha"]'); await click('#console-tab');
+  await page.waitForFunction(() => document.querySelector('#console-lines').textContent.includes('alpha log'));
+  assert.equal(await page.locator('#operate-panel').isVisible(), false);
+  await page.bringToFront(); await page.locator('#server-command').fill('say hello'); await click('#send-command'); await settle();
+  assert.ok((await fixture()).calls.some(c => c.method === 'sendCommand' && c.payload.command === 'say hello'));
+  assert.equal(await page.locator('#server-command').inputValue(), '');
+});
+
+test('Players shows sampled names and sends guarded kick/whitelist actions to this server', async () => {
+  await reset(); await click('#server-list [data-action="open"][data-id="alpha"]');
+  assert.equal(await page.locator('#players-tab').count(), 1, 'Players navigation exists'); await click('#players-tab');
+  assert.match(await page.locator('#players-count').textContent(), /Unavailable/);
+  assert.equal(await page.locator('#player-submit').isDisabled(), true, 'stopped server cannot manage players');
+  const f = await fixture(); f.state.server.state = 'running'; f.state.server.ownership.state = 'hosting'; f.dashboard.alpha.players = { online: 1, max: 20, sample: [{ name: 'Alex' }], error: null };
+  await set({ state: f.state, dashboard: f.dashboard }); await click('#dashboard-refresh');
+  await page.waitForFunction(() => document.querySelector('#players-list').textContent.includes('Alex'));
+  assert.match(await page.locator('#players-count').textContent(), /1.*20/);
+  await click('#players-list button[data-player="Alex"]'); await settle();
+  await page.waitForFunction(() => !document.querySelector('#players-list').textContent.includes('Alex'));
+  await page.bringToFront(); await page.locator('#player-name').fill('Steve'); await click('#player-submit'); await settle();
+  const calls = (await fixture()).calls.filter(c => c.method === 'managePlayer');
+  assert.deepEqual(calls.map(c => c.payload), [{ id: 'alpha', action: 'kick', name: 'Alex' }, { id: 'alpha', action: 'whitelist-add', name: 'Steve' }]);
+});
+
+test('Backups relocates the real history/actions and follows the selected world after switching', async () => {
+  await reset(); await click('#server-list [data-action="open"][data-id="bravo"]');
+  assert.equal(await page.locator('#backups-tab').count(), 1, 'Backups navigation exists'); await click('#backups-tab');
+  assert.equal(await page.locator('#backups-panel #snapshot-history').isVisible(), true);
+  assert.equal(await page.locator('#backups-panel #create-snapshot').count(), 1);
+  await page.waitForFunction(() => document.querySelector('#snapshot-list').textContent.includes('bravo-backup'));
+  await click('#create-snapshot'); await settle();
+  assert.equal((await fixture()).state.server.snapshotId, 'bravo-backup-new');
+  await click('#home-tab'); await click('#server-list [data-action="open"][data-id="alpha"]'); await click('#backups-tab');
+  await page.waitForFunction(() => document.querySelector('#snapshot-list').textContent.includes('alpha-backup'));
+  assert.doesNotMatch(await page.locator('#snapshot-list').textContent(), /bravo/);
+});
+
+test('Scheduler creates, edits, runs and deletes a real per-server schedule with read-back', async () => {
+  await reset(); await click('#server-list [data-action="open"][data-id="alpha"]');
+  assert.equal(await page.locator('#scheduler-tab').count(), 1, 'Scheduler navigation exists'); await click('#scheduler-tab');
+  assert.match(await page.locator('#scheduler-help').textContent(), /app.*open/i);
+  await page.bringToFront(); await page.locator('#schedule-name').fill('World backup'); await page.locator('#schedule-interval').fill('30'); await click('#schedule-save');
+  await page.waitForFunction(() => document.querySelector('#schedule-feedback').textContent.includes('Verified'));
+  assert.match(await page.locator('#schedule-list').textContent(), /World backup.*30/s);
+  await click('#schedule-list [data-job-action="edit"]'); await page.bringToFront(); await page.locator('#schedule-interval').fill('45'); await click('#schedule-save');
+  await page.waitForFunction(() => document.querySelector('#schedule-list').textContent.includes('45'));
+  await click('#schedule-list [data-job-action="run"]'); await page.waitForFunction(() => document.querySelector('#schedule-list').textContent.includes('TEST-only ran'));
+  await click('#schedule-list [data-job-action="delete"]'); await page.waitForFunction(() => document.querySelector('#schedule-feedback').textContent.includes('Verified removal'));
+  assert.equal((await fixture()).dashboard.alpha.schedules.length, 0);
+  const calls = (await fixture()).calls.filter(c => c.method === 'saveServerSchedule');
+  assert.equal(calls[0].payload.id, 'alpha'); assert.deepEqual(calls[0].payload.schedule, { name: 'World backup', action: 'backup', intervalMinutes: 30, enabled: true });
+  assert.equal(calls[1].payload.schedule.id, 'job-1');
+});
+
+test('new dashboard text controls retain the existing themed input styling', async () => {
+  await reset(); await click('#server-list [data-action="open"][data-id="alpha"]'); await click('#scheduler-tab');
+  const styles = await page.evaluate(() => {
+    const text = getComputedStyle(document.querySelector('#schedule-name'));
+    const number = getComputedStyle(document.querySelector('#schedule-interval'));
+    return { textRadius: text.borderRadius, numberRadius: number.borderRadius, textWidth: document.querySelector('#schedule-name').getBoundingClientRect().width, numberWidth: document.querySelector('#schedule-interval').getBoundingClientRect().width };
+  });
+  assert.equal(styles.textRadius, styles.numberRadius, 'text and numeric controls must use the same theme');
+  assert.ok(Math.abs(styles.textWidth - styles.numberWidth) < 2, 'text input fills its form column');
+});
+
+test('Multi-host reuses group/relay controls, explicitly distinguishes app-wide group from selected-world handoff', async () => {
+  await reset(); await click('#server-list [data-action="open"][data-id="alpha"]');
+  assert.equal(await page.locator('#peers-tab .nav-text').textContent(), 'Multi-host'); await click('#peers-tab');
+  assert.match(await page.locator('#multi-host-scope').textContent(), /app-wide.*group/i);
+  assert.equal(await page.locator('#peers-panel #relay-card').count(), 1);
+  assert.equal(await page.locator('#peers-panel #friends-controls').count(), 1);
+  assert.equal(await page.locator('#peers-panel #account-card').count(), 1);
+  await click('#friends-intent-join'); assert.equal(await page.locator('#friend-code').isVisible(), true);
+  const f = await fixture(); f.state.relay = { name: 'Shared relay', fingerprint: 'c'.repeat(64), parkOnStop: false }; f.state.peers = [{ name: 'Shared relay', fingerprint: 'c'.repeat(64), host: '127.0.0.1', port: 1234 }];
+  await set({ state: f.state });
+  assert.equal(await page.locator('#park-relay').isEnabled(), true);
+  await click('#park-relay'); await settle(); assert.ok((await fixture()).calls.some(c => c.method === 'parkAtRelay'));
+});
+
+test('Mods retains Modrinth search and local JAR actions inside its per-server section', async () => {
+  await reset(); await click('#server-list [data-action="open"][data-id="bravo"]');
+  assert.equal(await page.locator('#mods-tab').count(), 1, 'Mods navigation exists'); await click('#mods-tab');
+  await click('#mods-details > summary');
+  assert.equal(await page.locator('#mods-panel #mod-browser').isVisible(), true);
+  assert.equal(await page.locator('#mods-panel #add-server-mods').isEnabled(), true);
+  await click('#add-server-mods'); await settle();
+  assert.ok((await fixture()).calls.some(c => c.method === 'addMods' && c.payload.kind === 'server'));
+  await page.bringToFront(); await page.locator('#mod-query').fill('Lithium'); await click('#search-mods');
+  await page.waitForFunction(() => window.dashboardFixture.read().calls.some(c => c.method === 'searchMods' && c.payload.query === 'Lithium'));
+  assert.equal(await page.locator('#mods-details').count(), 1, 'original controls not duplicated');
+});
+
+test('Tunnels retains public/playit/gateway controls without claiming separate tunnels per world', async () => {
+  await reset(); await click('#server-list [data-action="open"][data-id="alpha"]');
+  assert.equal(await page.locator('#tunnels-tab').count(), 1, 'Tunnels navigation exists'); await click('#tunnels-tab');
+  for (const id of ['public-card', 'playit-panel', 'player-gateway']) assert.equal(await page.locator('#tunnels-panel #' + id).count(), 1, 'relocated ' + id);
+  assert.equal(await page.locator('#home-panel #join-help').count(), 1, 'join instructions live on Home');
+  assert.match(await page.locator('#tunnels-scope').textContent(), /app-wide/i);
+  await click('#playit-panel summary'); await click('#playit-check');
+  await page.waitForFunction(() => window.dashboardFixture.read().calls.some(c => c.method === 'playitCheck'));
+  assert.equal(await page.locator('#public-go').isVisible(), true);
+});
+
+test('Server settings reads properties, sends only changed allowed keys, verifies read-back and blocks running edits', async () => {
+  await reset(); await click('#server-list [data-action="open"][data-id="bravo"]');
+  assert.equal(await page.locator('#server-settings-tab').count(), 1, 'Server settings navigation exists'); await click('#server-settings-tab');
+  assert.equal(await page.locator('#server-settings-panel #profile-form').count(), 1, 'existing launch profile retained');
+  await page.waitForFunction(() => document.querySelector('#property-motd').value === 'bravo world');
+  await page.bringToFront(); await page.locator('#property-motd').fill('Weekend world'); await page.locator('#property-max-players').fill('12'); await click('#properties-save');
+  await page.waitForFunction(() => document.querySelector('#properties-feedback').textContent.includes('Verified'));
+  const call = (await fixture()).calls.find(c => c.method === 'saveServerSettings');
+  assert.deepEqual(call.payload, { id: 'bravo', settings: { motd: 'Weekend world', 'max-players': 12 } });
+  const f = await fixture(); f.state.server.state = 'running'; f.state.server.ownership.state = 'hosting'; await set({ state: f.state });
+  assert.equal(await page.locator('#property-motd').isDisabled(), true);
+  assert.match(await page.locator('#properties-help').textContent(), /stop/i);
+});
+
+test('Server settings handles actual properties text values and preserves unsaved checkbox edits during polling', async () => {
+  await reset();
+  const f = await fixture();
+  f.dashboard.alpha.settings = { motd: 'alpha world', 'max-players': '20', pvp: 'true', 'white-list': 'false' };
+  await set({ dashboard: f.dashboard });
+  await click('#server-list [data-action="open"][data-id="alpha"]');
+  await click('#server-settings-tab');
+  await page.waitForFunction(() => document.querySelector('#property-max-players').value === '20');
+  assert.equal(await page.locator('#property-pvp').isChecked(), true, 'actual server.properties stores booleans as strings');
+  await page.bringToFront(); await page.locator('#property-pvp').uncheck();
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange'))); await settle();
+  await click('#dashboard-refresh');
+  assert.equal(await page.locator('#property-pvp').isChecked(), false, 'polling cannot discard an unsaved checkbox edit');
+  await page.bringToFront(); await page.locator('#property-max-players').fill('12');
+  await click('#properties-save');
+  await page.waitForFunction(() => document.querySelector('#properties-feedback').textContent.includes('Verified'));
+  const save = (await fixture()).calls.find(c => c.method === 'saveServerSettings');
+  assert.deepEqual(save.payload, { id: 'alpha', settings: { 'max-players': 12, pvp: false } }, 'only edited keys are submitted');
+});
+
+test('saving unchanged file content verifies the same hash without reporting a false failure', async () => {
+  await reset(); await click('#server-list [data-action="open"][data-id="alpha"]'); await click('#server-files-tab');
+  await page.waitForFunction(() => document.querySelector('#file-list').textContent.includes('server.properties'));
+  await click('#file-list [data-path="server.properties"]');
+  await page.waitForFunction(() => document.querySelector('#file-editor').value.includes('motd=fixture'));
+  await click('#file-save');
+  await page.waitForFunction(() => !document.querySelector('#file-feedback').textContent.includes('Saving…'));
+  assert.doesNotMatch(await page.locator('#file-feedback').textContent(), /couldn.t|not.*confirm/i);
+  assert.match(await page.locator('#file-feedback').textContent(), /unchanged|verified/i);
+});
+
+test('Server files explores, guards stale responses across switches, and saves only with a matching hash', async () => {
+  await reset(); await click('#server-list [data-action="open"][data-id="alpha"]');
+  assert.equal(await page.locator('#server-files-tab').count(), 1, 'Server files navigation exists'); await click('#server-files-tab');
+  await page.waitForFunction(() => document.querySelector('#file-list').textContent.includes('server.properties'));
+  assert.equal(await page.locator('#file-edit').isHidden(), true, 'editor stays closed until a file is opened');
+  await click('#file-list [data-path="server.properties"]');
+  await page.waitForFunction(() => document.querySelector('#file-editor').value.includes('motd=fixture'));
+  await page.bringToFront(); await page.locator('#file-editor').fill('motd=changed\n'); await click('#file-save');
+  await page.waitForFunction(() => document.querySelector('#file-feedback').textContent.includes('Verified'));
+  const write = (await fixture()).calls.find(c => c.method === 'writeServerFile');
+  assert.deepEqual(write.payload, { id: 'alpha', path: 'server.properties', text: 'motd=changed\n', expectedHash: 'h1' });
+  // A response that lands after the user switches worlds must never render into the new server.
+  const f = await fixture(); f.holdFiles = 'alpha'; await set(f);
+  await click('#file-list [data-path="config"]');
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 60)));
+  await click('#home-tab'); await click('#server-list [data-action="open"][data-id="bravo"]'); await click('#server-files-tab');
+  await page.evaluate(() => window.dashboardFixture.release()); await settle();
+  await page.waitForFunction(() => document.querySelector('#file-list').textContent.includes('server.jar'));
+  assert.match(await page.locator('#file-path').textContent(), /Server root/i, 'late alpha listing did not replace bravo path');
+  assert.equal(await page.locator('#file-list [data-path="config/notes.txt"]').count(), 0, 'stale alpha listing did not render into bravo');
+});

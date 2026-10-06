@@ -5,7 +5,7 @@ import { AccountClient, accountUsername, type AccountEndpoint } from './accounts
 import { decodeInvite } from './invites.js';
 import { fingerprintOK } from './relay-friends-store.js';
 import { syncDirectory } from './snapshots.js';
-import type { PeerIdentity } from './peer-transport.js';
+import { isRetryablePeerError, type PeerIdentity } from './peer-transport.js';
 import type { SeedHostApplication } from './application.js';
 
 interface Vault { encrypt(value:string):Buffer; decrypt(value:Buffer):string }
@@ -74,6 +74,13 @@ export class AccountIntegration {
     const members=await this.app.listFriends();if(!members.members.some(m=>m.you))throw new Error('Group membership could not be verified');
     await this.dismissRequest(id);return {joined:true,group:decodeInvite(r.code).relayName};
   });}
-  private async dismissRequest(id:string){await this.call('dismiss',{id});if((await this.requests()).some((r:any)=>r.id===id))throw new Error('Invitation dismissal could not be verified');}
+  private async dismissRequest(id:string){
+    let uncertain:unknown;
+    try{await this.call('dismiss',{id});}
+    catch(error){if(!isRetryablePeerError(error))throw error;uncertain=error;}
+    // A lost reply does not mean the directory failed to commit. Read the exact recipient/device
+    // inbox before reporting success; never replay authentication or discard an unverified request.
+    if((await this.requests()).some((r:any)=>r.id===id))throw uncertain ?? new Error('Invitation dismissal could not be verified');
+  }
   async decline(id:string){return this.exclusive(()=>this.dismissRequest(id));}
 }

@@ -4,7 +4,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { RelayNode } from '../dist/src/core/relay.js';
-import { createIdentity, connectPeer, listenPeer, readFrame, writeFrame, readInviteFrame, writeInviteFrame } from '../dist/src/core/peer-transport.js';
+import { createIdentity, connectPeer, listenPeer, readFrame, writeFrame, readInviteFrame, writeInviteFrame, isRetryablePeerError } from '../dist/src/core/peer-transport.js';
 import { joinRelayInvite, relayInvite, relayFriends, relayStatus, relayRequest } from '../dist/src/core/relay-client.js';
 import { decodeInvite } from '../dist/src/core/invites.js';
 const quiet = { name: "Angel's relay", log() {} };
@@ -89,7 +89,19 @@ test('expired server record refuses join and wrong relay fingerprint refuses bef
   const record=(await readdir(path.join(root,'invites')))[0];
   const file=path.join(root,'invites',record);
   await writeFile(file,JSON.stringify({...JSON.parse(await readFile(file,'utf8')),expiresAt:Date.now()-1000}));
-  await assert.rejects(joinRelayInvite(unknown,invite.code,'Unknown'),/expired/i);
+  let admissions = 0, frames = 0;
+  const reload = relay.reload.bind(relay), handle = relay.handle.bind(relay);
+  relay.reload = async () => { admissions++; await reload(); };
+  relay.handle = (...args) => { frames++; return handle(...args); };
+  await assert.rejects(joinRelayInvite(unknown,invite.code,'Unknown'), error => {
+    assert.match(error.message, /Invitation unavailable: expired, used, revoked or not valid/);
+    assert.equal(error.code, 'PEER_AUTHORIZATION_DENIED');
+    assert.equal(isRetryablePeerError(error), false);
+    assert.ok(!error.message.includes(decodeInvite(invite.code).token.toString('hex')));
+    return true;
+  });
+  assert.equal(admissions, 1, 'explicit refusal must not retry');
+  assert.equal(frames, 0, 'denied admission never reads a join token');
   const fresh=await relay.createInvite();
   const {encodeInvite}=await import('../dist/src/core/invites.js');
   const forged=encodeInvite({...decodeInvite(fresh.code),relayFingerprint:unknown.fingerprint});
@@ -135,6 +147,30 @@ test('Unicode control characters in friend names are refused',async t=>{
   await assert.rejects(joinRelayInvite(await createIdentity(),invite.code,'Name\u0085'),/name|control/i);
   assert.equal(relay.trusted.length,0);
 });
+test('revoked last invitation receives pinned admission refusal without receipt bootstrap', async t => {
+  const {root, relay, peer} = await fixture(t);
+  const [issuer, recipient] = await Promise.all([createIdentity(), createIdentity()]);
+  await relay.trust('Issuer', issuer.fingerprint);
+  const invitation = await relayInvite(issuer, peer);
+  await relay.untrust(issuer.fingerprint);
+  assert.deepEqual(await readdir(path.join(root, 'invites')), []);
+  assert.deepEqual(JSON.parse(await readFile(path.join(root, 'relay.json'), 'utf8')).redeemed ?? {}, {});
+  let admissions = 0, frames = 0;
+  const reload = relay.reload.bind(relay), handle = relay.handle.bind(relay);
+  relay.reload = async () => { admissions++; await reload(); };
+  relay.handle = (...args) => { frames++; return handle(...args); };
+  await assert.rejects(joinRelayInvite(recipient, invitation.code, 'Recipient'), error => {
+    assert.equal(error.code, 'PEER_AUTHORIZATION_DENIED');
+    assert.match(error.message, /Invitation unavailable.*revoked/);
+    assert.doesNotMatch(error.message, /Retry the same invitation|must be reachable/);
+    assert.equal(isRetryablePeerError(error), false);
+    return true;
+  });
+  assert.equal(admissions, 1);
+  assert.equal(frames, 0);
+  assert.deepEqual(relay.trusted, []);
+});
+
 test('turning off member invites revokes outstanding tokens permanently',async t=>{
   const {relay,peer}=await fixture(t);
   const a=await createIdentity(),b=await createIdentity();

@@ -9,19 +9,26 @@ import { OwnershipLedger, canAcceptOffer, type TransferOffer } from './ownership
 import { receiveSnapshot, sendSnapshotToPeer } from './transfers.js';
 import { listenPeer, type PeerIdentity } from './peer-transport.js';
 import { addMods, exportClientPack, modsDirectory, ordinaryDirectory, removeMod, type ModKind } from './mods.js';
-import { ModrinthClient, assertModTarget, isGameVersion, isModLoader, isProjectKey } from './modrinth.js';
+import { ModrinthClient, assertModTarget, isGameVersion, isModLoader, isProjectKey, type ModSort } from './modrinth.js';
 import { indexedMods, modTarget, readModIndex, writeModIndex, type ModVerificationCache } from './mod-index.js';
 import { installMod, assertModInstallComplete, type InstallModInput } from './mod-install.js';
 import { openRelayOperation, relayRequest, relayStatus, relayInvite, relayInviteFor, relayRemoveFriend, relayFriends, joinRelayInvite, type RelayStatus, relayPublic } from './relay-client.js';
 import { decodeInvite } from './invites.js';
 import { friendName } from './relay-friends-store.js';
-import { readOnboarding, saveOnboarding, validateOnboarding } from './onboarding.js';
+import { readOnboarding, saveOnboarding, validateOnboarding, onboardingChecks, type SetupConfiguration } from './onboarding.js';
 import { ServerSetupClient, probeJava, type CreateServerInput } from './server-setup.js';
+import { validateSimpleProfileInput, withCustomJavaArgs, withoutJvmHeapArgs, type SimpleProfileInput } from './java-arguments.js';
 import { findAlwaysOnPC, normalizePairingCode, pairingInvite, type FoundAlwaysOn } from './always-on.js';
 import { readGameGateway, saveGameGatewayConfig, validateGameGateway } from './game-gateway-config.js';
 import { gatewayStatus, startHostGameGateway } from './game-gateway.js';
 import { privateLanAddresses, readServerPort } from './network-info.js';
 import { hostname } from 'node:os';
+import { listManagedFiles, readManagedText, writeManagedText } from './server-files.js';
+import { assertServerFileTransactionsComplete } from './server-file-recovery.js';
+import { ServerMetrics } from './server-metrics.js';
+import { queryLocalMinecraft } from './minecraft-status.js';
+import { createSchedule, readScheduleSnapshot, writeSchedules, validateScheduleInput, type ServerSchedule } from './server-scheduler.js';
+import { patchServerProperties, readServerProperties, validateServerProperties } from './server-properties.js';
 import {
   parseSavedState, validateLaunchProfile, validatePeer, validateRelayConfig, newServerId, isServerId,
   type LaunchProfileInput, type RelayConfig, type SavedPeer, type SavedServer, type SavedState,
@@ -58,6 +65,12 @@ export class SeedHostApplication {
   private controlledProcess?: ServerProcess;
   private unexpectedExit?: OwnershipLedger;
   private listener?: { host: string; port: number; close: () => Promise<void> };
+  private schedules: ServerSchedule[] = [];
+  private scheduleError: string | null = null;
+  private scheduleRevision: string | null = null;
+  private scheduleTimer?: ReturnType<typeof setInterval>;
+  private scheduleTick?: Promise<void>;
+  private readonly metrics = new ServerMetrics();
 
   constructor(readonly root: string, readonly identity: PeerIdentity, private readonly options: ApplicationOptions = {}) {}
 
@@ -80,9 +93,16 @@ export class SeedHostApplication {
         this.log('Previous hosting session is uncertain. Confirm that its process stopped before recovery.');
       }
     }
+    try { const snapshot = await readScheduleSnapshot(this.root); this.schedules = snapshot.jobs; this.scheduleRevision = snapshot.revision; this.scheduleError = null; }
+    catch (error) { this.scheduleError = 'Scheduler disabled: ' + String((error as Error).message).slice(0, 240); this.log(this.scheduleError); }
+    if (!this.scheduleTimer && !this.scheduleError) {
+      this.scheduleTimer = setInterval(() => { void this.tickServerSchedules().catch(error => this.log('Scheduler: ' + String((error as Error).message))); }, 1000);
+      this.scheduleTimer.unref();
+    }
   }
 
   async getState() {
+    const id = this.saved.activeServerId ?? 'app';
     let server = null;
     const active = this.activeServer();
     if (active) {
@@ -117,10 +137,19 @@ export class SeedHostApplication {
       deviceId: this.identity.fingerprint,
       settings: { ...this.saved.settings },
       server,
-      servers: this.saved.servers.map((entry) => ({ id: entry.id, name: entry.name, active: entry.id === this.saved.activeServerId })),
+      servers: await Promise.all(this.saved.servers.map(async (entry) => {
+        let ownerName: string | null = null;
+        let state: string = 'unknown';
+        try {
+          const ownership = entry.id === active?.id && server ? server.ownership : await new OwnershipLedger(entry.ledgerFile, this.identity.fingerprint).status();
+          ownerName = this.nameOf(ownership.owner);
+          state = entry.id === active?.id ? this.process?.state ?? 'offline' : 'offline';
+        } catch { /* An unreadable ledger is unknown, not proof of local ownership. */ }
+        return { id: entry.id, name: entry.name, active: entry.id === this.saved.activeServerId, state, ownerName, configured: Boolean(entry.profile.executable && entry.profile.args.length) };
+      })),
       relay: relay ? { ...relay, name: this.relayPeer()?.name ?? 'Relay' } : null,
       peers: this.saved.peers.map((peer) => ({ ...peer })),
-      logs: [...this.logs],
+      logs: this.serverLogs(id),
       peerEndpoint: this.listener ? { host: this.listener.host, port: this.listener.port } : null,
       busy: this.busy,
       onboarding: await readOnboarding(this.root, Boolean(this.activeServer())),
@@ -137,11 +166,16 @@ export class SeedHostApplication {
     }
   }
 
-  async saveOnboarding(input: unknown): Promise<void> {
+  async saveOnboarding(input: unknown, alwaysOn?: SetupConfiguration['alwaysOn']): Promise<void> {
     await this.operation('saveOnboarding', async () => {
       const progress = validateOnboarding(input);
       const active = this.activeServer();
       if (progress.completed && (!active || !active.profile.executable || !active.profile.args.length)) throw new Error('Configure a server and its launch profile before completing setup');
+      if (progress.completed) {
+        await assertModInstallComplete(active!.serverDir);
+        const checks = onboardingChecks(progress, { server: active!, relay: this.saved.relay, gateway: await readGameGateway(this.root), alwaysOn });
+        if (checks.ready !== 'complete') throw new Error('Resolve Friends and Always-on PC, or explicitly skip those optional steps before completing setup');
+      }
       await saveOnboarding(this.root, progress);
     });
   }
@@ -261,8 +295,14 @@ export class SeedHostApplication {
   }
 
   private log(line: string): void {
-    this.logs.push(line.slice(0, 16384));
+    // Console output is per server: switching servers must never blend two worlds' logs.
+    this.logs.push('[' + (this.saved.activeServerId ?? 'app') + '] ' + line.slice(0, 16384));
     if (this.logs.length > 1000) this.logs.shift();
+  }
+
+  private serverLogs(id: string): string[] {
+    const prefix = '[' + id + '] ';
+    return this.logs.filter(line => line.startsWith(prefix)).map(line => line.slice(prefix.length));
   }
 
   /** Atomically replace state.json: write and flush a temporary, rename it, then flush the directory entry. */
@@ -299,6 +339,224 @@ export class SeedHostApplication {
       try { await this.fenceUnexpectedExit(); }
       finally { this.operationToken = undefined; this.busy = null; }
     }
+  }
+
+  // ---------------------------------------------------------------- selected-server dashboard
+
+  private selectedServer(id: string): SavedServer {
+    if (!isServerId(id) || this.requireActive().id !== id) throw new Error('The selected server changed. Refresh before continuing.');
+    return this.requireActive();
+  }
+
+  async getServerDashboard(id: string) {
+    const server = this.selectedServer(id);
+    const sampledProcess = this.process;
+    const sampledState = sampledProcess?.state;
+    const sampledPid = sampledProcess?.pid;
+    const assertCurrent = () => {
+      if (this.selectedServer(id) !== server) throw new Error('The selected server changed. Refresh before continuing.');
+      if (this.process !== sampledProcess || this.process?.state !== sampledState || this.process?.pid !== sampledPid) throw new Error('Server process changed during dashboard sampling. Refresh before continuing.');
+    };
+    let settings = {};
+    let settingsError: string | null = null;
+    try { settings = readServerProperties((await readManagedText(this.root, server.serverDir, 'server.properties', false)).text); }
+    catch (error) { settingsError = String((error as Error).message).slice(0, 300); }
+    assertCurrent();
+    if (sampledState === 'running' && sampledPid !== undefined) {
+      const performance = await this.metrics.sample(sampledPid);
+      assertCurrent();
+      let players: { online: number | null; max: number | null; sample: Array<{ name: string; id?: string }>; error: string | null };
+      try {
+        const port = await readServerPort(server.serverDir);
+        assertCurrent();
+        players = await queryLocalMinecraft(port);
+      }
+      catch { players = { online: null, max: null, sample: [], error: 'Minecraft server status unavailable' }; }
+      if (players.online === 0 && players.max === null && players.error === null) players = { online: null, max: null, sample: [], error: 'Minecraft status is unavailable: the running process is not accepting loopback status requests.' };
+      assertCurrent();
+      return { serverId: id, state: sampledState, performance, players,
+        settings, settingsError, schedules: this.schedules.filter(job => job.serverId === id).map(job => ({ ...job })), scheduleError: this.scheduleError, logs: this.serverLogs(id) };
+    }
+    return { serverId: id, state: this.process?.state ?? 'offline',
+      performance: { pid: null, cpuPercent: null, memoryMiB: null, uptimeSeconds: null, sampledAt: Date.now(), error: 'Server is not running' },
+      players: { online: null, max: null, sample: [], error: 'Server is not running' },
+      settings, settingsError, schedules: this.schedules.filter(job => job.serverId === id).map(job => ({ ...job })), scheduleError: this.scheduleError, logs: this.serverLogs(id) };
+  }
+
+  async listServerFiles(id: string, relative: string) {
+    const server = this.selectedServer(id);
+    const result = await listManagedFiles(this.root, server.serverDir, relative);
+    if (this.selectedServer(id) !== server) throw new Error('The selected server changed. Refresh before continuing.');
+    return { serverId: id, ...result };
+  }
+
+  async readServerFile(id: string, relative: string) {
+    const server = this.selectedServer(id);
+    const result = await readManagedText(this.root, server.serverDir, relative, false);
+    if (this.selectedServer(id) !== server) throw new Error('The selected server changed. Refresh before continuing.');
+    return { serverId: id, ...result };
+  }
+
+  private async editableServer(id: string): Promise<SavedServer> {
+    this.assertStopped();
+    const server = this.selectedServer(id);
+    const ownership = await new OwnershipLedger(server.ledgerFile, this.identity.fingerprint).status();
+    if (ownership.state !== 'owned' || ownership.owner !== this.identity.fingerprint) throw new Error('Server editing requires safely held local ownership');
+    await assertModInstallComplete(server.serverDir);
+    return server;
+  }
+
+  async writeServerFile(id: string, relative: string, text: string, expectedHash: string) {
+    this.selectedServer(id);
+    return this.operation('writeServerFile', async () => {
+      const server = await this.editableServer(id);
+      const result = await writeManagedText(this.root, server.serverDir, relative, text, expectedHash);
+      this.log('Saved ' + relative + '. Previous bytes retained in ' + result.backupFile);
+      return { serverId: id, ...result };
+    });
+  }
+
+  async saveServerSettings(id: string, settings: unknown) {
+    const patch = validateServerProperties(settings);
+    this.selectedServer(id);
+    return this.operation('saveServerSettings', async () => {
+      const server = await this.editableServer(id);
+      const previous = await readManagedText(this.root, server.serverDir, 'server.properties');
+      const result = await writeManagedText(this.root, server.serverDir, 'server.properties', patchServerProperties(previous.text, patch), previous.hash);
+      this.log('Saved Minecraft properties for ' + server.name + '. They apply on the next start.');
+      return { serverId: id, ...result };
+    });
+  }
+
+  private disableScheduler(error: unknown): Error {
+    this.scheduleError = 'Scheduler disabled: ' + String((error as Error).message).slice(0, 240);
+    if (this.scheduleTimer) { clearInterval(this.scheduleTimer); this.scheduleTimer = undefined; }
+    return new Error(this.scheduleError);
+  }
+
+  private async checkScheduleRevision(): Promise<void> {
+    if (this.scheduleError) throw new Error(this.scheduleError);
+    try {
+      const snapshot = await readScheduleSnapshot(this.root);
+      if (snapshot.revision !== this.scheduleRevision) throw new Error('Schedule metadata changed. Restore the expected revision before reopening.');
+    } catch (error) { throw this.disableScheduler(error); }
+  }
+
+  private async persistSchedules(jobs: ServerSchedule[]): Promise<void> {
+    try { this.scheduleRevision = await writeSchedules(this.root, jobs, this.scheduleRevision); }
+    catch (error) { throw this.disableScheduler(error); }
+  }
+
+  async saveServerSchedule(id: string, value: unknown) {
+    const input = validateScheduleInput(value);
+    this.selectedServer(id);
+    return this.operation('saveServerSchedule', async () => {
+      await this.checkScheduleRevision();
+      const server = this.selectedServer(id);
+      const owner = await new OwnershipLedger(server.ledgerFile, this.identity.fingerprint).status();
+      if (owner.owner !== this.identity.fingerprint || (owner.state !== 'owned' && owner.state !== 'hosting')) throw new Error('Schedules require safely held local ownership');
+      const previous = input.id ? this.schedules.find(job => job.id === input.id && job.serverId === id) : undefined;
+      if (input.id && !previous) throw new Error('Schedule not found for this server');
+      if (!previous && this.schedules.filter(job => job.serverId === id).length >= 50) throw new Error('This server already has 50 schedules');
+      const job = createSchedule(id, input);
+      if (previous) { job.lastRunAt = previous.lastRunAt; job.lastOutcome = previous.lastOutcome; }
+      const next = previous ? this.schedules.map(old => old === previous ? job : old) : [...this.schedules, job];
+      await this.persistSchedules(next);
+      this.schedules = next;
+      return this.schedules.filter(job => job.serverId === id).map(job => ({ ...job }));
+    });
+  }
+
+  async managePlayer(id: string, action: string, name: string) {
+    if (!['kick', 'whitelist-add', 'whitelist-remove'].includes(action) || typeof name !== 'string' || !/^[A-Za-z0-9_]{1,16}$/.test(name)) throw new Error('Invalid player action or Minecraft name');
+    this.selectedServer(id);
+    return this.operation('managePlayer', async () => {
+      const server = this.selectedServer(id);
+      const ownership = await new OwnershipLedger(server.ledgerFile, this.identity.fingerprint).status();
+      if (this.process?.state !== 'running' || ownership.state !== 'hosting' || ownership.owner !== this.identity.fingerprint) throw new Error('Player actions require this owned server running on this PC');
+      const command = action === 'kick' ? 'kick ' + name : 'whitelist ' + (action === 'whitelist-add' ? 'add ' : 'remove ') + name;
+      this.process.sendCommand(command);
+      return { serverId: id, sent: true, command };
+    });
+  }
+
+  async deleteServerSchedule(id: string, scheduleId: string) {
+    this.selectedServer(id);
+    return this.operation('deleteServerSchedule', async () => {
+      await this.checkScheduleRevision();
+      if (!this.schedules.some(job => job.id === scheduleId && job.serverId === id)) throw new Error('Schedule not found for this server');
+      const next = this.schedules.filter(job => job.id !== scheduleId || job.serverId !== id);
+      await this.persistSchedules(next);
+      this.schedules = next;
+      return this.schedules.filter(job => job.serverId === id).map(job => ({ ...job }));
+    });
+  }
+
+  /** App-local scheduling only. Missed intervals collapse to one occurrence, with no automatic server switching. */
+  async tickServerSchedules(now = Date.now()): Promise<void> {
+    if (this.scheduleTick) return this.scheduleTick;
+    if (this.scheduleError || this.busy) return;
+    this.scheduleTick = (async () => {
+      try { await this.checkScheduleRevision(); } catch { return; }
+      for (const job of [...this.schedules].sort((a, b) => a.nextRunAt - b.nextRunAt)) {
+        if (this.busy) break;
+        if (!job.enabled || job.nextRunAt > now || !this.schedules.includes(job)) continue;
+        try { await this.runSchedule(job, now); }
+        catch (error) { this.log('Schedule “' + job.name + '”: ' + String((error as Error).message)); }
+      }
+    })();
+    try { await this.scheduleTick; } finally { this.scheduleTick = undefined; }
+  }
+
+  private async runSchedule(job: ServerSchedule, now = Date.now()): Promise<void> {
+    if (this.scheduleError) throw new Error(this.scheduleError);
+    await this.operation('runServerSchedule', async () => {
+      await this.checkScheduleRevision();
+      validateScheduleInput({ name: job.name, action: job.action, intervalMinutes: job.intervalMinutes, enabled: job.enabled, ...(job.action === 'command' ? { command: job.command } : {}) });
+      const running = { ...job, lastRunAt: now, nextRunAt: now + job.intervalMinutes * 60000, lastOutcome: 'Started; completion unconfirmed' };
+      const next = this.schedules.map(old => old.id === job.id ? running : old);
+      // Claim this occurrence durably before side effects, so restart never replays an uncertain command.
+      await this.persistSchedules(next);
+      this.schedules = next;
+      let failure: unknown;
+      try {
+        const server = this.saved.servers.find(entry => entry.id === job.serverId);
+        if (!server) throw new Error('Scheduled server is no longer in this library');
+        const ledger = new OwnershipLedger(server.ledgerFile, this.identity.fingerprint);
+        const owner = await ledger.status();
+        if (owner.owner !== this.identity.fingerprint || (owner.state !== 'owned' && owner.state !== 'hosting')) throw new Error('Schedule skipped: ownership is not safely held here');
+        if (job.action === 'command') {
+          if (server.id !== this.saved.activeServerId || this.process?.state !== 'running' || owner.state !== 'hosting') throw new Error('Command schedule requires this server running on this PC');
+          this.process.sendCommand(job.command!);
+          running.lastOutcome = 'Command sent to the server console; execution is shown in Console';
+        } else if (job.action === 'backup') {
+          if (server.id === this.saved.activeServerId) this.assertStopped();
+          if (owner.state !== 'owned') throw new Error('Backup requires a safely stopped server; no live file copy was attempted');
+          await assertModInstallComplete(server.serverDir);
+          await assertServerFileTransactionsComplete(server.serverDir);
+          const snapshot = await createSnapshot(server.serverDir, server.storeDir, server.snapshotId);
+          await ledger.updateSnapshot(snapshot.id);
+          server.snapshotId = snapshot.id;
+          await this.persist();
+          running.lastOutcome = 'Completed backup: ' + snapshot.id;
+          this.log('Scheduled backup saved for ' + server.name);
+        } else if (job.action === 'stop') {
+          if (server.id !== this.saved.activeServerId || this.process?.state !== 'running' || owner.state !== 'hosting') throw new Error('Stop schedule requires this server running on this PC');
+          await this.stopServerInsideOperation();
+          running.lastOutcome = 'Completed graceful stop and final local backup';
+        } else { throw new Error('Invalid server schedule action'); }
+      } catch (error) { failure = error; running.lastOutcome = 'Failed: ' + String((error as Error).message).slice(0, 290); }
+      await this.persistSchedules(this.schedules);
+      if (failure) throw failure;
+    });
+  }
+
+  async runServerSchedule(id: string, scheduleId: string) {
+    this.selectedServer(id);
+    const job = this.schedules.find(candidate => candidate.id === scheduleId && candidate.serverId === id);
+    if (!job) throw new Error('Schedule not found for this server');
+    await this.runSchedule(job);
+    return this.schedules.filter(job => job.serverId === id).map(job => ({ ...job }));
   }
 
   // ---------------------------------------------------------------- server lifecycle
@@ -353,10 +611,9 @@ export class SeedHostApplication {
     });
   }
 
-  async configureSimpleProfile(input: { javaExecutable: string; memoryMiB: number }): Promise<void> {
+  async configureSimpleProfile(input: SimpleProfileInput): Promise<void> {
     this.assertStopped();
-    if (!input || Object.keys(input).sort().join(',') !== 'javaExecutable,memoryMiB' || !Number.isInteger(input.memoryMiB) || input.memoryMiB < 512 || input.memoryMiB > 65536) throw new Error('Invalid simple launch profile');
-    input = { ...input };
+    input = validateSimpleProfileInput(input);
     await this.operation('configureSimpleProfile', async () => {
       const server = this.activeServer();
       if (!server) throw new Error('No server imported');
@@ -387,7 +644,8 @@ export class SeedHostApplication {
         } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
         finally { await handle?.close(); }
       }
-      args = args.filter(arg => !/^-Xm[sx]/.test(arg));
+      args = withoutJvmHeapArgs(args);
+      if (input.customJavaArgs) args = withCustomJavaArgs(args, input.customJavaArgs);
       const profile = validateLaunchProfile({ ...server.profile, executable: input.javaExecutable, args: ['-Xms512M', `-Xmx${input.memoryMiB}M`, ...args] });
       const previous = server.profile;
       server.profile = profile;
@@ -453,6 +711,7 @@ export class SeedHostApplication {
     await this.operation('startServer', async () => {
       const server = this.activeServer();
       if (!server?.profile.executable) throw new Error('Configure a launch profile first');
+      await assertServerFileTransactionsComplete(server.serverDir);
       await assertModInstallComplete(server.serverDir);
       const original = JSON.stringify(server);
       const approval: LaunchApproval = Object.freeze({
@@ -476,6 +735,7 @@ export class SeedHostApplication {
       if ((await ledger.status()).snapshotId !== approval.snapshotId) throw new Error('Snapshot revision mismatch; reconcile metadata before hosting');
       revalidate();
       await assertModInstallComplete(server.serverDir);
+      await assertServerFileTransactionsComplete(server.serverDir);
       await ledger.startHosting();
       try {
         revalidate();
@@ -510,7 +770,10 @@ export class SeedHostApplication {
   }
 
   async stopServer(): Promise<void> {
-    await this.operation('stopServer', async () => {
+    await this.operation('stopServer', () => this.stopServerInsideOperation());
+  }
+
+  private async stopServerInsideOperation(): Promise<void> {
       const server = this.activeServer();
       if (!server || !this.process?.pid) throw new Error('No owned process is running');
       await this.closeGameGateway();
@@ -519,6 +782,7 @@ export class SeedHostApplication {
         await this.process.stop();
         // createSnapshot returns only after objects, the manifest and their directories are flushed,
         // so the ledger never points at a revision that a power cut could lose.
+        await assertServerFileTransactionsComplete(server.serverDir);
         const snapshot = await createSnapshot(server.serverDir, server.storeDir, server.snapshotId);
         await this.ledger().stopHosting(snapshot.id);
         server.snapshotId = snapshot.id;
@@ -535,7 +799,6 @@ export class SeedHostApplication {
         try { await this.park(); }
         catch (error) { this.log(`Could not park on the relay: ${(error as Error).message}`); }
       }
-    });
   }
 
   async createSnapshot(): Promise<void> {
@@ -546,6 +809,7 @@ export class SeedHostApplication {
       const owner = await this.ledger().status();
       if (owner.state !== 'owned' || owner.owner !== this.identity.fingerprint) throw new Error('Snapshot requires safely held ownership');
       await assertModInstallComplete(server.serverDir);
+      await assertServerFileTransactionsComplete(server.serverDir);
       const snapshot = await createSnapshot(server.serverDir, server.storeDir, server.snapshotId);
       await this.ledger().updateSnapshot(snapshot.id);
       server.snapshotId = snapshot.id;
@@ -588,7 +852,9 @@ export class SeedHostApplication {
       await materializeSnapshot(server.storeDir, snapshotId, serverDir);
       await assertModInstallComplete(serverDir);
       // Restored data is a NEW revision descending from a verified safety copy, not an authority rewind.
+      await assertServerFileTransactionsComplete(server.serverDir);
       const safety = await createSnapshot(server.serverDir, server.storeDir, server.snapshotId);
+      await assertServerFileTransactionsComplete(serverDir);
       const restored = await createSnapshot(serverDir, server.storeDir, safety.id);
       const current = await ledger.status();
       if (JSON.stringify(current) !== JSON.stringify(ownership)) throw new Error('Ownership changed while preparing restore; nothing activated');
@@ -623,6 +889,7 @@ export class SeedHostApplication {
         throw new Error('Cannot recover transferred or pending-offer authority. Reconcile with the peer.');
       }
       await assertModInstallComplete(server.serverDir);
+      await assertServerFileTransactionsComplete(server.serverDir);
       const snapshot = await createSnapshot(server.serverDir, server.storeDir, state.snapshotId);
       server.snapshotId = snapshot.id;
       await this.persist();
@@ -671,22 +938,22 @@ export class SeedHostApplication {
 
   // ---------------------------------------------------------------- mods
 
-  async searchMods(input: { query: string; offset: number }) {
+  async searchMods(input: { query: string; offset: number; sort?: ModSort }) {
     const server = this.activeServer();
     if (!server) throw new Error('No server imported');
     const index = await readModIndex(server.serverDir);
     const target = await modTarget(server.serverDir, index);
     assertModTarget(target);
-    const page = await (this.options.modrinth ?? new ModrinthClient()).search(input.query, input.offset, target);
+    const page = await (this.options.modrinth ?? new ModrinthClient()).search(input.query, input.offset, target, 20, input.sort);
     const mods = [...await indexedMods(server.serverDir, 'server', index), ...await indexedMods(server.serverDir, 'client', index)];
     const installed = new Set(mods.flatMap((mod) => mod.source ? [mod.source.projectId] : []));
     return { ...page, hits: page.hits.map((hit) => ({ ...hit, installed: installed.has(hit.projectId) })) };
   }
 
   /** Setup guide: browse Fabric mods for a world that does not exist yet. Read-only; nothing is downloaded. */
-  async searchSetupMods(input: { query: string; gameVersion: string; offset: number }) {
+  async searchSetupMods(input: { query: string; gameVersion: string; offset: number; sort?: ModSort }) {
     if (!input || !isGameVersion(input.gameVersion)) throw new Error('Choose a Minecraft version first');
-    return (this.options.modrinth ?? new ModrinthClient()).search(input.query, input.offset, { loader: 'fabric', gameVersion: input.gameVersion });
+    return (this.options.modrinth ?? new ModrinthClient()).search(input.query, input.offset, { loader: 'fabric', gameVersion: input.gameVersion }, 20, input.sort);
   }
 
   /** Setup guide: install the mods picked while creating a Fabric world, each with its required dependencies.
@@ -994,6 +1261,7 @@ export class SeedHostApplication {
       await assertModInstallComplete(server.serverDir);
       // Fencing is only worth it if the relay can actually take the server right now.
       if (relay) await this.reachRelay(peer, 'The server stays on this PC; nothing was changed.');
+      await assertServerFileTransactionsComplete(server.serverDir);
       const snapshot = await createSnapshot(server.serverDir, server.storeDir, server.snapshotId);
       await ledger.updateSnapshot(snapshot.id);
       server.snapshotId = snapshot.id;
@@ -1168,6 +1436,8 @@ export class SeedHostApplication {
 
   async close(): Promise<void> {
     if (this.busy) throw new Error('An operation is in progress; wait before closing');
+    clearInterval(this.scheduleTimer); this.scheduleTimer = undefined;
+    if (this.scheduleTick) await this.scheduleTick;
     await this.closeGameGateway();
     if (this.process?.pid) await this.stopServer();
     if (this.listener) { await this.listener.close(); this.listener = undefined; }

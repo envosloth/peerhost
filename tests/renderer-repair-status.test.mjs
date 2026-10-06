@@ -3,13 +3,14 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { openSelectedServer, reveal } from '../tools/desktop-test-setup.mjs';
 
 // Exercise the real renderer/DOM with a test-only preload bridge. No app profiles,
 // Minecraft process, or external catalogue requests are created by these tests.
 let browser;
 before(async () => {
   const executablePath = existsSync(chromium.executablePath()) ? chromium.executablePath() : '/usr/bin/chromium';
-  browser = await chromium.launch({ executablePath, headless: true });
+  browser = await chromium.launch({ executablePath, headless: false });
 });
 after(async () => { await browser?.close(); });
 const hit = { projectId: 'project1', title: 'Dual-side mod', author: 'Test', slug: 'dual-mod', placement: ['server', 'client'], description: 'Fixture', downloads: 1 };
@@ -17,7 +18,8 @@ const mod = { name: 'dual.jar', size: 10, source: { projectId: hit.projectId, ve
 function appState(sides = []) {
   return {
     version: 'test', deviceId: 'a'.repeat(64), peers: [], logs: [], settings: {}, relay: null,
-    server: { name: 'Renderer fixture', serverDir: '/fixture/server', storeDir: '/fixture/store', state: 'offline', snapshotId: 'b'.repeat(64),
+    servers: [{ id: 'repair-fixture', name: 'Renderer fixture', active: true, state: 'offline', configured: true }],
+    server: { id: 'repair-fixture', name: 'Renderer fixture', serverDir: '/fixture/server', storeDir: '/fixture/store', state: 'offline', snapshotId: 'b'.repeat(64),
       ownership: { state: 'owned', owner: 'a'.repeat(64) }, profile: { executable: 'java', args: [] },
       mods: { server: sides.includes('server') ? [mod] : [], client: sides.includes('client') ? [mod] : [] },
       modsError: null, modTarget: { loader: 'fabric', gameVersion: '1.21.1', detected: false } },
@@ -25,7 +27,12 @@ function appState(sides = []) {
 }
 async function renderer(t, state = appState(), friends = { members: [], custody: 'unknown', holder: null }) {
   const page = await browser.newPage();
-  t.after(() => page.close());
+  await page.bringToFront();
+  console.log('VISIBLE renderer contract (TEST-ONLY bridge): ' + t.name);
+  t.after(async () => {
+    if (!page.isClosed() && process.env.TMPDIR) await page.screenshot({ path: process.env.TMPDIR + '/seedhost-repair-' + t.name.replace(/[^a-z0-9]+/gi, '-').slice(0, 90) + '.png' });
+    await page.close();
+  });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   t.after(() => assert.deepEqual(errors, [], 'renderer must not throw'));
@@ -44,9 +51,11 @@ async function renderer(t, state = appState(), friends = { members: [], custody:
   }, { state, hit, friends });
   await page.goto('file://' + fileURLToPath(new URL('../apps/desktop/index.html', import.meta.url)));
   await page.waitForFunction(() => document.querySelector('#activity-message').textContent.startsWith('Ready'));
+  await openSelectedServer(page);
   return page;
 }
 async function catalogue(page) {
+  await page.locator('#mods-tab').click();
   await page.locator('#mods-details').evaluate(node => { node.open = true; });
   await page.waitForFunction(() => document.querySelector('#mod-results button[data-install]') && document.querySelector('#mod-results').getAttribute('aria-busy') === 'false');
   return page.locator('#mod-results button[data-install]');
@@ -93,6 +102,7 @@ test('mod metadata failure is scoped, blocks stale mod actions and browsing, but
   failed.server.ownership.state = 'hosting';
   await update(page, failed);
   assert.equal(await page.locator('#stop-server').isDisabled(), false);
+  await reveal(page, '#stop-server');
   await page.locator('#stop-server').click();
   await page.waitForFunction(() => window.fixture.calls.some(call => call.method === 'stopServer'));
   assert.equal(await page.locator('#error-banner').isVisible(), false);

@@ -231,7 +231,9 @@ test('malformed, directory and dangling-symlink fences cannot be mistaken for su
   await rm(fence); await mkdir(fence);
   await assert.rejects(assertModInstallComplete(f.serverDir), /mod install.*repair/i);
   await rm(fence, { recursive: true });
-  await fs.symlink(path.join(f.root, 'missing'), fence);
+  // Windows refuses file/directory symlinks without Developer Mode or admin rights; a directory
+  // junction is the same reparse-point attack and needs no elevation, so the case still runs.
+  await fs.symlink(path.join(f.root, 'missing'), fence, process.platform === 'win32' ? 'junction' : undefined);
   await assert.rejects(assertModInstallComplete(f.serverDir), /mod install.*repair/i);
   assert.equal((await fs.lstat(fence)).isSymbolicLink(), true);
 });

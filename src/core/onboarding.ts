@@ -14,6 +14,23 @@ export interface OnboardingProgress {
   draft: { name: string; loader: 'vanilla' | 'fabric'; gameVersion: string; memoryMiB: number };
 }
 export type OnboardingInput = Omit<OnboardingProgress, 'version'>;
+export type SetupCheck = 'complete' | 'skipped' | 'pending' | 'unavailable';
+export interface SetupConfiguration {
+  server: { profile: { executable: string; args: readonly string[] }; modInstallError?: string | null } | null;
+  relay?: { fingerprint: string } | null;
+  gateway?: { enabled: boolean; error?: string | null };
+  alwaysOn?: { enabled: boolean; error?: string | null } | null;
+}
+/** Configured is not proof of network reachability. Visits and draft values never count as completion. */
+export function onboardingChecks(progress: Pick<OnboardingInput, 'completed' | 'skipped'>, config: SetupConfiguration): Record<typeof SETUP_STEPS[number], SetupCheck> {
+  const server: SetupCheck = config.server ? 'complete' : 'pending';
+  const runtime: SetupCheck = config.server?.modInstallError ? 'unavailable' : config.server?.profile.executable && config.server.profile.args.length ? 'complete' : 'pending';
+  const friends: SetupCheck = config.relay ? 'complete' : progress.skipped.includes('friends') ? 'skipped' : 'pending';
+  const configuredGateway = Boolean(config.alwaysOn?.enabled && !config.alwaysOn.error || config.gateway?.enabled && config.relay && !config.gateway.error);
+  const gateway: SetupCheck = configuredGateway ? 'complete' : progress.skipped.includes('gateway') ? 'skipped' : config.gateway?.error || config.alwaysOn?.error ? 'unavailable' : 'pending';
+  const resolved = [server, runtime].every(check => check === 'complete') && [friends, gateway].every(check => check === 'complete' || check === 'skipped');
+  return { server, runtime, friends, gateway, ready: progress.completed && resolved ? 'complete' : 'pending' };
+}
 export function defaultOnboarding(existingServer = false): OnboardingProgress {
   return { version: 1, step: existingServer ? 'runtime' : 'server', dismissed: existingServer, completed: false,
     skipped: [], draft: { name: 'My Minecraft server', loader: 'vanilla', gameVersion: '', memoryMiB: 2048 } };

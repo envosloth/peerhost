@@ -1,0 +1,34 @@
+/* Dashboard surfaces inherit every theme/accent/density/depth token from style.css. */
+.home-library { padding: var(--card-pad); }
+.home-library .server-library-head { margin-bottom: 16px; gap: 12px; flex-wrap: wrap; }
+.home-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.home-library .server-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+.home-library .server-row { display: flex; flex-direction: column; align-items: stretch; gap: 12px; min-width: 0; padding: 18px; border-radius: var(--radius); border: 1px solid var(--line-strong); background: var(--well); box-shadow: var(--sh-well); }
+.home-library .server-row.is-current { border-color: color-mix(in srgb, var(--a1) 45%, var(--line-strong)); }
+.server-card-art { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 14px; background: var(--tint); color: var(--accent-text); }
+.server-card-art .icon { width: 26px; height: 26px; }
+.server-card-copy { display: flex; flex-direction: column; gap: 7px; flex: 1; min-width: 0; }
+.server-card-copy .server-row-name { font-size: 19px; line-height: 1.25; overflow-wrap: anywhere; }
+.server-card-meta { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.home-library .server-row-actions { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.home-library .server-empty { border: 0; padding: 18px 0; }
+#home-concurrency { margin-top: 16px; }
+.server-workspace-header { flex-shrink: 0; margin: 0 28px 14px; padding: 14px 18px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface-fill); box-shadow: var(--sh-raise-sm); }
+.server-workspace-header .server-identity { margin: 0; }
+.server-workspace-header .server-toolbar { margin-top: 12px; padding-top: 12px; }
+.dashboard-bar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.dashboard-bar .field-help { margin: 0; }
+.dashboard-card { padding: var(--card-pad); }
+.dashboard-list { list-style: none; padding: 0; margin: 16px 0; display: flex; flex-direction: column; gap: 10px; }
+.dashboard-list-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 12px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--well); overflow-wrap: anywhere; }
+.dashboard-inline-form { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px; }
+.dashboard-inline-form > div { flex: 1 1 180px; min-width: 0; }
+.dashboard-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
+.dashboard-form > div { min-width: 0; }
+.dashboard-form .page-actions, #schedule-command-field { grid-column: 1 / -1; }
+.dashboard-row-copy { min-width: 0; flex: 1 1 240px; }
+.performance-card { padding: var(--card-pad); }
+.performance-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); gap: 12px; margin: 20px 0 14px; }
+.metric { min-width: 0; padding: 16px; }
+.metric dt { color: var(--muted); font-size: 12px; }
+.metric dd { margin: 8px 0 0; color: var(--accent-text); font-size: 24px; font-weight: 650; overflow-wrap: anywhere; }

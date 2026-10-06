@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { dismissInitialSetup, reveal } from './desktop-test-setup.mjs';
+import { dismissInitialSetup, reveal, openSelectedServer } from './desktop-test-setup.mjs';
 import { access, mkdir, mkdtemp, writeFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { _electron as electron } from 'playwright';
@@ -9,10 +9,10 @@ const linuxKeyring=process.platform==='linux'?['--password-store=gnome-libsecret
 import { OwnershipLedger } from '../dist/src/core/ownership.js';
 const project=process.cwd();const main=path.join(project,'dist/apps/desktop/main.js');
 await assert.doesNotReject(access(main),'Desktop main is not implemented');
-await mkdir(path.join(project,'.test-data'),{recursive:true});
-const root=await mkdtemp(path.join(project,'.test-data/desktop-qa-'));
+assert.ok(process.env.TMPDIR?.includes('hermes'), 'Desktop checks require isolated Hermes scratch');
+const root=await mkdtemp(path.join(process.env.TMPDIR,'seedhost-desktop-qa-'));
 const source=path.join(root,'Process fixture - NOT Minecraft');await mkdir(source);await writeFile(path.join(source,'eula.txt'),'eula=true\n');await writeFile(path.join(source,'fixture.bin'),Buffer.from([0,1,2,254,255]));
-const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
+const env={...process.env,SEEDHOST_TEST_LOOPBACK:'1'};delete env.ELECTRON_RUN_AS_NODE;delete env.SEEDHOST_ACCOUNT_SERVICE;
 console.log('STEP 1: Launch visible real Electron app with an isolated test profile.');
 const app=await electron.launch({executablePath:electronPath,args:[...linuxKeyring,main,'--profile-root='+path.join(root,'profile')],env});
 let page;
@@ -30,11 +30,11 @@ try{
   state=await page.evaluate(()=>window.seedhost.call('getState'));assert.equal(state.server.ownership.state,'owned');assert.notEqual(state.server.serverDir,source);
   assert.deepEqual(await readFile(path.join(state.server.serverDir,'fixture.bin')),await readFile(path.join(source,'fixture.bin')));
   console.log('STEP 3: Save a structured real Node fixture launch profile via visible UI.');
-  await page.bringToFront();await page.locator('#profile-details').evaluate(el=>el.open=true);
+  await page.bringToFront();await reveal(page,'#java-executable');await page.locator('#profile-details').evaluate(el=>el.open=true);
   await page.locator('#java-executable').fill(process.execPath);await page.locator('#java-args').fill(JSON.stringify([path.join(project,'tools/fake-java-server.mjs')]));await page.locator('#save-profile').click();
   await page.waitForFunction(()=>!document.querySelector('#start-server').disabled);
   console.log('STEP 4: Start real fixture child, observe stdout, then stop and commit snapshot. This is NOT Minecraft validation.');
-  await page.bringToFront();await page.locator('#start-server').click();await page.waitForFunction(()=>document.querySelector('#server-status')?.textContent==='Hosting');
+  await openSelectedServer(page);await page.bringToFront();await page.locator('#start-server').click();await page.waitForFunction(()=>document.querySelector('#server-status')?.textContent==='Hosting');
   assert.ok((await page.evaluate(()=>window.seedhost.call('getState'))).logs.some(l=>l.includes('Done (')));
   await page.screenshot({path:path.join(root,'desktop-hosting-fixture.png')});
   await page.bringToFront();await page.locator('#stop-server').click();await page.waitForFunction(()=>document.querySelector('#server-status')?.textContent==='Stopped');

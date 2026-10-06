@@ -5,7 +5,8 @@ import path from 'node:path';
 import { createIdentity } from '../dist/src/core/peer-transport.js';
 import { RelayNode } from '../dist/src/core/relay.js';
 import { OwnershipLedger } from '../dist/src/core/ownership.js';
-import { createServer, connect } from 'node:net';
+import net, { createServer, connect } from 'node:net';
+import { syncBuiltinESMExports } from 'node:module';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -159,7 +160,11 @@ test('a relay that disconnects during local setup cannot leave orphan Minecraft 
   const { startHostGameGateway } = await import('../dist/src/core/game-gateway.js');
   const a = await createIdentity(), r = await createIdentity();
   const localSockets = new Set();
-  const local = createServer(s => { localSockets.add(s); s.on('error', () => {}); s.once('close', () => localSockets.delete(s)); });
+  let accepted = 0, closed = 0;
+  const local = createServer(s => {
+    accepted++; localSockets.add(s); s.on('error', () => {});
+    s.once('close', () => { closed++; localSockets.delete(s); });
+  });
   local.listen(0, '127.0.0.1'); await once(local, 'listening');
   t.after(async () => { for (const s of localSockets) s.destroy(); await new Promise(resolve => local.close(resolve)); });
   const listener = await listenPeer(r, [a.fingerprint], s => {
@@ -174,9 +179,71 @@ test('a relay that disconnects during local setup cannot leave orphan Minecraft 
   const statuses = [];
   const host = await startHostGameGateway(a, { ...listener, fingerprint: r.fingerprint }, local.address().port, { onStatus: s => statuses.push(s) });
   t.after(() => host.close());
-  await waitFor(() => statuses.some(s => s.state === 'error'));
-  await delay(100);
+  // A Windows loopback connection can finish before the relay FIN arrives:
+  // that is a clean bridge close, not necessarily a setup error. Observe the
+  // native socket lifecycle instead of requiring one particular status.
+  await waitFor(() => accepted > 0 && closed === accepted);
+  assert.ok(statuses.some(s => s.state === 'ready'), 'the relay must have activated a host tunnel');
   assert.equal(localSockets.size, 0, 'aborted relay activation must close local sockets too');
+  await host.close();
+  assert.equal(statuses.at(-1).state, 'off');
+  assert.equal(closed, accepted, 'every accepted native local socket must actually close');
+});
+
+test('relay disconnect closes native local sockets while connect notification is pending', async t => {
+  const { listenPeer, readFrame, writeFrame } = await import('../dist/src/core/peer-transport.js');
+  const { startHostGameGateway } = await import('../dist/src/core/game-gateway.js');
+  const a = await createIdentity(), r = await createIdentity();
+  const localSockets = new Set(), destinations = new Set(), relaySockets = new Set();
+  let accepted = 0, closed = 0, pending = 0;
+  const local = createServer(s => {
+    accepted++; localSockets.add(s); s.on('error', () => {});
+    s.once('close', () => { closed++; localSockets.delete(s); });
+    // Deterministic interruption only after the real local TCP accept.
+    for (const relaySocket of relaySockets) relaySocket.destroy();
+  });
+  local.listen(0, '127.0.0.1'); await once(local, 'listening');
+  t.after(async () => { for (const s of localSockets) s.destroy(); await new Promise(resolve => local.close(resolve)); });
+  const listener = await listenPeer(r, [a.fingerprint], s => {
+    void (async () => {
+      const request = await readFrame(s);
+      if (request.op === 'gateway-status') {
+        await writeFrame(s, { type: 'relay-gateway-status', enabled: true, host: '127.0.0.1', port: 25565,
+          ready: false, detail: 'fixture', route: { owner: a.fingerprint, generation: 1, lineage: 'fixture' } }); s.end();
+      } else {
+        relaySockets.add(s); s.once('close', () => relaySockets.delete(s));
+        await writeFrame(s, { type: 'relay-tunnel-ready' }); await writeFrame(s, { type: 'relay-tunnel-start' });
+      }
+    })().catch(() => s.destroy());
+  });
+  t.after(() => listener.close());
+  const nativeConnect = net.connect;
+  t.mock.method(net, 'connect', (...args) => {
+    const s = nativeConnect(...args);
+    if (args[0]?.port === local.address().port) {
+      destinations.add(s);
+      const emit = s.emit;
+      // Keep a native socket and all real close/error events. Withhold just the
+      // setup-completion notification so Windows event ordering cannot race us.
+      s.emit = function (event, ...values) {
+        if (event === 'connect') { pending++; return false; }
+        return emit.call(this, event, ...values);
+      };
+    }
+    return s;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); for (const s of destinations) s.destroy(); });
+  const statuses = [];
+  const host = await startHostGameGateway(a, { ...listener, fingerprint: r.fingerprint }, local.address().port,
+    { onStatus: s => statuses.push(s) });
+  t.after(() => host.close());
+  await waitFor(() => pending > 0 && accepted > 0);
+  await waitFor(() => closed === accepted && [...destinations].every(s => s.destroyed));
+  assert.equal(localSockets.size, 0, 'interrupted setup must leave no accepted local socket');
+  assert.ok(statuses.some(s => s.state === 'error'), 'interrupted setup must terminate before the local timeout');
+  await host.close();
+  assert.equal(statuses.at(-1).state, 'off');
 });
 
 test('a throwing status observer cannot disable tunnel cleanup', async t => {
