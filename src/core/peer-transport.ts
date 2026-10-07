@@ -68,12 +68,15 @@ export async function listenPeer(
   identity: PeerIdentity,
   trustedFingerprints: string[],
   onConnection: (socket: TLSSocket, fingerprint: string) => void,
-  { host = "127.0.0.1", port = 0, authorizeCertificate }: {
+  { host = "127.0.0.1", port = 0, authorizeCertificate, maxConnections }: {
     host?: string; port?: number;
+    /** Optional pre-TLS socket cap for publicly reachable account services. */
+    maxConnections?: number;
     /** Checked anew per connection. 'invite' permits only invite framing, not ordinary transfers. */
     authorizeCertificate?: (fingerprint: string) => Promise<'trusted' | 'invite' | false>;
   } = {},
 ): Promise<{ host: string; port: number; close: () => Promise<void> }> {
+  if (maxConnections !== undefined && (!Number.isInteger(maxConnections) || maxConnections < 1 || maxConnections > 10000)) throw new Error('Invalid connection limit');
   const trustedPins = trustedFingerprints.map(pinBytes);
   const sockets = new Set<Socket>();
   let stopping = false;
@@ -112,6 +115,7 @@ export async function listenPeer(
       onConnection(socket, fingerprint);
     })().catch(() => socket.destroy());
   });
+  if (maxConnections !== undefined) server.maxConnections = maxConnections;
   server.on("connection", track);
   server.on("tlsClientError", (_error, socket) => socket.destroy());
   await new Promise<void>((resolve, reject) => {

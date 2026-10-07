@@ -36,7 +36,7 @@ test('a paired gaming PC turns on the always-on PC’s public address with one c
       if (route === '/v1/agents/rundata') return { agent_id: AGENT };
       if (route === '/v1/tunnels/list') return { tunnels };
       if (route === '/tunnels/create') {
-        tunnels = [{ id: '493875ca-042a-49ea-87ce-0734209d40f8', tunnel_type: 'minecraft-java', origin: { type: 'agent', details: { agent_id: AGENT, config_data: { fields: [{ name: 'local_ip', value: payload.origin.data.local_ip }, { name: 'local_port', value: String(payload.origin.data.local_port) }] } } }, offline_reasons: null, connect_addresses: [{ value: { address: 'friends-world.tun.ply.gg' } }] }];
+        tunnels = [{ id: '493875ca-042a-49ea-87ce-0734209d40f8', name: payload.name, tunnel_type: 'minecraft-java', origin: { type: 'agent', details: { agent_id: AGENT, config_data: { fields: [{ name: 'local_ip', value: payload.origin.data.local_ip }, { name: 'local_port', value: String(payload.origin.data.local_port) }] } } }, offline_reasons: null, connect_addresses: [{ value: { address: 'friends-world.tun.ply.gg' } }] }];
         return {};
       }
       throw new Error(route);

@@ -48,7 +48,7 @@ export class AccountService {
       CREATE TABLE IF NOT EXISTS account_friends(username TEXT NOT NULL REFERENCES accounts(username), friend TEXT NOT NULL REFERENCES accounts(username), since INTEGER NOT NULL, PRIMARY KEY(username,friend), CHECK(username<>friend));`);
     try {
       // Any certificate may reach account registration; this is a separate listener with no transfer APIs.
-      this.listener = await listenPeer(this.identity,[],(socket,fp)=>{void this.handle(socket,fp);},{...options,authorizeCertificate:async()=> 'trusted'});
+      this.listener = await listenPeer(this.identity,[],(socket,fp)=>{void this.handle(socket,fp);},{...options,maxConnections:64,authorizeCertificate:async()=> 'trusted'});
     } catch(e) { this.db.close(); this.db=undefined; throw e; }
   }
   private limit(key:string,max:number) {

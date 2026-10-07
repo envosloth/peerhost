@@ -165,6 +165,8 @@ test('Profile verifies account update readback, clears password inputs, and repo
   assert.equal(await page.locator('#account-heading').textContent(), '@updated_user');
   await page.locator('#profile-new-password').fill('discarded-synthetic');
   await page.locator('#profile-dialog').press('Escape');
+  // Escape closes through the browser's task-scheduled dialog machinery; wait for the discard instead of racing it.
+  await page.waitForFunction(() => document.querySelector('#profile-new-password').value === '');
   assert.equal(await page.locator('#profile-new-password').inputValue(), '');
 });
 
@@ -420,12 +422,15 @@ test('Mods retains Modrinth search and local JAR actions inside its per-server s
   assert.equal(await page.locator('#mods-details').count(), 1, 'original controls not duplicated');
 });
 
-test('Tunnels retains public/playit/gateway controls without claiming separate tunnels per world', async () => {
+test('Tunnels retains public/playit/gateway controls with per-server Playit addresses', async () => {
   await reset(); await click('#server-list [data-action="open"][data-id="alpha"]');
   assert.equal(await page.locator('#tunnels-tab').count(), 1, 'Tunnels navigation exists'); await click('#tunnels-tab');
   for (const id of ['public-card', 'playit-panel', 'player-gateway']) assert.equal(await page.locator('#tunnels-panel #' + id).count(), 1, 'relocated ' + id);
   assert.equal(await page.locator('#home-panel #join-help, #home-panel .marquee').count(), 0, 'the recap and join widgets are gone from Home');
-  assert.match(await page.locator('#tunnels-scope').textContent(), /app-wide/i);
+  const tunnelsScope = await page.locator('#tunnels-scope').textContent();
+  assert.match(tunnelsScope, /each server has its own playit address/i);
+  assert.match(tunnelsScope, /not proof of public reachability/i);
+  assert.doesNotMatch(tunnelsScope, /app-wide/i, 'addresses are per server, not one app-wide route');
   await click('#playit-panel summary'); await click('#playit-check');
   await page.waitForFunction(() => window.dashboardFixture.read().calls.some(c => c.method === 'playitCheck'));
   assert.equal(await page.locator('#public-go').isVisible(), true);

@@ -644,28 +644,47 @@
   // ---------- Setup guide: one-click always-on PC ----------
   let alwaysOnStatus = null, alwaysOnMode = null, alwaysOnPaired = '', alwaysOnTimer = null;
   // ---------- Public address: one button on My server ----------
-  // Works on any PC: on the always-on PC it acts locally, on a paired gaming PC it asks the always-on PC.
-  // Without an always-on PC yet, the same button first makes this PC the always-on PC.
+  // Each address belongs to the captured local server. Shared hosting has its own gateway controls.
   let publicStatus = null, publicTimer = null;
+  let publicSelection = '', publicPort = null, publicGeneration = 0, publicRequest = 0, publicBusy = false;
   const PUBLIC_WORKING = ['downloading', 'approve', 'starting', 'creating', 'pending'];
+  function syncPublicContext() {
+    const id = state?.server?.id ?? '';
+    const port = state?.server?.playerPort ?? null;
+    if (id !== publicSelection || port !== publicPort) {
+      publicSelection = id; publicPort = port; ++publicGeneration; ++publicRequest; publicStatus = null; publicBusy = false;
+      $('public-value').textContent = ''; $('public-live').hidden = true;
+    }
+    return id;
+  }
   async function refreshPublicAddress() {
-    try { publicStatus = await window.seedhost.call('publicAddressStatus'); } catch { return; }
+    const id = syncPublicContext();
+    if (!id || publicBusy) return;
+    const generation = publicGeneration, request = ++publicRequest;
+    try {
+      const result = await window.seedhost.call('publicAddressStatus', { id });
+      if (syncPublicContext() !== id || generation !== publicGeneration || request !== publicRequest) return;
+      publicStatus = result;
+    } catch (error) {
+      if (syncPublicContext() !== id || generation !== publicGeneration || request !== publicRequest) return;
+      publicStatus = { state: 'error', address: null, detail: String(error?.message ?? error), approveUrl: null };
+    }
     renderPublicCard();
   }
   function renderPublicCard() {
-    const st = publicStatus?.state ?? 'off', working = PUBLIC_WORKING.includes(st), card = $('public-card');
+    syncPublicContext();
+    const stopped = publicStatus?.state === 'reachable' && state?.server?.state !== 'running';
+    const st = stopped ? 'reserved' : publicStatus?.state ?? 'off', working = PUBLIC_WORKING.includes(st), card = $('public-card');
     const address = ['reachable', 'reserved'].includes(st) ? publicStatus.address : null;
     card.dataset.state = st;
     card.hidden = st === 'unsupported';
     $('public-title').textContent = address ? (st === 'reachable' ? 'Your world is open to friends 🎉' : 'Your address is ready') : working ? 'Setting up your address…' : st === 'error' ? 'That didn’t work' : 'Let friends join from anywhere';
-    const needsAlwaysOn = publicStatus?.detail === 'needs-always-on';
     $('public-detail').textContent = address
-      ? (st === 'reachable' ? 'Send this to your friends. They put it in Minecraft → Multiplayer → Add Server.' : 'Send this to your friends. It works whenever someone is hosting the world.')
+      ? (st === 'reachable' ? 'Verified on this PC. Friends put this in Minecraft → Multiplayer → Add Server. This local address does not follow multi-host handoffs.' : stopped ? 'Address reserved. No running Minecraft process is tracked for this server on this PC.' : publicStatus.detail)
       : st === 'approve' ? 'playit.gg opened in your browser. Make a free account or log in, then click the big Approve button. Come back here after — the rest is automatic.'
       : working ? 'This takes about a minute. You don’t need to do anything.'
       : st === 'error' ? `${publicStatus.detail} Press the button to try again.`
-      : needsAlwaysOn ? 'Get a free address your friends can type into Minecraft. This PC will stay connected to it while Seed Hosting is open.'
-      : 'Get a free address your friends can type into Minecraft. No setup needed.';
+      : publicStatus?.detail || 'Get an address for this server on this PC. No hosting group or helper is required. Each server needs a distinct Minecraft port.';
     $('public-steps').hidden = !working;
     const order = ['download', 'approve', 'address'], now = st === 'approve' ? 'approve' : ['downloading', 'starting'].includes(st) && !publicStatus?.approveUrl ? 'download' : 'address';
     for (const li of $('public-steps').querySelectorAll('li')) {
@@ -677,25 +696,39 @@
     $('public-go').hidden = working || Boolean(address);
     $('public-go').textContent = st === 'error' ? 'Try again' : 'Get my address';
     $('public-approve').hidden = st !== 'approve';
+    $('public-port-settings').hidden = st !== 'error' || !/port/i.test(publicStatus?.detail ?? '');
     $('public-off').hidden = !address && st !== 'error';
-    const blocked = !bridgeReady || isBusy();
-    for (const id of ['public-go', 'public-approve', 'public-off', 'public-copy']) $(id).disabled = blocked;
+    $('public-off').textContent = 'Disconnect locally';
+    const blocked = !bridgeReady || isBusy() || publicBusy || !publicSelection;
+    for (const id of ['public-go', 'public-approve', 'public-off', 'public-copy', 'public-port-settings']) $(id).disabled = blocked;
     // Poll quickly while something is happening, slowly otherwise.
     const wanted = working ? 2000 : 30000;
     if (publicTimer?.ms !== wanted) { clearInterval(publicTimer?.id); publicTimer = { ms: wanted, id: setInterval(() => void refreshPublicAddress(), wanted) }; }
   }
-  $('public-go').addEventListener('click', async () => {
-    if ($('public-go').disabled) return;
-    // No always-on PC yet: this PC becomes it (one more approval dialog from the OS-level confirm), then continue.
-    if (publicStatus?.detail === 'needs-always-on') {
-      const ok = await runAction('alwaysOnEnable', { name: state.deviceName || 'Always-on PC' }, result => { alwaysOnStatus = result; });
-      if (!ok || !alwaysOnStatus?.running) return;
+  async function publicAction(method) {
+    const id = syncPublicContext();
+    if (!id || publicBusy || isBusy()) return;
+    const generation = publicGeneration, request = ++publicRequest;
+    publicBusy = true; renderPublicCard();
+    try {
+      const result = await window.seedhost.call(method, { id });
+      if (syncPublicContext() !== id || generation !== publicGeneration || request !== publicRequest) return;
+      publicStatus = result;
+    } catch (error) {
+      if (syncPublicContext() !== id || generation !== publicGeneration || request !== publicRequest) return;
+      publicStatus = { state: 'error', address: null, detail: String(error?.message ?? error), approveUrl: null };
+    } finally {
+      if (syncPublicContext() === id && generation === publicGeneration) { publicBusy = false; renderPublicCard(); }
     }
-    await runAction('publicAddressEnable', undefined, result => { if (result) publicStatus = result; });
-    renderPublicCard();
+  }
+  $('public-port-settings').addEventListener('click', () => {
+    if (!syncPublicContext() || !bridgeReady || publicBusy || isBusy()) return;
+    selectPage('server-settings');
+    $('property-server-port')?.focus();
   });
-  $('public-off').addEventListener('click', () => runAction('publicAddressDisable', undefined, result => { if (result) publicStatus = result; renderPublicCard(); }));
-  $('public-approve').addEventListener('click', async () => { try { publicStatus = await window.seedhost.call('publicAddressOpenApproval'); } catch { /* status explains */ } renderPublicCard(); });
+  $('public-go').addEventListener('click', () => publicAction('publicAddressEnable'));
+  $('public-off').addEventListener('click', () => publicAction('publicAddressDisable'));
+  $('public-approve').addEventListener('click', () => publicAction('publicAddressOpenApproval'));
   $('public-copy').addEventListener('click', async () => {
     const value = $('public-value').textContent; if (!value) return;
     try { await navigator.clipboard.writeText(value); $('public-copy').textContent = 'Copied ✓'; setTimeout(() => { $('public-copy').textContent = 'Copy'; }, 2000); } catch { /* text is selectable */ }
@@ -1591,6 +1624,7 @@
         const next = await window.seedhost.call('getState');
         if (!next || typeof next !== 'object' || !next.settings || !Array.isArray(next.peers) || !Array.isArray(next.logs)) throw new Error('The app returned an invalid state.');
         state = next;
+        syncPublicContext();
         bridgeReady = true;
         if (!publicStatus) void refreshPublicAddress();
         if (errorKind === 'state') { $('error-banner').hidden = true; errorKind = null; }

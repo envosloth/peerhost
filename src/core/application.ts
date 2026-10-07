@@ -54,6 +54,8 @@ export interface ServerGroupInfo {
 /** Result of accepting an invitation through joinHostingGroup: which local world (if any) the group now belongs to. */
 export interface HostingGroupJoinResult { relayName: string; fingerprint: string; serverId: string | null; pending: boolean }
 interface ApplicationOptions {
+  /** Fail-closed route ownership check, inside the ordinary launch operation lock. */
+  beforeServerStart?: (server: { id: string; playerPort: number }) => Promise<void>;
   serverSetup?: ServerSetupClient;
   modrinth?: ModrinthClient;
   confirmIncomingHandoff?: (source: string, snapshot: SnapshotManifest, offer: TransferOffer) => Promise<boolean>;
@@ -814,8 +816,13 @@ export class SeedHostApplication {
       revalidate();
       await assertModInstallComplete(server.serverDir);
       await assertServerFileTransactionsComplete(server.serverDir);
+      await this.options.beforeServerStart?.({ id: server.id, playerPort: await readServerPort(server.serverDir) });
+      revalidate();
       await ledger.startHosting();
       try {
+        revalidate();
+        // Recheck after the ledger's filesystem awaits, then spawn without another await.
+        await this.options.beforeServerStart?.({ id: server.id, playerPort: await readServerPort(server.serverDir) });
         revalidate();
         const launched = new ServerProcess({
           executable: approval.profile.executable, args: [...approval.profile.args], cwd: approval.serverDir,

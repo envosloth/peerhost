@@ -69,7 +69,7 @@
   $('players-list').addEventListener('click', event => { const b = event.target.closest('button[data-player]'); if (b && !b.disabled) void playerAction('kick', b.dataset.player); });
 
   const tunnelsBody = addPage('tunnels', 'Tunnels', 'Player addresses & routing', 'i-globe');
-  const tunnelsScope = el('p', 'field-help', 'The public address and playit connection are app-wide. Player routing follows the world this PC is hosting through its always-on PC; it is not an independent tunnel for every library card. An address is not proof of public reachability.'); tunnelsScope.id = 'tunnels-scope';
+  const tunnelsScope = el('p', 'field-help', 'Each server has its own Playit address pointing to its Minecraft port on this PC. Assign distinct ports in Server settings before setting up the addresses. These local addresses do not follow multi-host handoffs; the shared-hosting gateway is configured separately below. An address is not proof of public reachability.'); tunnelsScope.id = 'tunnels-scope';
   tunnelsBody.append(tunnelsScope, $('public-card'), $('player-gateway'), $('playit-panel'));
 
   const settingsBody = addPage('server-settings', 'Server settings', 'Properties & launch', 'i-settings');

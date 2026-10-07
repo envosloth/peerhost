@@ -1,7 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, safeStorage, shell, Tray } from 'electron';
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
-import { accountEndpoint } from '../../src/core/accounts.js';
+import { loadAccountServiceConfig } from '../../src/core/account-service-config.js';
 import { AccountIntegration } from '../../src/core/account-integration.js';
 import { PlayitIntegration } from '../../src/core/playit.js';
 import { playitApi, probeMinecraft } from '../../src/core/playit-network.js';
@@ -17,14 +16,14 @@ import type { SimpleProfileInput } from '../../src/core/java-arguments.js';
 import type { ModSort } from '../../src/core/modrinth.js';
 import { onboardingChecks } from '../../src/core/onboarding.js';
 import { AlwaysOnHost } from '../../src/core/always-on.js';
-import { PublicAddress, playitClaim } from '../../src/core/public-address.js';
+import { PerServerPublicAddresses, playitClaim } from '../../src/core/public-address.js';
 const setupLinks: Record<string,string> = Object.freeze({
   eula:'https://www.minecraft.net/en-us/eula',
   java:'https://adoptium.net/temurin/releases/',
   fabric:'https://fabricmc.net/use/server/',
   relay:'https://github.com/envosloth/seedhost/blob/main/docs/relay.md',
 });
-let window:BrowserWindow;let tray:Tray;let backend:SeedHostApplication;let alwaysOn:AlwaysOnHost;let publicAddress:PublicAddress;let quitAllowed=false;let quitting=false;
+let window:BrowserWindow;let tray:Tray;let backend:SeedHostApplication;let alwaysOn:AlwaysOnHost;let publicAddress:PerServerPublicAddresses;let quitAllowed=false;let quitting=false;
 // Display name; the profile folder below is SeedHost (or --profile-root).
 app.setName('Seed Hosting');
 const profileArgument=process.argv.find(a=>a.startsWith('--profile-root='));
@@ -54,15 +53,15 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
   app.whenReady().then(async()=>{
     if(!safeStorage.isEncryptionAvailable())throw new Error('OS protected key storage (Windows DPAPI, macOS Keychain, or a Linux Secret Service) is unavailable. Refusing to store an unencrypted identity.');
     const identity=await loadIdentity(root,{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)});
-    backend=new SeedHostApplication(root,identity,{confirmIncomingHandoff:async(source,snapshot)=>{
+    backend=new SeedHostApplication(root,identity,{beforeServerStart:async server=>{
+      if(!publicAddress)throw new Error('Public route ownership guard is not ready; server launch refused');
+      await publicAddress.assertCanStart(server);
+    },confirmIncomingHandoff:async(source,snapshot)=>{
       show();return confirm('Accept hosting ownership from this peer?','Verified peer: '+source+'\nSnapshot: '+snapshot.id+'\nThis copies server files into a new local directory. Old files are retained. It will not start automatically; review the local launch profile and executable/mod trust first.');
     }});await backend.open();
-    let accountConfig;
-    if(process.env.SEEDHOST_ACCOUNT_SERVICE) accountConfig=accountEndpoint(JSON.parse(process.env.SEEDHOST_ACCOUNT_SERVICE));
-    else {
-      const files=[path.join(root,'account-service.json'),...(!profileArgument?[fileURLToPath(new URL('../../../apps/desktop/account-service.json',import.meta.url))]:[])];
-      for(const file of files){try {accountConfig=accountEndpoint(JSON.parse(await readFile(file,'utf8')));break;}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}}
-    }
+    const accountConfig=await loadAccountServiceConfig({profileRoot:root,
+      bundledDirectory:fileURLToPath(new URL('../../../apps/desktop/',import.meta.url)),
+      isolated:!!profileArgument,override:process.env.SEEDHOST_ACCOUNT_SERVICE});
     const accounts=new AccountIntegration(root,identity,{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)},backend,accountConfig);
     // The always-on PC role runs inside this app: no Node.js install, terminal or commands. Its relay data and
     // OS-encrypted-at-rest identity live under the profile; it restarts with the app when it was turned on.
@@ -70,19 +69,13 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
     const roleOptions=profileArgument && process.env.SEEDHOST_TEST_LOOPBACK==='1' ? {host:'127.0.0.1',port:0,gamePorts:[0],discoveryPort:0,reservedGamePorts} : {reservedGamePorts};
     alwaysOn=new AlwaysOnHost(path.join(root,'always-on'),await loadIdentity(path.join(root,'always-on'),{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)}),roleOptions);
     await alwaysOn.restore();
-    // One-click public address: playit.gg's official agent, downloaded (pinned + SHA-256), approved in the browser
-    // and run hidden by this app, forwarding to this always-on PC's player port.
-    let gamePort:number|null=null;
-    const refreshGamePort=async()=>{const s=await alwaysOn.status();gamePort=s.running?s.gamePort:null;};
-    await refreshGamePort();
-    publicAddress=new PublicAddress(root,{vault:{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)},target:()=>gamePort===null?null:{host:'127.0.0.1',port:gamePort},
-      api:playitApi,claim:playitClaim,probe:probeMinecraft,openBrowser:url=>shell.openExternal(url)});
-    if(gamePort!==null)await publicAddress.restore();
-    // Where the one public-address button acts: this PC if it is the always-on PC, else the always-on PC it is paired with.
-    const publicVia=async():Promise<'here'|'relay'|'none'>=>{await refreshGamePort();if(gamePort!==null)return 'here';return (await backend.getState()).relay?'relay':'none';};
-    const NO_ALWAYS_ON={state:'off',address:null,approveUrl:null,detail:'needs-always-on'};
-    let lastApproveOpened='';
-    const openApprovalOnce=async(status:{approveUrl:string|null})=>{if(status.approveUrl&&status.approveUrl!==lastApproveOpened&&/^https:\/\/playit\.gg\/claim\/[a-f0-9]{10}$/.test(status.approveUrl)){lastApproveOpened=status.approveUrl;await shell.openExternal(status.approveUrl);}return status;};
+    // Independent local-server addresses use one approved agent, not the singleton shared-hosting gateway.
+    publicAddress=new PerServerPublicAddresses(root,{vault:{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)},
+      api:playitApi,claim:playitClaim,probe:probeMinecraft,openBrowser:url=>shell.openExternal(url),
+      servers:async()=>(await backend.getState()).servers,
+      reservedPorts:async()=>{const helper=await alwaysOn.status();return helper.running&&helper.gamePort!==null?[helper.gamePort]:[];}});
+    await publicAddress.restore((await backend.getState()).servers);
+    let publicSelectionEpoch=0;
     const image=nativeImage.createFromPath(fileURLToPath(new URL('../../../apps/desktop/icon.png',import.meta.url)));
     if(image.isEmpty())throw new Error('App icon could not be loaded');
     window=new BrowserWindow({width:1240,height:860,minWidth:1000,minHeight:700,title:'Seed Hosting',icon:image,frame:false,fullscreen:true,fullscreenable:true,backgroundColor:'#0f1116',show:true,webPreferences:{preload:fileURLToPath(new URL('./preload.cjs',import.meta.url)),nodeIntegration:false,contextIsolation:true,sandbox:true}});
@@ -139,7 +132,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
           if(!await confirm('Connect this playit agent?', 'Seed Hosting stores an OS-encrypted copy of this agent credential to check or create its public Minecraft tunnel. Select the agent running on your always-on PC; never send this file to friends.'))return null;
           try{await playit.importAgentFile(selected.filePaths[0]);return playit.status();}catch{throw new Error('Could not connect that agent. Select its plain hexadecimal secret file and check playit approval.');}
         }
-        case 'selectServer':return backend.selectServer(p.id);
+        case 'selectServer':++publicSelectionEpoch;return backend.selectServer(p.id);
         case 'deleteServer':{
           const state=await backend.getState();
           const target=state.servers.find(entry=>entry.id===p.id);
@@ -175,12 +168,12 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
           const state=await backend.getState();
           const alwaysStatus=await alwaysOn.status();
           const checks=onboardingChecks(state.onboarding,{...state,alwaysOn:alwaysStatus});
-          // The one public address points at this PC's always-on player gateway. It truthfully belongs only to
-          // worlds whose group is THIS always-on relay; every other card has no public address.
-          const pub=publicAddress.status();
-          const address=pub.address&&pub.state!=='off'&&pub.state!=='error'?pub.address:null;
-          const publicJoin=(entry:{id:string;group:{fingerprint:string}|null})=>address&&alwaysStatus.running&&entry.group&&entry.group.fingerprint===alwaysStatus.fingerprint
-            ?{address,reachability:(pub.state==='reachable'?'verified':'unverified') as 'verified'|'unverified',source:'playit' as const,targetServerId:entry.id}:null;
+          const publicJoin=(entry:typeof state.servers[number])=>{
+            const pub=publicAddress.status(entry);
+            const collision=state.servers.some(other=>other.id!==entry.id&&other.playerPort===entry.playerPort)||alwaysStatus.running&&alwaysStatus.gamePort===entry.playerPort;
+            return !collision&&pub.address&&['reachable','reserved','pending'].includes(pub.state)
+              ?{address:pub.address,reachability:(pub.state==='reachable'?'verified':'unverified') as 'verified'|'unverified',source:'playit' as const,targetServerId:entry.id}:null;
+          };
           return {...state,servers:state.servers.map(entry=>({...entry,publicJoinAddress:publicJoin(entry)})),
             onboarding:{...state.onboarding,checks,completed:checks.ready==='complete'}};
         }
@@ -191,21 +184,30 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
           return alwaysOn.enable(p.name,(await backend.getState()).servers.map(server=>server.playerPort));
         }
         case 'alwaysOnDisable':
-          if(!await confirm('Stop being the always-on PC?','Paired PCs can’t store or take the world here until you turn it back on, and the public address (if any) goes offline. The stored world, pairings and address are kept.'))return alwaysOn.status();
-          await publicAddress.close();
+          if(!await confirm('Stop being the always-on PC?','Paired PCs can’t store or take the world here until you turn it back on, and the shared player gateway goes offline. Local per-server public addresses are separate. The stored world and pairings are kept.'))return alwaysOn.status();
           return alwaysOn.disable();
         case 'alwaysOnNewCode':return alwaysOn.newCode();
-        case 'publicAddressStatus':{const via=await publicVia();if(via==='here')return publicAddress.refresh();if(via==='relay')return openApprovalOnce(await backend.publicAddress('public-status'));return NO_ALWAYS_ON;}
-        case 'publicAddressEnable':{
-          const via=await publicVia();
-          if(via==='none')return NO_ALWAYS_ON;
-          if(via==='relay')return openApprovalOnce(await backend.publicAddress('public-enable'));
-          return publicAddress.enable();
+        case 'publicAddressStatus':case 'publicAddressEnable':case 'publicAddressDisable':case 'publicAddressOpenApproval':{
+          const selectionEpoch=publicSelectionEpoch;
+          const state=await backend.getState();
+          const selected=state.servers.find(server=>server.id===p.id);
+          if(!selected||state.server?.id!==p.id)throw new Error('The selected server changed. Refresh before continuing.');
+          const helper=await alwaysOn.status();
+          const latest=await backend.getState();
+          if(selectionEpoch!==publicSelectionEpoch||latest.server?.id!==p.id||latest.server?.playerPort!==selected.playerPort)throw new Error('The selected server changed. Refresh before continuing.');
+          const collision=latest.servers.some(other=>other.id!==selected.id&&other.playerPort===selected.playerPort)||helper.running&&helper.gamePort===selected.playerPort;
+          if(collision&&method!=='publicAddressDisable'){
+            const detail='This Minecraft port conflicts with another server or the helper gateway. Set a distinct server-port in Server settings first.';
+            if(method==='publicAddressEnable')throw new Error(detail);
+            return {state:'error',address:null,approveUrl:null,detail};
+          }
+          if(method==='publicAddressEnable')return publicAddress.enable(selected,latest.servers);
+          if(method==='publicAddressDisable')return publicAddress.disable(selected);
+          if(method==='publicAddressStatus')return publicAddress.refresh(selected);
+          const status=publicAddress.status(selected),url=status.approveUrl;
+          if(url&&/^https:\/\/playit\.gg\/claim\/[a-f0-9]{10}$/.test(url))await shell.openExternal(url);
+          return status;
         }
-        case 'publicAddressDisable':
-          if(!await confirm('Turn off the public address?','Friends outside your network can’t join until you turn it back on. Your address is kept for when you do.'))return publicAddress.status();
-          {const via=await publicVia();if(via==='relay')return backend.publicAddress('public-disable');return publicAddress.disable();}
-        case 'publicAddressOpenApproval':{const via=await publicVia();const url=(via==='relay'?await backend.publicAddress('public-status'):publicAddress.status()).approveUrl;if(url&&/^https:\/\/playit\.gg\/claim\/[a-f0-9]{10}$/.test(url))await shell.openExternal(url);return publicAddress.status();}
         case 'pairAlwaysOn':
           if(!await confirm('Connect to your always-on PC?','Seed Hosting will look for the always-on PC that shows this code on your network, check that it really knows the code, and connect to it. From then on your world is kept there when you stop playing, and friends join one address.'))return null;
           return backend.pairAlwaysOn(p as {code:string;name:string});

@@ -1,6 +1,7 @@
 import {lookup, resolveSrv} from 'node:dns/promises';
 import {connect, isIPv4} from 'node:net';
 const allowed = new Set(['/v1/agents/rundata','/v1/tunnels/list','/tunnels/create']);
+export class PlayitApiRefusal extends Error { readonly definitiveRefusal = true; }
 export async function playitApi(key:string, route:string, payload:unknown={}) {
   if (!allowed.has(route)) throw new Error('Invalid playit route');
   try {
@@ -9,8 +10,13 @@ export async function playitApi(key:string, route:string, payload:unknown={}) {
     const reader=response.body.getReader();let size=0;const chunks:Uint8Array[]=[];
     try{for(;;){const r=await reader.read();if(r.done)break;size+=r.value.length;if(size>1024*1024)throw Error();chunks.push(r.value);}}finally{await reader.cancel();}
     const result=JSON.parse(Buffer.concat(chunks).toString());
+    if(result.status==='fail'){
+      const raw=typeof result.data==='string'?result.data:result.data?.type;
+      const code=typeof raw==='string'&&/^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(raw)&&!raw.includes(key)?raw:'request refused';
+      throw new PlayitApiRefusal(`playit refused the request (${code}). Check agent approval and your account's tunnel/port limits. No existing tunnel was changed.`);
+    }
     if(result.status!=='success')throw Error();return result.data;
-  }catch{throw new Error('playit request failed. Check connectivity and agent approval.');}
+  }catch(error){if(error instanceof PlayitApiRefusal)throw error;throw new Error('playit request failed. The result may be uncertain; check connectivity, agent approval and your playit account before retrying.');}
 }
 export function publicIPv4(ip:string):boolean {
   if(!isIPv4(ip))return false;const [a=0,b=0]=ip.split('.').map(Number);

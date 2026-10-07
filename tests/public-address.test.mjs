@@ -49,7 +49,7 @@ async function setup(t, overrides = {}) {
       if (route === '/v1/tunnels/list') return { tunnels };
       if (route === '/tunnels/create') {
         assert.deepEqual(payload.origin, { type: 'agent', data: { agent_id: AGENT, local_ip: '127.0.0.1', local_port: 25566 } });
-        tunnels = [{ id: TUNNEL, tunnel_type: 'minecraft-java', origin: { type: 'agent', details: { agent_id: AGENT, config_data: { fields: [{ name: 'local_ip', value: '127.0.0.1' }, { name: 'local_port', value: '25566' }] } } }, offline_reasons: null, connect_addresses: [{ value: { address: 'mossy-hollow.tun.ply.gg' } }] }];
+        tunnels = [{ id: TUNNEL, name: payload.name, tunnel_type: 'minecraft-java', origin: { type: 'agent', details: { agent_id: AGENT, config_data: { fields: [{ name: 'local_ip', value: '127.0.0.1' }, { name: 'local_port', value: '25566' }] } } }, offline_reasons: null, connect_addresses: [{ value: { address: 'mossy-hollow.tun.ply.gg' } }] }];
         return {};
       }
       throw new Error('unexpected ' + route);
