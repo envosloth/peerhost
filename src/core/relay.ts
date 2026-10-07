@@ -104,7 +104,7 @@ export class RelayNode {
   }
 
   private requireMember(source: string, config = this.config): void {
-    if (!config.trusted.some((member) => member.fingerprint === source)) throw new Error('Invite required; untrusted device refused');
+    if (config.disbandedBy || !config.trusted.some((member) => member.fingerprint === source)) throw new Error('Invite required; untrusted device refused');
   }
 
   async trust(name: string, fingerprint: string): Promise<void> {
@@ -112,6 +112,7 @@ export class RelayNode {
     if (!fingerprintOK(fingerprint)) throw new Error('Fingerprint must be exactly 64 lowercase SHA256 hex digits');
     if (fingerprint === this.identity.fingerprint) throw new Error('The relay cannot trust its own identity');
     await this.mutate(async (config) => {
+      if (config.disbandedBy) throw new Error('This group is permanently disbanded; its identity cannot be reused');
       if (config.trusted.length >= 200 && !config.trusted.some((entry) => entry.fingerprint === fingerprint)) throw new Error('Relay friend limit reached');
       config.trusted = [...config.trusted.filter((host) => host.fingerprint !== fingerprint), { name: memberName, fingerprint }];
     });
@@ -121,6 +122,24 @@ export class RelayNode {
   async setOwner(fingerprint: string): Promise<void> {
     if (!fingerprintOK(fingerprint)) throw new Error('Invalid owner');
     await this.mutate(async config => { this.requireMember(fingerprint, config); config.owner = fingerprint; });
+  }
+
+  /** Permanent group-wide revocation, serialized with park/claim. Retains every world revision and ledger. */
+  async disbandGroup(source: string): Promise<void> {
+    const run = this.queue.then(() => this.mutate(async config => {
+      this.requireMember(source, config);
+      if (config.owner !== source) throw new Error('Only the group owner can disband the group');
+      const custody = await this.custody();
+      if (custody && (custody.state !== 'transferred' || custody.owner !== source || custody.pendingTarget)) throw new Error('Hand the world back to the group owner and finish every handoff before disbanding');
+      config.disbandedBy = source;
+      config.trusted = [];
+      config.redeemed = {};
+      config.memberInvites = false;
+      delete config.owner;
+    }));
+    this.queue = run.catch(() => {});
+    await run;
+    await this.game?.validate();
   }
 
   async removeFriend(source: string, fingerprint: string): Promise<void> {
@@ -182,6 +201,7 @@ export class RelayNode {
   private issueInvite(hours: number, advertise: { host: string; port: number } | undefined, issuer: string | null, fixedToken?: Buffer, recipient?: string, persistAdvertise = true): Promise<CreatedInvite> {
     if (!Number.isFinite(hours) || hours < 5 / 60 || hours > 24 * 30) return Promise.reject(new Error('Invite hours must be between 1 and 720'));
     return this.mutate(async (config) => {
+      if (config.disbandedBy) throw new Error('This group is permanently disbanded');
       if (issuer !== null) {
         this.requireMember(issuer, config);
         if (!config.memberInvites && config.owner !== issuer) throw new Error('Only the relay owner can create invites');
@@ -240,6 +260,7 @@ export class RelayNode {
     if (source === this.identity.fingerprint) throw new Error('Cannot join your own relay');
     const hash = this.tokenHash(Buffer.from(token, 'hex'));
     await this.mutate(async (config) => {
+      if (config.disbandedBy) throw new Error('Invite has been revoked: group disbanded');
       const receipt = config.redeemed?.[hash];
       if (receipt) {
         if (receipt.expiresAt <= Date.now()) throw new Error('Invite has expired');
@@ -269,6 +290,7 @@ export class RelayNode {
     this.listener = await listenPeer(this.identity, [],
       (socket, source) => { void this.handle(socket, source); }, { host, port, authorizeCertificate: async (source) => {
         await this.reload();
+        if (this.config.disbandedBy) return this.config.disbandedBy === source ? 'trusted' : false;
         if (this.config.trusted.some((entry) => entry.fingerprint === source)) return 'trusted';
         // Retained unexpired receipts allow a bounded bootstrap socket to return an
         // explicit used-token refusal. This never grants membership: handle() still
@@ -320,7 +342,7 @@ export class RelayNode {
     let retained = false;
     try {
       const request = await readInviteFrame(socket, 4096, REQUEST_TIMEOUT_MS) as Record<string, unknown>;
-      if (!request || request.type !== 'relay' || request.version !== RELAY_PROTOCOL_VERSION || !['status', 'park', 'claim', 'join', 'invite', 'friends', 'gateway-status', 'game-tunnel', 'public-status', 'public-enable', 'public-disable', 'remove-friend', 'invite-for'].includes(request.op as string) ||
+      if (!request || request.type !== 'relay' || request.version !== RELAY_PROTOCOL_VERSION || !['status', 'park', 'claim', 'join', 'invite', 'friends', 'gateway-status', 'game-tunnel', 'public-status', 'public-enable', 'public-disable', 'remove-friend', 'invite-for', 'disband', 'disband-status'].includes(request.op as string) ||
           Object.keys(request).length !== (request.op === 'join' || request.op === 'game-tunnel' ? 5 : request.op === 'remove-friend' || request.op === 'invite-for' ? 4 : 3)) {
         throw new Error('Unsupported relay request; both ends must run the same SeedHost alpha');
       }
@@ -332,12 +354,30 @@ export class RelayNode {
       // Bootstrap sockets stay bootstrap-only even after another connection joins the same certificate.
       if (!isVerifiedPeerSocket(socket)) throw new Error('Invite required; untrusted request refused');
       await this.reload();
+      if (request.op === 'disband-status') {
+        if (this.config.disbandedBy !== source && this.config.owner !== source) throw new Error('Only the group owner can inspect disband status');
+        await writeFrame(socket, { type: 'relay-disband-status', disbanded: this.config.disbandedBy === source, owner: source });
+        return;
+      }
       this.requireMember(source);
+      if (request.op === 'disband') {
+        await this.disbandGroup(source);
+        await writeFrame(socket, { type: 'relay-disbanded', owner: source });
+        return;
+      }
       if (request.op === 'public-status' || request.op === 'public-enable' || request.op === 'public-disable') {
         const pa = this.publicAddress;
         if (!pa) { await writeFrame(socket, { type: 'relay-public', state: 'unsupported', address: null, detail: 'This always-on PC can’t make a public address. Update Seed Hosting on it.', approveUrl: null }); return; }
-        if (request.op !== 'public-status' && !this.game) throw new Error('Turn on the player address on the always-on PC first');
-        const status = request.op === 'public-enable' ? await pa.enable() : request.op === 'public-disable' ? await pa.disable() : await pa.refresh();
+        // Serialize provider work with revocation. Recheck at admission, not just at TLS authentication.
+        // Disband acknowledges only after already-admitted provider work has settled.
+        const run = this.queue.then(async () => {
+          await this.reload();
+          this.requireMember(source);
+          if (request.op !== 'public-status' && !this.game) throw new Error('Turn on the player address on the always-on PC first');
+          return request.op === 'public-enable' ? pa.enable() : request.op === 'public-disable' ? pa.disable() : pa.refresh();
+        });
+        this.queue = run.then(() => undefined, () => undefined);
+        const status = await run;
         if (request.op !== 'public-status') this.log(`Public address ${request.op === 'public-enable' ? 'turned on' : 'turned off'} by ${who}.`);
         await writeFrame(socket, { type: 'relay-public', ...status });
         return;

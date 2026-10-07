@@ -1,4 +1,4 @@
-export const SERVER_PROPERTY_KEYS = ['motd', 'max-players', 'difficulty', 'gamemode', 'pvp', 'white-list', 'view-distance', 'simulation-distance', 'server-port'] as const;
+export const SERVER_PROPERTY_KEYS = ['motd', 'max-players', 'difficulty', 'gamemode', 'pvp', 'white-list', 'view-distance', 'simulation-distance', 'server-port', 'hardcore', 'spawn-protection', 'allow-flight'] as const;
 export type ServerPropertyKey = typeof SERVER_PROPERTY_KEYS[number];
 export type ServerPropertyPatch = Partial<Record<ServerPropertyKey, string>>;
 
@@ -9,15 +9,15 @@ export function validateServerProperties(input: unknown): ServerPropertyPatch {
     if (!['string', 'boolean', 'number'].includes(typeof raw)) throw new Error('Invalid server setting value');
     const value = String(raw);
     if (value.length > 200 || /[\x00-\x1f\x7f]/.test(value) || /[\ud800-\udfff]/u.test(value)) throw new Error('Invalid server setting value');
-    if (key === 'pvp' || key === 'white-list') {
+    if (['pvp', 'white-list', 'hardcore', 'allow-flight'].includes(key)) {
       if (value !== 'true' && value !== 'false') throw new Error('Invalid boolean server setting');
     } else if (key === 'difficulty') {
       if (!['peaceful', 'easy', 'normal', 'hard'].includes(value)) throw new Error('Invalid difficulty');
     } else if (key === 'gamemode') {
       if (!['survival', 'creative', 'adventure', 'spectator'].includes(value)) throw new Error('Invalid game mode');
     } else if (key !== 'motd') {
-      const minimum = key === 'view-distance' || key === 'simulation-distance' ? 2 : 1;
-      const maximum = key === 'server-port' ? 65535 : key === 'max-players' ? 500 : 32;
+      const minimum = key === 'spawn-protection' ? 0 : key === 'view-distance' || key === 'simulation-distance' ? 2 : 1;
+      const maximum = key === 'server-port' ? 65535 : key === 'spawn-protection' ? 1000 : key === 'max-players' ? 500 : 32;
       if (!/^\d{1,5}$/.test(value) || Number(value) < minimum || Number(value) > maximum) throw new Error('Invalid numeric server setting');
     }
     result[key as ServerPropertyKey] = value;

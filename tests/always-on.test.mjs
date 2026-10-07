@@ -24,6 +24,20 @@ async function setup(t) {
   return { root, host, app, find };
 }
 
+test('creating a hosting group keeps always-on off, restores control only, and preserves an existing opt-in', async t => {
+  const {host,app}=await setup(t);
+  assert.equal(typeof host.startGroup,'function');
+  await host.startGroup('Friends group');
+  const status=await host.status();assert.equal(status.enabled,false);assert.equal(status.running,false);assert.equal(status.gamePort,null);assert.ok(status.port>0);
+  const invitation=await host.ownerInvite('Owner',app.identity.fingerprint);
+  await app.joinHostingGroup({code:invitation.code,name:'Owner',parkOnStop:false});
+  assert.equal((await app.getState()).relay.parkOnStop,false,'new group does not silently opt into parking');
+  assert.equal((await app.listFriends()).canManage,true);
+  await host.close();await host.restore();assert.equal((await host.status()).enabled,false);assert.equal((await host.status()).gamePort,null);assert.ok((await host.status()).port>0);
+  await host.enable('Opt-in PC');await host.startGroup('Friends group');assert.equal((await host.status()).enabled,true);assert.ok((await host.status()).gamePort>0);
+  await host.disable();assert.equal((await host.status()).enabled,false);assert.ok((await host.status()).port>0,'explicit disable retains group control');
+});
+
 test('pairing codes are short, readable and forgiving to type', async () => {
   const code = newPairingCode();
   assert.match(code, /^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/);

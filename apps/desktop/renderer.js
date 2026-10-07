@@ -742,6 +742,9 @@
     const running = alwaysOnStatus?.running === true;
     const paired = Boolean(state.relay);
     const mode = running ? 'host' : alwaysOnMode;
+    $('multi-always-on-enable').disabled = blocked;
+    $('multi-always-on-disable').disabled = blocked;
+    $('multi-always-on-status').textContent = !alwaysOnStatus ? 'Not checked — no setting was changed.' : alwaysOnStatus.enabled ? (running ? 'Enabled on this PC.' : 'Enabled, but unavailable: ' + (alwaysOnStatus.error || 'not running')) : 'Off. Your group and worlds are kept.';
     $('always-on-choices').hidden = Boolean(mode) || paired;
     $('always-on-host').hidden = mode !== 'host';
     $('always-on-pair-form').hidden = mode !== 'pair' || paired;
@@ -767,6 +770,17 @@
     if (live && !alwaysOnTimer) alwaysOnTimer = setInterval(() => void refreshAlwaysOn(), 4000);
     if (!live && alwaysOnTimer) { clearInterval(alwaysOnTimer); alwaysOnTimer = null; }
   }
+  $('multi-always-on-enable').addEventListener('click', async () => {
+    if ($('multi-always-on-enable').disabled) return;
+    await runAction('alwaysOnEnable', { name: state.deviceName || 'Always-on PC' });
+    await refreshAlwaysOn();
+  });
+  $('multi-always-on-disable').addEventListener('click', async () => {
+    if ($('multi-always-on-disable').disabled) return;
+    await runAction('alwaysOnDisable');
+    await refreshAlwaysOn();
+  });
+  $('peers-tab').addEventListener('click', () => void refreshAlwaysOn());
   $('always-on-be').addEventListener('click', async () => {
     alwaysOnMode = 'host';
     const ok = await runAction('alwaysOnEnable', { name: state.deviceName || 'Always-on PC' }, result => { alwaysOnStatus = result; });

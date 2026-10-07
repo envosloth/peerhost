@@ -67,7 +67,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
     // OS-encrypted-at-rest identity live under the profile; it restarts with the app when it was turned on.
     const reservedGamePorts=(await backend.getState()).servers.map(server=>server.playerPort);
     const roleOptions=profileArgument && process.env.SEEDHOST_TEST_LOOPBACK==='1' ? {host:'127.0.0.1',port:0,gamePorts:[0],discoveryPort:0,reservedGamePorts} : {reservedGamePorts};
-    alwaysOn=new AlwaysOnHost(path.join(root,'always-on'),await loadIdentity(path.join(root,'always-on'),{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)}),roleOptions);
+    alwaysOn=new AlwaysOnHost(path.join(root,'always-on'),await loadIdentity(path.join(root,'always-on'),{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)}),{...roleOptions,loadGroupIdentity:groupRoot=>loadIdentity(groupRoot,{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)})});
     await alwaysOn.restore();
     // Independent local-server addresses use one approved agent, not the singleton shared-hosting gateway.
     publicAddress=new PerServerPublicAddresses(root,{vault:{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)},
@@ -94,10 +94,11 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
           const a=await accounts.status();if(!a.signedIn||!a.online||!a.username)throw new Error('Sign in first');
           const state=await backend.getState();
           if(state.relay)throw new Error('This PC already belongs to a group');
-          await alwaysOn.enable(a.username+'’s group',state.servers.map(server=>server.playerPort));
+          if(!await confirm('Create a hosting group for '+(state.server?.name??'your next server')+'?','Only group control runs while this app is open. The optional always-on PC/player gateway stays off unless you explicitly enable it in Multi-host. Worlds, friendships and public addresses are unchanged.'))return null;
+          const role=await alwaysOn.startGroup(a.username+'’s group',true);
           const invite=await alwaysOn.ownerInvite(a.username,identity.fingerprint);
           // Bind the group to the selected world when there is one; otherwise it is stored as this PC's group to use.
-          await backend.joinHostingGroup({code:invite.code,name:a.username,serverId:state.server?.id??null});
+          await backend.joinHostingGroup({code:invite.code,name:a.username,serverId:state.server?.id??null,parkOnStop:role.enabled});
           return {created:true};
         }
         case 'accountStatus':return accounts.status();
@@ -115,6 +116,16 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         case 'accountFriendAccept':return accounts.socialAccept(p.id);
         case 'accountFriendDecline':return accounts.socialDecline(p.id);
         case 'accountFriendRemove':return accounts.socialRemove(p.username);
+        case 'disbandGroup':{
+          const epoch=publicSelectionEpoch,state=await backend.getState();
+          if(!state.server||state.server.id!==p.id||state.relay?.fingerprint!==p.fingerprint)throw new Error('The selected server or group changed. Refresh before continuing.');
+          await backend.checkGroupDisband(p.id,p.fingerprint);
+          if(epoch!==publicSelectionEpoch)throw new Error('The selected server changed. Refresh before continuing.');
+          if(!await confirm('Disband the group for “'+state.server.name+'”?','This permanently revokes ALL group members and outstanding invitations at the group relay. Copies of worlds already held by other PCs cannot be erased. This server must be stopped and safely owned here, with every handoff finished. Worlds, local and relay backups, account-level friendships, accounts, Playit routes and your app-wide always-on opt-in are retained. Older relays without verified revocation refuse this action; a local disconnect is not disbanding. This group identity cannot be reused.','Disband group'))return null;
+          const latest=await backend.getState();
+          if(epoch!==publicSelectionEpoch||latest.server?.id!==p.id||latest.relay?.fingerprint!==p.fingerprint)throw new Error('The selected server or group changed. Refresh before continuing.');
+          return backend.disbandGroup(p.id,p.fingerprint);
+        }
         case 'removeFriend':{
           const friends=await backend.listFriends(),target=friends.members.find(m=>m.fingerprint===p.fingerprint);
           if(!friends.canManage||!target||target.you||target.fingerprint===friends.owner)throw new Error('Only the group owner can remove a friend');

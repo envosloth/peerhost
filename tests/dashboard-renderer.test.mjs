@@ -27,6 +27,82 @@ const fixture = () => page.evaluate(() => window.dashboardFixture.read());
 const settle = () => page.waitForFunction(() => document.querySelector('#activity-message').textContent === 'Ready');
 async function set(value) { await page.evaluate(v => window.dashboardFixture.set(v), value); await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange'))); await settle(); }
 
+test('disband refuses a forged success with unchanged group readback', async () => {
+  await reset();const f=await fixture();f.state.relay={name:'Group',fingerprint:'c'.repeat(64),parkOnStop:false};await set({state:f.state,disbandReadbackMismatch:true});await click('#server-list [data-action="open"][data-id="alpha"]');await click('#peers-tab');await click('#disband-group');
+  await page.waitForFunction(()=>document.querySelector('#disband-feedback').textContent.includes('could not be confirmed'));
+  assert.doesNotMatch(await page.locator('#disband-feedback').textContent(),/Verified disband/);assert.ok((await fixture()).state.relay);
+});
+
+test('disband stale A-B-A completion cannot overwrite the newer group feedback', async () => {
+  await reset();const f=await fixture();f.state.relay={name:'Group',fingerprint:'c'.repeat(64),parkOnStop:false};await set({state:f.state,holdGroupOp:true});await click('#server-list [data-action="open"][data-id="alpha"]');await click('#peers-tab');await click('#disband-group');
+  await page.waitForFunction(()=>window.dashboardFixture.read().groupHeld);
+  await page.evaluate(()=>{const f=window.dashboardFixture.read(),a=f.state,b=structuredClone(a);b.server=f.serverMap.bravo;b.servers.forEach(s=>s.active=s.id==='bravo');window.seedDashboard.update(b,false);window.seedDashboard.update(a,false);document.querySelector('#disband-feedback').textContent='Newer group feedback';window.dashboardFixture.release();});await settle();
+  assert.equal(await page.locator('#disband-feedback').textContent(),'Newer group feedback');
+});
+
+test('clearing a numeric property never silently saves zero', async () => {
+  await reset();await click('#server-list [data-action="open"][data-id="alpha"]');await click('#server-settings-tab');
+  await page.locator('#property-spawn-protection').fill('12');await page.locator('#property-spawn-protection').fill('');await click('#properties-save');await settle();
+  assert.equal((await fixture()).calls.some(c=>c.method==='saveServerSettings'),false);
+});
+
+test('Multi-host disband captures selected group, cancellation retains it, and verifies local readback', async () => {
+  await reset();const f=await fixture();f.state.relay={name:'Group',fingerprint:'c'.repeat(64),parkOnStop:false};await set({state:f.state,cancelMethod:'disbandGroup'});
+  await click('#server-list [data-action="open"][data-id="alpha"]');await click('#peers-tab');
+  assert.equal(await page.locator('#disband-group').isEnabled(),true);await click('#disband-group');await settle();
+  assert.equal((await fixture()).state.relay.fingerprint,'c'.repeat(64));assert.doesNotMatch(await page.locator('#disband-feedback').textContent(),/Verified disband/);
+  await page.evaluate(()=>window.dashboardFixture.set({cancelMethod:null}));await click('#disband-group');
+  await page.waitForFunction(()=>document.querySelector('#disband-feedback').textContent.includes('Verified disband'));
+  assert.equal((await fixture()).state.relay,null);const call=(await fixture()).calls.find(c=>c.method==='disbandGroup');assert.deepEqual(call.payload,{id:'alpha',fingerprint:'c'.repeat(64)});
+});
+
+test('Multi-host offers explicit optional always-on enable and disable without opening the wizard', async () => {
+  await reset();await click('#server-list [data-action="open"][data-id="alpha"]');await click('#peers-tab');
+  assert.equal(await page.locator('#multi-always-on-enable').isVisible(),true);assert.equal(await page.locator('#multi-always-on-disable').isVisible(),true);
+  assert.match(await page.locator('#multi-always-on-help').textContent(),/optional|off by default/i);
+  await click('#multi-always-on-enable');await settle();assert.ok((await fixture()).calls.some(c=>c.method==='alwaysOnEnable'));
+  assert.equal(await page.locator('#setup-dialog').isVisible(),false);
+  await click('#multi-always-on-disable');await settle();assert.ok((await fixture()).calls.some(c=>c.method==='alwaysOnDisable'));
+});
+
+test('signed-in guide sends and accepts friends inline while preserving progress and navigation', async () => {
+  await reset(); const f=await fixture(); f.state.onboarding.step='friends';
+  await set({state:f.state,accountStatus:{configured:true,signedIn:true,online:true,username:'alex',detail:'Signed in'},accountFriendRequests:[{id:'request-sam',from:'sam'}]});
+  await page.evaluate(()=>window.dispatchEvent(new Event('seedhost-account-changed')));await click('#nav-setup');
+  await page.waitForFunction(()=>!document.querySelector('#setup-friends').hidden);
+  assert.equal(await page.locator('#setup-friend-add-form').isVisible(),true);
+  await page.locator('#setup-friend-username').fill('taylor'); await click('#setup-friend-send');
+  await page.waitForFunction(()=>document.querySelector('#setup-friend-feedback').textContent.includes('sent to @taylor'));
+  assert.equal(await page.locator('#setup-dialog').isVisible(),true);
+  await click('#setup-friend-request-list [data-friend-accept="request-sam"]');
+  await page.waitForFunction(()=>document.querySelector('#setup-friend-feedback').textContent.includes('now friends'));
+  assert.ok((await fixture()).accountFriends.some(f=>f.username==='sam'));
+  assert.equal(await page.locator('#setup-dialog').isVisible(),true);
+  assert.equal((await fixture()).calls.some(c=>c.method==='accountSend'||c.method==='accountStartGroup'),false);
+  await click('#setup-back');await settle();assert.equal(await page.locator('#setup-runtime').isVisible(),true);
+  await click('#setup-next');await settle();await click('#setup-skip');await settle();
+  assert.ok((await fixture()).state.onboarding.skipped.includes('friends'));
+});
+
+test('Hardcore and safe additional controls save only edited fields and verify readback', async () => {
+  await reset(); await click('#server-list [data-action="open"][data-id="alpha"]'); await click('#server-settings-tab');
+  for (const id of ['hardcore', 'allow-flight', 'spawn-protection']) assert.equal(await page.locator('#property-' + id).count(), 1);
+  await page.locator('#property-hardcore').check(); await page.locator('#property-allow-flight').check(); await page.locator('#property-spawn-protection').fill('0');
+  await click('#properties-save'); await page.waitForFunction(() => document.querySelector('#properties-feedback').textContent.includes('Verified'));
+  const saved=(await fixture()).calls.find(c=>c.method==='saveServerSettings');
+  assert.deepEqual(saved.payload.settings,{hardcore:true,'spawn-protection':0,'allow-flight':true});
+});
+
+test('performance rounds measured floats to at most two decimals and rejects nonfinite or missing samples', async () => {
+  await reset(); const f=await fixture(); f.dashboard.alpha.performance={pid:123,cpuPercent:12.3456789,memoryMiB:512.987654,uptimeSeconds:61.98765};
+  await set({dashboard:f.dashboard}); await click('#server-list [data-action="open"][data-id="alpha"]'); await click('#operate-tab');
+  await page.waitForFunction(()=>document.querySelector('#performance-cpu').textContent!=='Unavailable');
+  assert.equal(await page.locator('#performance-cpu').textContent(),'12.35%'); assert.equal(await page.locator('#performance-memory').textContent(),'512.99 MiB');
+  f.dashboard.alpha.performance={pid:null,cpuPercent:null,memoryMiB:null,uptimeSeconds:null}; await set({dashboard:f.dashboard});await click('#dashboard-refresh');
+  await page.waitForFunction(()=>document.querySelector('#performance-cpu').textContent==='Unavailable');
+  assert.equal(await page.locator('#performance-memory').textContent(),'Unavailable');
+});
+
 test('Friends and Multi-host keep one account card in the Friends page without moving it between contexts', async () => {
   await reset(); await click('#friends-tab');
   assert.equal(await page.locator('#friend-code, #invite-code, #create-invite, #friends-intent-join, #friends-intent-invite').count(), 0, 'manual enrollment is removed, not hidden');
@@ -393,7 +469,7 @@ test('new dashboard text controls retain the existing themed input styling', asy
 test('Multi-host reuses group/relay controls, explicitly distinguishes app-wide group from selected-world handoff', async () => {
   await reset(); await click('#server-list [data-action="open"][data-id="alpha"]');
   assert.equal(await page.locator('#peers-tab .nav-text').textContent(), 'Multi-host'); await click('#peers-tab');
-  assert.match(await page.locator('#multi-host-scope').textContent(), /app-wide.*group/i);
+  assert.match(await page.locator('#multi-host-scope').textContent(), /selected server.*group/i);
   assert.equal(await page.locator('#peers-panel #relay-card').count(), 1);
   assert.equal(await page.locator('#peers-panel #hosting-card').count(), 1);
   assert.equal(await page.locator('#peers-panel #friends-controls').count(), 1);

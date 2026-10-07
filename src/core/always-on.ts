@@ -8,7 +8,7 @@ import { RelayNode, DEFAULT_RELAY_PORT } from './relay.js';
 import { encodeInvite } from './invites.js';
 import { privateLanAddresses, tailnetAddresses } from './network-info.js';
 import type { PeerIdentity } from './peer-transport.js';
-import { validAdvertise } from './relay-friends-store.js';
+import { readRelayConfig, validAdvertise } from './relay-friends-store.js';
 
 /*
  * One-click always-on PC.
@@ -127,7 +127,13 @@ export class AlwaysOnHost {
   private session?: { code: string; expiresAt: number; secrets: PairingSecrets };
   private error: string | null = null;
   private enabled = false;
-  constructor(readonly root: string, private readonly identity: PeerIdentity, private readonly options: { port?: number; gamePorts?: number[]; reservedGamePorts?: number[]; discoveryPort?: number; host?: string; advertise?: { host: string; port: number } } = {}) {
+  private groupEnabled = false;
+  private controlPort?: number;
+  private groupGeneration?: string;
+  private groupHost?: AlwaysOnHost;
+  private retainedRole?: AlwaysOnHost;
+  private retainedRoleGeneration?: string;
+  constructor(readonly root: string, private readonly identity: PeerIdentity, private readonly options: { port?: number; gamePorts?: number[]; reservedGamePorts?: number[]; discoveryPort?: number; host?: string; advertise?: { host: string; port: number }; loadGroupIdentity?: (root: string) => Promise<PeerIdentity> } = {}) {
     const reserved = options.reservedGamePorts;
     if (reserved !== undefined && (!Array.isArray(reserved) || Array.from(reserved).some(port => !Number.isInteger(port) || port < 1 || port > 65535))) {
       throw new Error('reservedGamePorts must be an array of integer ports between 1 and 65535');
@@ -139,20 +145,81 @@ export class AlwaysOnHost {
 
   /** Restore the saved choice at app start; failures are reported in status, never thrown at startup. */
   async restore(): Promise<void> {
-    try { this.enabled = JSON.parse(await readFile(this.settingsFile, 'utf8'))?.enabled === true; } catch { this.enabled = false; }
-    if (this.enabled) await this.start().catch((error) => { this.error = (error as Error).message; });
+    try { const saved = JSON.parse(await readFile(this.settingsFile, 'utf8')); this.enabled = saved?.enabled === true; this.groupEnabled = saved?.groupEnabled === true; this.controlPort = this.groupEnabled && Number.isInteger(saved.controlPort) && saved.controlPort > 0 && saved.controlPort <= 65535 ? saved.controlPort : undefined; } catch { this.enabled = false; this.groupEnabled = false; }
+    if (this.enabled || this.groupEnabled) await this.start(undefined, this.enabled).catch((error) => { this.error = (error as Error).message; });
+    // A published generation is not optional/corrupt-settings fallback: refuse to invent its identity.
+    const saved = JSON.parse(await readFile(this.settingsFile, 'utf8').catch((error) => {
+      if (error.code === 'ENOENT') return '{}'; throw error;
+    }));
+    if (saved.retainedRoleGeneration !== undefined) {
+      if (typeof saved.retainedRoleGeneration !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(saved.retainedRoleGeneration)) throw new Error('Invalid saved role generation');
+      this.retainedRoleGeneration = saved.retainedRoleGeneration;
+      this.retainedRole = await this.loadGeneration(saved.retainedRoleGeneration, true);
+      await this.retainedRole.restore();
+    }
+    if (saved.groupGeneration !== undefined) {
+      if (typeof saved.groupGeneration !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(saved.groupGeneration)) throw new Error('Invalid saved group generation');
+      this.groupGeneration = saved.groupGeneration;
+      this.groupHost = await this.loadGeneration(saved.groupGeneration, true);
+      await this.groupHost.restore();
+    }
   }
 
-  private async save(enabled: boolean): Promise<void> {
+  private async save(enabled: boolean, groupEnabled = this.groupEnabled): Promise<void> {
     await mkdir(this.root, { recursive: true });
     const temporary = `${this.settingsFile}.${randomUUID()}.tmp`;
     const handle = await open(temporary, 'wx', 0o600);
-    try { await handle.writeFile(JSON.stringify({ version: 1, enabled })); await handle.sync(); } finally { await handle.close(); }
+    try { await handle.writeFile(JSON.stringify({ version: 1, enabled, ...(groupEnabled ? { groupEnabled: true, controlPort: this.controlPort } : {}), ...(this.groupGeneration ? { groupGeneration: this.groupGeneration } : {}), ...(this.retainedRoleGeneration ? { retainedRoleGeneration: this.retainedRoleGeneration } : {}) })); await handle.sync(); } finally { await handle.close(); }
     try { await rename(temporary, this.settingsFile); } finally { await rm(temporary, { force: true }); }
     this.enabled = enabled;
+    this.groupEnabled = groupEnabled;
+  }
+
+  /** Group control is independent of the optional player gateway/custodian role. */
+  private async loadGeneration(generation: string, existing = false): Promise<AlwaysOnHost> {
+    if (!this.options.loadGroupIdentity) throw new Error('Secure group identity storage is required to create a fresh group');
+    const root = path.join(this.root, 'groups', generation);
+    // Missing keys for a published generation are recovery, not permission to rotate a pin.
+    if (existing) await readFile(path.join(root, 'identity.json'));
+    const identity = await this.options.loadGroupIdentity(root);
+    // Never inherit public routing, fixed ports, or the old role opt-in into a new group.
+    return new AlwaysOnHost(root, identity, { host: this.options.host, port: this.options.port === 0 ? 0 : undefined, gamePorts: this.options.gamePorts, reservedGamePorts: this.options.reservedGamePorts, discoveryPort: this.options.discoveryPort, loadGroupIdentity: this.options.loadGroupIdentity });
+  }
+
+  async startGroup(name: string, creating = false): Promise<AlwaysOnStatus> {
+    const target = this.groupHost ?? this;
+    const config = await readRelayConfig(target.root, name);
+    if (creating && !config.disbandedBy && (config.owner || config.trusted.length || config.history.length)) {
+      throw new Error('This helper already serves an existing group. Refusing to rebind an unrelated server or rotate its role identity.');
+    }
+    if (config.disbandedBy) {
+      const generation = randomUUID();
+      const fresh = await this.loadGeneration(generation);
+      try {
+        await fresh.startGroup(name);
+        // Publish only after identity and control settings exist. Keep the revoked listener/root
+        // and optional role untouched: old pins must never reach the replacement authority.
+        const previousGeneration = this.groupGeneration;
+        const previousRoleGeneration = this.retainedRoleGeneration;
+        const retainRole = this.groupHost?.enabled === true;
+        if (retainRole) this.retainedRoleGeneration = previousGeneration;
+        this.groupGeneration = generation;
+        try { await this.save(this.enabled); } catch (error) { this.groupGeneration = previousGeneration; this.retainedRoleGeneration = previousRoleGeneration; throw error; }
+        if (retainRole) this.retainedRole = this.groupHost;
+        else await this.groupHost?.close();
+        this.groupHost = fresh;
+      } catch (error) { await fresh.close(); throw error; }
+      return fresh.status();
+    }
+    if (this.groupHost) return this.groupHost.startGroup(name);
+    await this.start(name, this.enabled);
+    await this.save(this.enabled, true);
+    return this.status();
   }
 
   async enable(name?: string, reservedGamePorts?: number[]): Promise<AlwaysOnStatus> {
+    if (!this.enabled && this.retainedRole?.enabled) return this.retainedRole.enable(undefined, reservedGamePorts);
+    if (!this.enabled && this.groupHost) return this.groupHost.enable(name, reservedGamePorts);
     if (reservedGamePorts !== undefined) {
       if (!Array.isArray(reservedGamePorts) || Array.from(reservedGamePorts).some(port => !Number.isInteger(port) || port < 1 || port > 65535)) {
         throw new Error('reservedGamePorts must be an array of integer ports between 1 and 65535');
@@ -160,13 +227,15 @@ export class AlwaysOnHost {
       // Refresh future allocation without disconnecting players or changing an existing address.
       this.options.reservedGamePorts = [...reservedGamePorts];
     }
+    if (this.relay && !this.relay.gameEndpoint) await this.close();
     await this.start(name);
     await this.save(true);
     return this.status();
   }
 
   /** Called only by this PC's main process, never by a network request. */
-  async ownerInvite(name: string, fingerprint: string) {
+  async ownerInvite(name: string, fingerprint: string): Promise<{ code: string; expiresAt: number }> {
+    if (this.groupHost) return this.groupHost.ownerInvite(name, fingerprint);
     if (!this.relay) throw new Error('Turn on the always-on PC first');
     await this.relay.reload();
     if (this.relay.owner && this.relay.owner !== fingerprint) throw new Error('This group already has an owner');
@@ -180,8 +249,13 @@ export class AlwaysOnHost {
   }
 
   async disable(): Promise<AlwaysOnStatus> {
+    if (!this.enabled && this.retainedRole?.enabled) { await this.retainedRole.disable(); return this.status(); }
+    if (!this.enabled && this.groupHost) return this.groupHost.disable();
     await this.save(false);
     await this.close();
+    await this.groupHost?.restore();
+    await this.retainedRole?.restore();
+    if (this.groupEnabled) await this.start(undefined, false);
     return this.status();
   }
 
@@ -190,12 +264,12 @@ export class AlwaysOnHost {
     return privateLanAddresses()[0] ?? tailnetAddresses()[0];
   }
 
-  private async start(name?: string): Promise<void> {
+  private async start(name?: string, alwaysRole = true): Promise<void> {
     if (this.relay) { if (name) await this.relay.setName(name); return; }
     this.error = null;
     const gamePorts = (this.options.gamePorts ?? [DEFAULT_GAME_PORT, 25567, 25568, 25569])
       .filter(port => !this.options.reservedGamePorts?.includes(port));
-    if (gamePorts.length === 0) throw new Error('Couldn’t open a player port: all gateway candidates are reserved for local Minecraft servers. Configure a different gateway player port.');
+    if (alwaysRole && gamePorts.length === 0) throw new Error('Couldn’t open a player port: all gateway candidates are reserved for local Minecraft servers. Configure a different gateway player port.');
     let advertise = this.options.advertise;
     if (advertise === undefined) {
       try {
@@ -213,11 +287,12 @@ export class AlwaysOnHost {
     try {
       // First free port from the usual one upward; paired PCs learn the actual port from the code lookup.
       let listenError: unknown;
-      for (const port of this.options.port !== undefined ? [this.options.port] : [DEFAULT_RELAY_PORT, 47626, 47627, 47628, 47629]) {
+      for (const port of this.controlPort !== undefined ? [this.controlPort] : this.options.port !== undefined ? [this.options.port] : [DEFAULT_RELAY_PORT, 47626, 47627, 47628, 47629]) {
         try { await relay.listen({ host, port, advertise, advertiseHost: this.advertiseHost() }); listenError = undefined; break; }
         catch (error) { listenError = error; }
       }
       if (listenError) throw new Error(`Couldn’t open Seed Hosting’s port: ${(listenError as Error).message}`);
+      if (alwaysRole) {
       // A separate gateway player address must not occupy a managed Minecraft server's port.
       let lastError: unknown;
       for (const gamePort of gamePorts) {
@@ -230,11 +305,13 @@ export class AlwaysOnHost {
         throw new Error(`Couldn’t open a player port: allocated port ${relay.gameEndpoint.port} is reserved for local Minecraft. Configure a different gateway player port and retry.`);
       }
       await this.listenDiscovery(host);
+      }
     } catch (error) {
       await relay.close().catch(() => undefined);
       await this.closeDiscovery();
       throw error;
     }
+    this.controlPort = relay.endpoint!.port;
     this.relay = relay;
   }
 
@@ -266,6 +343,8 @@ export class AlwaysOnHost {
 
   /** A fresh single-use code; the previous unused one stops working when it expires. */
   async newCode(): Promise<AlwaysOnStatus> {
+    if (!this.enabled && this.retainedRole?.enabled) return this.retainedRole.newCode();
+    if (!this.enabled && this.groupHost) return this.groupHost.newCode();
     if (!this.relay) throw new Error('Turn on “This PC is the always-on PC” first');
     const code = newPairingCode();
     const secrets = await pairingSecrets(code);
@@ -275,6 +354,8 @@ export class AlwaysOnHost {
   }
 
   async status(): Promise<AlwaysOnStatus> {
+    if (!this.enabled && this.retainedRole?.enabled) return this.retainedRole.status();
+    if (this.groupHost && !this.enabled) return this.groupHost.status();
     const relay = this.relay;
     if (relay) await relay.reload().catch(() => undefined);
     let custody = 'empty';
@@ -285,7 +366,7 @@ export class AlwaysOnHost {
     const advertised = this.advertiseHost();
     const session = this.session && this.session.expiresAt > Date.now() ? this.session : undefined;
     return {
-      enabled: this.enabled, running: Boolean(relay), name: relay?.name ?? 'Always-on PC', error: this.error,
+      enabled: this.enabled, running: Boolean(relay?.gameEndpoint), name: relay?.name ?? 'Always-on PC', error: this.error,
       addresses: [...new Set([advertised, ...privateLanAddresses(), ...tailnetAddresses()].filter((a): a is string => Boolean(a)))],
       port: relay?.endpoint?.port ?? null, gamePort: relay?.gameEndpoint?.port ?? null,
       code: session?.code ?? null, codeExpiresAt: session?.expiresAt ?? null,
@@ -295,6 +376,8 @@ export class AlwaysOnHost {
   }
 
   async close(): Promise<void> {
+    await this.groupHost?.close();
+    await this.retainedRole?.close();
     this.session = undefined;
     await this.closeDiscovery();
     const relay = this.relay; this.relay = undefined;

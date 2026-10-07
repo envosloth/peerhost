@@ -12,7 +12,7 @@ import { addMods, exportClientPack, modsDirectory, ordinaryDirectory, removeMod,
 import { ModrinthClient, assertModTarget, isGameVersion, isModLoader, isProjectKey, type ModSort } from './modrinth.js';
 import { indexedMods, modTarget, readModIndex, writeModIndex, type ModVerificationCache } from './mod-index.js';
 import { installMod, assertModInstallComplete, type InstallModInput } from './mod-install.js';
-import { openRelayOperation, relayRequest, relayStatus, relayInvite, relayInviteFor, relayRemoveFriend, relayFriends, joinRelayInvite, type RelayStatus, relayPublic } from './relay-client.js';
+import { openRelayOperation, relayRequest, relayStatus, relayInvite, relayInviteFor, relayRemoveFriend, relayFriends, relayDisbandGroup, relayDisbandStatus, joinRelayInvite, type RelayStatus, relayPublic } from './relay-client.js';
 import { decodeInvite, type Invite } from './invites.js';
 import { friendName } from './relay-friends-store.js';
 import { readOnboarding, saveOnboarding, validateOnboarding, onboardingChecks, type SetupConfiguration } from './onboarding.js';
@@ -1174,10 +1174,10 @@ export class SeedHostApplication {
    * A definitive refusal from the pinned relay surfaces unchanged (`code = 'PEER_AUTHORIZATION_DENIED'`, not retryable),
    * so AccountIntegration can mark the request declined instead of retrying it.
    */
-  async joinHostingGroup(input: { code: string; name: string; serverId?: string | null }): Promise<HostingGroupJoinResult> {
+  async joinHostingGroup(input: { code: string; name: string; serverId?: string | null; parkOnStop?: boolean }): Promise<HostingGroupJoinResult> {
     this.assertStopped();
     if (!input || typeof input !== 'object' || Array.isArray(input) || typeof input.code !== 'string' || typeof input.name !== 'string' ||
-        (input.serverId !== undefined && input.serverId !== null && typeof input.serverId !== 'string')) {
+        (input.parkOnStop !== undefined && typeof input.parkOnStop !== 'boolean') || (input.serverId !== undefined && input.serverId !== null && typeof input.serverId !== 'string')) {
       throw new Error('Invalid invite code or friend name');
     }
     const invite = decodeInvite(input.code);
@@ -1191,11 +1191,11 @@ export class SeedHostApplication {
         throw new Error('This server already belongs to another hosting group. Clear it explicitly before joining a different group.');
       }
     }
-    return this.operation('joinHostingGroup', () => this.enrollGroup({ code: input.code, invite, memberName, target }));
+    return this.operation('joinHostingGroup', () => this.enrollGroup({ code: input.code, invite, memberName, target, parkOnStop: input.parkOnStop }));
   }
 
   /** Redeem the pinned invitation, then persist the group's local association atomically (peers + binding or pending). */
-  private async enrollGroup(input: { code: string; invite: Invite; memberName: string; target: SavedServer | null }): Promise<HostingGroupJoinResult> {
+  private async enrollGroup(input: { code: string; invite: Invite; memberName: string; target: SavedServer | null; parkOnStop?: boolean }): Promise<HostingGroupJoinResult> {
     const previousPeers = this.saved.peers;
     const previousPending = this.saved.pendingGroups;
     const targetGroup = input.target ? input.target.group : undefined;
@@ -1208,7 +1208,7 @@ export class SeedHostApplication {
     this.saved.peers = [...previousPeers.filter((entry) => entry.fingerprint !== peer.fingerprint), peer];
     let serverId: string | null = null;
     if (input.target) {
-      input.target.group = { fingerprint: peer.fingerprint, parkOnStop: targetGroup?.parkOnStop ?? true };
+      input.target.group = { fingerprint: peer.fingerprint, parkOnStop: targetGroup?.parkOnStop ?? input.parkOnStop ?? true };
       serverId = input.target.id;
     } else {
       const bound = this.saved.servers.find((entry) => entry.group?.fingerprint === peer.fingerprint);
@@ -1216,7 +1216,7 @@ export class SeedHostApplication {
       else {
         const existing = this.saved.pendingGroups.find((entry) => entry.fingerprint === peer.fingerprint);
         this.saved.pendingGroups = [...this.saved.pendingGroups.filter((entry) => entry.fingerprint !== peer.fingerprint),
-          { fingerprint: peer.fingerprint, parkOnStop: existing?.parkOnStop ?? true, relayName: joined.relayName, since: existing?.since ?? Date.now() }];
+          { fingerprint: peer.fingerprint, parkOnStop: existing?.parkOnStop ?? input.parkOnStop ?? true, relayName: joined.relayName, since: existing?.since ?? Date.now() }];
       }
     }
     try { await this.persist(); }
@@ -1268,6 +1268,38 @@ export class SeedHostApplication {
 
   async createInviteFor(fingerprint: string) {
     return this.operation('createInviteFor', () => relayInviteFor(this.identity, this.requireRelay(), fingerprint));
+  }
+
+  async checkGroupDisband(id: string, fingerprint: string) {
+    const server = await this.editableServer(id);
+    if (server.group?.fingerprint !== fingerprint) throw new Error('The selected server’s group changed. Refresh before continuing.');
+    if (this.saved.servers.some(other => other !== server && other.group?.fingerprint === fingerprint)) throw new Error('Another local server uses this group. Disbanding is blocked to protect its hosting role.');
+    const peer = this.requireRelay();
+    let status;
+    try { status = await relayDisbandStatus(this.identity, peer); }
+    catch (error) { throw new Error('Group-wide disband is unavailable: only the group owner can do this, and the relay must be online and support verified revocation. No local detach was performed.', { cause: error }); }
+    if (this.selectedServer(id) !== server || server.group?.fingerprint !== fingerprint) throw new Error('The selected server changed.');
+    return status;
+  }
+
+  async disbandGroup(id: string, fingerprint: string) {
+    return this.operation('disbandGroup', async () => {
+      const status = await this.checkGroupDisband(id, fingerprint);
+      const server = this.selectedServer(id), previous = server.group;
+      if (!status.disbanded) {
+        try { await relayDisbandGroup(this.identity, this.requireRelay()); }
+        catch (error) { throw new Error('Disband was not verified. The group may already be revoked; check its status before retrying. The local association and all world files are retained.', { cause: error }); }
+      }
+      await this.editableServer(id);
+      if (server.group !== previous) throw new Error('The selected group changed after revocation. Refresh before continuing.');
+      const previousPending = this.saved.pendingGroups;
+      server.group = null;
+      this.saved.pendingGroups = previousPending.filter(group => group.fingerprint !== fingerprint);
+      try { await this.persist(); }
+      catch (error) { server.group = previous; this.saved.pendingGroups = previousPending; throw new Error('The group is revoked, but its local association could not be saved. Retry to verify revocation and finish local cleanup.', { cause: error }); }
+      await this.closeGameGateway();
+      return { disbanded: true, serverId: id, fingerprint };
+    });
   }
 
   async removeFriend(fingerprint: string) {

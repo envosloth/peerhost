@@ -8,7 +8,7 @@ import { friendName } from './relay-friends-store.js';
 
 /** Relay connections start with one of these frames; `park` and `claim` then run the ordinary transfer protocol. */
 export const RELAY_PROTOCOL_VERSION = 1;
-export type RelayOperation = 'status' | 'park' | 'claim' | 'join' | 'invite' | 'friends' | 'gateway-status' | 'game-tunnel' | 'public-status' | 'public-enable' | 'public-disable' | 'remove-friend' | 'invite-for';
+export type RelayOperation = 'status' | 'park' | 'claim' | 'join' | 'invite' | 'friends' | 'gateway-status' | 'game-tunnel' | 'public-status' | 'public-enable' | 'public-disable' | 'remove-friend' | 'invite-for' | 'disband' | 'disband-status';
 export const relayRequest = (op: RelayOperation) => ({ type: 'relay', version: RELAY_PROTOCOL_VERSION, op });
 
 export interface RelayCustody {
@@ -114,6 +114,17 @@ export async function relayFriends(identity: PeerIdentity, relay: RelayPeer): Pr
   if (owner !== null && (!hex(owner) || !members.some(m => m.fingerprint === owner))) throw new Error('Invalid group owner');
   if (reply.canManage === true && owner !== identity.fingerprint) throw new Error('Invalid group permissions');
   return { members, canManage: reply.canManage === true, owner: owner as string | null, custody: reply.custody as RelayFriendsCustody, holder: reply.holder === null ? null : friendName(reply.holder, 100) };
+}
+
+export async function relayDisbandStatus(identity: PeerIdentity, relay: RelayPeer): Promise<{disbanded: boolean}> {
+  const reply = await friendRequest(identity, relay, relayRequest('disband-status'));
+  if (Object.keys(reply).sort().join(',') !== 'disbanded,owner,type' || reply.type !== 'relay-disband-status' || reply.owner !== identity.fingerprint || typeof reply.disbanded !== 'boolean') throw new Error('Group revocation could not be verified');
+  return { disbanded: reply.disbanded };
+}
+
+export async function relayDisbandGroup(identity: PeerIdentity, relay: RelayPeer): Promise<void> {
+  const reply = await friendRequest(identity, relay, relayRequest('disband'));
+  if (Object.keys(reply).sort().join(',') !== 'owner,type' || reply.type !== 'relay-disbanded' || reply.owner !== identity.fingerprint || !(await relayDisbandStatus(identity, relay)).disbanded) throw new Error('Group may have been disbanded, but revocation could not be verified. Check status before retrying.');
 }
 
 export async function relayRemoveFriend(identity: PeerIdentity, relay: RelayPeer, fingerprint: string): Promise<void> {

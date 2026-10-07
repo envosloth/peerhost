@@ -12,7 +12,7 @@ function reset() {
 reset();
 contextBridge.exposeInMainWorld('dashboardFixture', {
   reset, read: () => clone(fixture), set: value => { for (const [k, v] of Object.entries(value)) fixture[k] = v; },
-  release: () => { fixture.held?.resolve(); fixture.held = null; fixture.heldFiles?.resolve(); fixture.heldFiles = null; fixture.heldFriend?.resolve(); fixture.heldFriend = null; },
+  release: () => { fixture.heldGroup?.resolve(); fixture.heldGroup = null; fixture.groupHeld=false; fixture.held?.resolve(); fixture.held = null; fixture.heldFiles?.resolve(); fixture.heldFiles = null; fixture.heldFriend?.resolve(); fixture.heldFriend = null; },
   // TEST-ONLY: reads the real OS clipboard so tests verify copy completion independently of the page's own claim.
   clipboardText: () => ipcRenderer.invoke('fixture:clipboard', 'read')
 });
@@ -66,6 +66,7 @@ contextBridge.exposeInMainWorld('seedhost', { call: async (method, payload) => {
     fixture.accountStatus = { ...fixture.accountStatus, username: payload.username };
     return clone(fixture.accountStatus);
   }
+  if (method === 'saveOnboarding') fixture.state.onboarding = {...payload,version:1,error:null};
   if (method === 'getState') return clone(fixture.state);
   if (method === 'selectServer') {
     fixture.state.server = fixture.serverMap[payload.id]; fixture.state.logs = [];
@@ -83,6 +84,12 @@ contextBridge.exposeInMainWorld('seedhost', { call: async (method, payload) => {
   if (method === 'playitStatus') return { state: 'unconnected' };
   if (method === 'alwaysOnStatus') return { running: false };
   if (method === 'managePlayer') { const d = fixture.dashboard[payload.id]; if (payload.action === 'kick') { d.players.sample = d.players.sample.filter(p => p.name !== payload.name); d.players.online = d.players.sample.length; } }
+  if (method === 'disbandGroup') {
+    const target=fixture.state;
+    if (fixture.holdGroupOp) {fixture.groupHeld=true;await new Promise(resolve=>{fixture.heldGroup={resolve};});}
+    if (!fixture.disbandReadbackMismatch) target.relay=null;
+    return {disbanded:true,serverId:payload.id,fingerprint:payload.fingerprint};
+  }
   if (method === 'saveServerSettings') Object.assign(fixture.dashboard[payload.id].settings, payload.settings);
   if (method === 'saveServerSchedule') { const jobs = fixture.dashboard[payload.id].schedules; const schedule = { ...payload.schedule, id: payload.schedule.id || 'job-' + (jobs.length + 1), serverId: payload.id, nextRunAt: null, lastRunAt: null, lastOutcome: null }; const i = jobs.findIndex(j => j.id === schedule.id); if (i >= 0) jobs[i] = schedule; else jobs.push(schedule); return clone(jobs); }
   if (method === 'deleteServerSchedule') { const d = fixture.dashboard[payload.id]; d.schedules = d.schedules.filter(j => j.id !== payload.scheduleId); return clone(d.schedules); }

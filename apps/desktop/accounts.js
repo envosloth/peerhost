@@ -65,7 +65,12 @@
     $('account-mode').textContent=mode==='register'?'Already have an account? Sign in':'New here? Create an account';
     for(const id of ['account-username','account-password','account-submit','account-mode','account-offline'])$(id).disabled=working;
     const setupStatus=$('setup-friends-status');
-    if(setupStatus) setupStatus.textContent=signedIn?`Signed in as @${status.username}. Open Friends to manage requests and hosting.`:'Open the Friends page to sign in, add friends by username and answer requests.';
+    if(setupStatus) setupStatus.textContent=signedIn?`Signed in as @${status.username}. Add friends and accept requests here; friendships do not grant hosting or world-file access.`:'Open the Friends page to sign in, add friends by username and answer requests.';
+    $('setup-friend-add-form').hidden=!signedIn||!friendSeamAvailable;
+    $('setup-open-friends').hidden=signedIn;
+    $('setup-friend-request-list').hidden=!signedIn;
+    for(const id of ['setup-friend-username','setup-friend-send'])$(id).disabled=!signedIn||!interactive||!friendSeamAvailable;
+    for(const b of $('setup-friend-request-list').querySelectorAll('button'))b.disabled=!interactive;
   }
   function renderFriendLists(){
     const signedIn=Boolean(status?.signedIn);
@@ -84,17 +89,17 @@
       renderHostingLists();
       return;
     }
-    const requestNodes=friendRequests.map(r=>{
+    const requestNodes=feedbackId=>friendRequests.map(r=>{
       const li=element('li','account-request'); li.dataset.friendRequest=r.id;
       li.append(element('p','','@'+r.from+' sent you a friend request.'), element('p','field-help','Accepting makes you friends in your app. It does not share hosting or world files.'));
       const actions=element('div','account-input-row');
       const accept=element('button','button button-primary button-small','Accept'); accept.type='button'; accept.dataset.friendAccept=r.id;
-      accept.addEventListener('click',()=>{ if(!accept.disabled) void acceptFriendRequest(r); });
+      accept.addEventListener('click',()=>{ if(!accept.disabled) void acceptFriendRequest(r,feedbackId); });
       const decline=element('button','text-button','Decline'); decline.type='button'; decline.dataset.friendDecline=r.id;
-      decline.addEventListener('click',()=>{ if(!decline.disabled) void declineFriendRequest(r); });
+      decline.addEventListener('click',()=>{ if(!decline.disabled) void declineFriendRequest(r,feedbackId); });
       actions.append(accept,decline); li.append(actions); return li;
     });
-    $('friend-request-list').replaceChildren(...(requestNodes.length?requestNodes:[friendEmpty('No friend requests waiting.')]));
+    for(const [list,feedback] of [['friend-request-list','account-friends-feedback'],['setup-friend-request-list','setup-friend-feedback']]){const nodes=requestNodes(feedback);$(list).replaceChildren(...(nodes.length?nodes:[friendEmpty('No friend requests waiting.')]));}
     const friendNodes=friends.map(f=>{
       const li=element('li','friend-item'); li.dataset.friendUsername=f.username;
       li.append(element('span','friend-name','@'+f.username));
@@ -158,8 +163,8 @@
     friendRequests=settled[0].value.filter(validFriendRequest); friends=settled[1].value.filter(validFriend);
     return true;
   }
-  async function acceptFriendRequest(r){
-    await withOp('account-friends-feedback', async current=>{
+  async function acceptFriendRequest(r,feedbackId='account-friends-feedback'){
+    await withOp(feedbackId, async current=>{
       const result=await window.seedhost.call('accountFriendAccept',{id:r.id});
       if(!current())return;
       if(result?.added!==true||!validUsername(result.username)||result.username!==r.from)throw new Error('The friend request could not be confirmed. Refresh and check before retrying.');
@@ -168,11 +173,11 @@
       if(!Array.isArray(friendsList)||!friendsList.some(f=>f?.username===result.username))throw new Error('The account directory did not confirm this friend. Refresh and check before retrying.');
       friends=friendsList.filter(validFriend); friendRequests=friendRequests.filter(q=>q.id!==r.id);
       renderFriendLists();
-      $('account-friends-feedback').textContent=`You and @${result.username} are now friends. This grants no hosting or world-file access; invite them to host from a server’s Multi-host page when you want to share.`;
+      $(feedbackId).textContent=`You and @${result.username} are now friends. This grants no hosting or world-file access; invite them to host from a server’s Multi-host page when you want to share.`;
     });
   }
-  async function declineFriendRequest(r){
-    await withOp('account-friends-feedback', async current=>{
+  async function declineFriendRequest(r,feedbackId='account-friends-feedback'){
+    await withOp(feedbackId, async current=>{
       const result=await window.seedhost.call('accountFriendDecline',{id:r.id});
       if(!current())return;
       if(result?.declined!==true||result.id!==r.id)throw new Error('The friend request could not be declined. Refresh and check before retrying.');
@@ -181,7 +186,7 @@
       if(!Array.isArray(requests)||requests.some(q=>q.id===r.id))throw new Error('The account directory did not confirm this decline. Refresh and check before retrying.');
       friendRequests=requests.filter(validFriendRequest);
       renderFriendLists();
-      $('account-friends-feedback').textContent=`Friend request from @${r.from} declined.`;
+      $(feedbackId).textContent=`Friend request from @${r.from} declined.`;
     });
   }
   async function removeFriend(username){
@@ -345,6 +350,7 @@
     finally{credentials.password='';working=false;render();}
   });
   bindFriendAdd('friend-add-form','friend-add-username','friend-add-submit','account-friends-feedback');
+  bindFriendAdd('setup-friend-add-form','setup-friend-username','setup-friend-send','setup-friend-feedback');
   bindFriendAdd('hosting-add-form','hosting-add-username','hosting-add-submit','hosting-friend-feedback');
   $('friend-requests-refresh').addEventListener('click',()=>void refreshLists());
   $('hosting-requests-refresh').addEventListener('click',()=>void refreshLists());

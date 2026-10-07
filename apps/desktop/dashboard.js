@@ -73,7 +73,7 @@
   tunnelsBody.append(tunnelsScope, $('public-card'), $('player-gateway'), $('playit-panel'));
 
   const settingsBody = addPage('server-settings', 'Server settings', 'Properties & launch', 'i-settings');
-  const PROPERTY_FIELDS = [['motd', 'Message of the day', 'text', 200], ['server-port', 'Server port', 'number', null], ['max-players', 'Max players', 'number', null], ['difficulty', 'Difficulty', 'select', ['peaceful', 'easy', 'normal', 'hard']], ['gamemode', 'Game mode', 'select', ['survival', 'creative', 'adventure', 'spectator']], ['pvp', 'Player versus player', 'boolean', null], ['white-list', 'Whitelist', 'boolean', null], ['view-distance', 'View distance (chunks)', 'number', null], ['simulation-distance', 'Simulation distance (chunks)', 'number', null]];
+  const PROPERTY_FIELDS = [['motd', 'Message of the day', 'text', 200], ['server-port', 'Server port', 'number', null], ['max-players', 'Max players', 'number', null], ['difficulty', 'Difficulty', 'select', ['peaceful', 'easy', 'normal', 'hard']], ['gamemode', 'Game mode', 'select', ['survival', 'creative', 'adventure', 'spectator']], ['pvp', 'Player versus player', 'boolean', null], ['white-list', 'Whitelist', 'boolean', null], ['view-distance', 'View distance (chunks)', 'number', null], ['simulation-distance', 'Simulation distance (chunks)', 'number', null], ['hardcore', 'Hardcore (permanent death; takes effect on next start)', 'boolean', null], ['spawn-protection', 'Spawn protection radius (0 disables)', 'number', null], ['allow-flight', 'Allow flight (avoid kicking flight-enabled players)', 'boolean', null]];
   settingsBody.insertAdjacentHTML('beforeend', '<section class="card dashboard-card"><h2>Server properties</h2><p id="properties-help" class="field-help"></p><form id="properties-form" class="dashboard-form"></form><p id="properties-feedback" class="field-help" role="status"></p></section>');
   const propertyInput = field => $('property-' + field);
   const propertiesDirty = new Set();
@@ -117,6 +117,7 @@
   $('properties-form').addEventListener('input', event => { const field = event.target.dataset.field; if (field) { propertiesDirty.add(field); propertyRevisions.set(field, (propertyRevisions.get(field) || 0) + 1); } renderProperties(); });
   $('properties-form').addEventListener('submit', async event => {
     event.preventDefault(); if ($('properties-save').disabled) return;
+    if (PROPERTY_FIELDS.some(([field, , kind]) => kind === 'number' && propertiesDirty.has(field) && propertyInput(field).value.trim() === '')) { $('properties-feedback').textContent = 'Enter a whole number for each edited numeric property; an empty field is not zero.'; return; }
     const changed = {}; for (const [field, value] of Object.entries(readProperties())) { const before = propertyValue(field, dashboard?.settings); if (value !== undefined && value !== before) changed[field] = value; }
     if (!Object.keys(changed).length) { $('properties-feedback').textContent = 'No property changes to save.'; return; }
     const revisions = new Map(propertyRevisions);
@@ -218,8 +219,24 @@
   const multiBody = $('peers-panel').querySelector('.page-inner');
   $('peers-tab').querySelector('.nav-text').textContent = 'Multi-host'; $('peers-tab').querySelector('.nav-sub').textContent = 'Group & world handoff';
   multiBody.querySelector('h1').textContent = 'Multi-host';
-  const multiScope = el('p', 'field-help multi-host-scope', 'App-wide hosting group: membership and invitations apply across this app, not a separate group per server yet — per-server scoping is provided by the core hosting service, not this page. World handoff controls below act on the selected server.'); multiScope.id = 'multi-host-scope';
+  const multiScope = el('p', 'field-help multi-host-scope', 'The selected server’s hosting group is shown here. Membership, invitations and world handoffs use that group, not an unrelated server’s group. Account friendships and this PC’s optional always-on role are app-wide. Disband revokes the entire selected group, not just its local association.'); multiScope.id = 'multi-host-scope';
   multiBody.querySelector('.page-header').after(multiScope, $('relay-card'));
+  const groupDanger = el('section', 'card dashboard-card'); groupDanger.innerHTML = '<h2>Disband hosting group</h2><p class="field-help">Group-wide revocation requires the group owner, an online updated relay, and this stopped world safely owned here. Older relays cannot verify disbanding; this never substitutes a local disconnect. Every member and outstanding invitation loses group access. Worlds, backups, accounts, friendships and Playit routes are kept; copies already held elsewhere cannot be erased. This group identity cannot be reused.</p><button id="disband-group" type="button" class="button button-danger">Disband group…</button><p id="disband-feedback" class="field-help" role="status"></p>'; multiBody.append(groupDanger);
+  function renderGroupActions() { $('disband-group').disabled = !stoppedOwned() || !state?.relay?.fingerprint; }
+  $('disband-group').addEventListener('click', async () => {
+    if ($('disband-group').disabled) return;
+    const id = selectedId(), fingerprint = state.relay.fingerprint, generation = selectionGeneration;
+    const current = () => selectedId() === id && generation === selectionGeneration;
+    $('disband-feedback').textContent = 'Checking group-wide revocation…';
+    let result;
+    const ok = await hooks.runAction('disbandGroup', { id, fingerprint }, value => { result = value; });
+    if (!current()) return;
+    if (!ok) { $('disband-feedback').textContent = 'Disband not confirmed or cancelled. No local disconnect is claimed; check the error above before retrying.'; return; }
+    const saved = await window.seedhost.call('getState').catch(() => null);
+    if (!current()) return;
+    $('disband-feedback').textContent = result?.disbanded === true && result.serverId === id && result.fingerprint === fingerprint && saved?.server?.id === id && saved.relay === null ? 'Verified disband and local group removal. Worlds, backups and account friendships are kept.' : 'Group removal could not be confirmed. Refresh and check the relay before retrying.';
+  });
+  const optionalRole = el('section', 'card dashboard-card'); optionalRole.innerHTML = '<h2>Always-on PC <span class="optional-tag">optional</span></h2><p id="multi-always-on-help" class="field-help">Off by default for new groups. Group control works while this app is open without a player gateway. This PC’s always-on role is app-wide; enabling or disabling it can affect other groups using this helper, not your separate local Playit routes. Existing opt-ins are kept.</p><p id="multi-always-on-status" class="field-help" role="status">Not checked</p><div class="page-actions"><button id="multi-always-on-enable" type="button" class="button">Enable this PC’s always-on role</button><button id="multi-always-on-disable" type="button" class="button">Disable this PC’s always-on role</button></div>'; multiBody.append(optionalRole);
 
   const schedulerBody = addPage('scheduler', 'Scheduler', 'Jobs while app is open', 'i-settings');
   schedulerBody.innerHTML += '<section class="card dashboard-card"><p id="scheduler-help" class="field-help">Intervals run only while this app is open. These are not Windows scheduled tasks. No start jobs: backups require a stopped, owned world; stop and command jobs require a running, owned server.</p><ul id="schedule-list" class="dashboard-list" aria-label="Server schedules"></ul><h2 id="schedule-form-title">New schedule</h2><form id="schedule-form" class="dashboard-form"><div><label for="schedule-name">Name</label><input type="text" id="schedule-name" maxlength="80" required autocomplete="off"></div><div><label for="schedule-action">Action</label><select id="schedule-action"><option value="backup">Save backup</option><option value="stop">Stop server</option><option value="command">Console command</option></select></div><div id="schedule-command-field" hidden><label for="schedule-command">One console command</label><input type="text" id="schedule-command" maxlength="4096" autocomplete="off" spellcheck="false"></div><div><label for="schedule-interval">Interval (minutes)</label><input id="schedule-interval" type="number" min="1" step="1" value="60" required></div><label class="inline-check"><input id="schedule-enabled" type="checkbox" checked> Enabled</label><div class="page-actions"><button id="schedule-save" type="submit" class="button button-primary">Save schedule</button><button id="schedule-cancel" type="button" class="button" hidden>Cancel edit</button></div></form><p id="schedule-feedback" class="field-help" role="status"></p></section>';
@@ -307,8 +324,8 @@
   function renderDashboard() {
     renderConsole(); renderPlayers(); renderSchedules(); renderProperties();
     const p = dashboard?.performance;
-    $('performance-cpu').textContent = sampled(p?.cpuPercent) ? `${p.cpuPercent}%` : 'Unavailable';
-    $('performance-memory').textContent = sampled(p?.memoryMiB) ? `${p.memoryMiB} MiB` : 'Unavailable';
+    $('performance-cpu').textContent = sampled(p?.cpuPercent) ? `${Number(p.cpuPercent.toFixed(2))}%` : 'Unavailable';
+    $('performance-memory').textContent = sampled(p?.memoryMiB) ? `${Number(p.memoryMiB.toFixed(2))} MiB` : 'Unavailable';
     $('performance-uptime').textContent = sampled(p?.uptimeSeconds) ? `${Math.floor(p.uptimeSeconds)} s` : 'Unavailable';
     $('performance-pid').textContent = sampled(p?.pid) ? String(p.pid) : 'Unavailable';
     performanceNotice.textContent = p?.error || (p?.sampledAt ? `Sampled ${new Date(p.sampledAt).toLocaleString()}` : 'No process sample is available.');
@@ -463,9 +480,10 @@
     state = next; blocked = busy;
     if (selectedId() !== dashboardId) {
       selectionGeneration++;
-      dashboardRequest++; dashboardInFlight = false; dashboard = null; dashboardId = selectedId(); requestedAt = 0; propertiesDirty.clear(); resetFiles(); resetSchedule(); $('schedule-feedback').textContent = ''; $('player-feedback').textContent = ''; renderDashboard();
+      dashboardRequest++; dashboardInFlight = false; dashboard = null; dashboardId = selectedId(); requestedAt = 0; propertiesDirty.clear(); resetFiles(); resetSchedule(); $('schedule-feedback').textContent = ''; $('player-feedback').textContent = ''; $('disband-feedback').textContent = ''; renderDashboard();
     }
     syncRoute();
+    renderGroupActions();
     if (!['home', 'friends', 'settings'].includes(currentPage) && !blocked && !dashboardInFlight && Date.now() - requestedAt >= 1000) void refreshDashboard();
     renderConsole();
   }

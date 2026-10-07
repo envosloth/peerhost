@@ -167,18 +167,17 @@ test('signed-out guide friends stage opens the Friends page and surfaces the sig
   assert.equal(await page.evaluate(() => document.activeElement.id), 'account-open', 'focus returns to the sign-in call to action');
 });
 
-test('signed-in guide friends stage opens the ordinary Friends page; hosting invitations stay in Multi-host', async t => {
+test('signed-in guide friends stage offers inline usernames; hosting invitations stay in Multi-host', async t => {
   const state = { ...appState(), relay: { fingerprint: 'c'.repeat(64), name: 'Home group', parkOnStop: true },
     account: { status: { configured: true, signedIn: true, online: true, username: 'alex', detail: 'Signed in · relay.example' },
       requests: [{ id: 'a'.repeat(36), from: 'sam', group: 'Sam’s group', expiresAt: Date.now() + 3600000 }] } };
   const page = await renderer(t, state);
   await page.locator('[data-setup-step="friends"]').click(); await settled(page);
   assert.equal(await page.locator('#setup-friends #account-card').count(), 0, 'the guide never hosts the account card');
-  assert.equal(await page.locator('#setup-friends #setup-open-friends').isVisible(), true);
-  await page.locator('#setup-open-friends').click();
-  await page.waitForFunction(() => !document.querySelector('#setup-dialog').open);
-  assert.equal(await page.locator('#friends-panel #account-card').isVisible(), true);
-  assert.equal(await page.locator('#friend-add-form').isVisible(), true, 'add a friend by username is available on the Friends page');
+  assert.equal(await page.locator('#setup-friend-add-form').isVisible(), true);
+  assert.equal(await page.locator('#setup-open-friends').isVisible(), false, 'signed-in users never need to leave the guide to add a friend');
+  assert.equal(await page.locator('#setup-dialog').isVisible(), true);
+  assert.equal(await page.locator('#friends-panel #account-card').count(), 1, 'the ordinary account card stays in Friends');
   assert.equal(await page.locator('#friends-panel #hosting-request-list').count(), 0, 'hosting invitations stay out of the ordinary Friends context');
   assert.equal(await page.locator('#peers-panel #hosting-request-list').count(), 1, 'hosting invitations live in Multi-host');
   assert.equal(await page.locator('#setup-friends #friends-controls').count(), 0, 'code controls are never moved into the guide');
@@ -261,16 +260,12 @@ test('modal keeps errors, close and navigation on-screen at both sizes; polling 
   await page.locator('[data-setup-step="friends"]').click(); await settled(page);
   assert.equal(await page.locator('#setup-friends #account-card').count(), 0, 'the guide never hosts the account card');
   assert.equal(await page.locator('#setup-friends #friends-controls').count(), 0, 'legacy code controls stay outside the guide');
-  // The guide hands off to the Friends page; its add-by-username control survives polling while focused.
-  await page.locator('#setup-open-friends').click();
-  await page.waitForFunction(() => !document.querySelector('#setup-dialog').open);
-  await page.waitForFunction(() => document.activeElement?.id === 'friend-add-username');
-  await page.locator('#friend-add-username').fill('keyboard_user');
+  // Inline username controls remain attached and focused during polling.
+  await page.locator('#setup-friend-username').focus();
+  await page.locator('#setup-friend-username').fill('keyboard_user');
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange'))); await settled(page);
-  assert.equal(await page.evaluate(() => document.activeElement.id), 'friend-add-username', 'polling must not detach focused username controls');
-  assert.equal(await page.locator('#friend-add-username').inputValue(), 'keyboard_user', 'polling preserves typed username input');
-  await page.locator('#nav-setup').click();
-  await page.waitForFunction(() => document.querySelector('#setup-dialog').open);
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'setup-friend-username', 'polling must not detach focused guide username controls');
+  assert.equal(await page.locator('#setup-friend-username').inputValue(), 'keyboard_user', 'polling preserves typed guide username input');
   for (const [width, height] of [[1000, 700], [1240, 860]]) {
     await page.setViewportSize({ width, height });
     for (const stage of ['server', 'runtime', 'friends', 'gateway', 'ready']) {

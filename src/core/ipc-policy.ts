@@ -10,7 +10,7 @@ import { validateSimpleProfileInput } from './java-arguments.js';
 const NO_PAYLOAD=new Set(['accountFriends','accountFriendRequests','accountStartGroup','accountStatus','accountRequests','accountLogout','playitStatus','playitImport','playitCheck','playitCreate','playitDisconnect','playitSetup','getState','importServer','createSnapshot','startServer','stopServer','startPeerListener','cleanUp','parkAtRelay','claimFromRelay','checkRelay','exportClientPack','createInvite','listFriends','listSnapshots','listServerVersions','discoverJava','pickJava','checkGameGateway','alwaysOnStatus','alwaysOnDisable','alwaysOnNewCode',
   // Window chrome acts only on the trusted app window.
   'getWindowState','windowMinimize','windowToggleFullscreen','windowClose','quitApp']);
-const METHODS=new Set([...DASHBOARD_METHODS,...NO_PAYLOAD,'publicAddressStatus','publicAddressEnable','publicAddressDisable','publicAddressOpenApproval','accountUpdateProfile','accountRegister','accountLogin','accountSend','accountAccept','accountDecline','accountFriendSend','accountFriendAccept','accountFriendDecline','accountFriendRemove','removeFriend','saveProfile','sendCommand','saveSettings','addPeer','sendSnapshot','handoff','recoverStopped','saveRelay','addMods','removeMod','searchMods','installMod','saveModTarget','openModPage','previewInvite','joinWithInvite','saveOnboarding','restoreSnapshot','createServer','configureSimpleProfile','saveGameGateway','openSetupLink','selectServer','deleteServer','alwaysOnEnable','pairAlwaysOn','setupFabricMods','searchSetupMods']);
+const METHODS=new Set([...DASHBOARD_METHODS,...NO_PAYLOAD,'disbandGroup','publicAddressStatus','publicAddressEnable','publicAddressDisable','publicAddressOpenApproval','accountUpdateProfile','accountRegister','accountLogin','accountSend','accountAccept','accountDecline','accountFriendSend','accountFriendAccept','accountFriendDecline','accountFriendRemove','removeFriend','saveProfile','sendCommand','saveSettings','addPeer','sendSnapshot','handoff','recoverStopped','saveRelay','addMods','removeMod','searchMods','installMod','saveModTarget','openModPage','previewInvite','joinWithInvite','saveOnboarding','restoreSnapshot','createServer','configureSimpleProfile','saveGameGateway','openSetupLink','selectServer','deleteServer','alwaysOnEnable','pairAlwaysOn','setupFabricMods','searchSetupMods']);
 function boundedString(v:unknown,max:number):v is string{return typeof v==='string'&&v.length<=max&&!v.includes('\0');}
 function fingerprint(v:unknown):v is string{return typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);}
 export interface TrustedIpcContext {senderId:number;expectedSenderId:number;isMainFrame:boolean}
@@ -49,6 +49,9 @@ export function validateCall(method:unknown,payload:unknown,senderUrl:string,exp
     case 'accountFriendAccept':case 'accountFriendDecline':
       if(Object.keys(p).join(',')!=='id'||typeof p.id!=='string'||!/^[a-f0-9-]{36}$/.test(p.id))throw new Error('Invalid friend request');
       return {id:p.id};
+    case 'disbandGroup':
+      if(Object.keys(p).sort().join(',')!=='fingerprint,id'||!isServerId(p.id)||!fingerprint(p.fingerprint))throw new Error('Invalid server group');
+      return {id:p.id,fingerprint:p.fingerprint};
     case 'removeFriend':
       if(Object.keys(p).join(',')!=='fingerprint'||!fingerprint(p.fingerprint))throw new Error('Invalid friend');
       return {fingerprint:p.fingerprint};

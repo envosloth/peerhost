@@ -14,6 +14,8 @@ export interface RelayConfig {
   memberInvites?: boolean;
   /** Appointed locally; never inferred from invitation order or the current world holder. */
   owner?: string;
+  /** Permanent revocation tombstone; only this former owner may read disband status. */
+  disbandedBy?: string;
   advertise?: { host: string; port: number };
   /** Token digests only, for same-certificate retry after a lost join response. */
   redeemed?: Record<string, { fingerprint: string; expiresAt: number }>;
@@ -42,6 +44,7 @@ export async function readRelayConfig(root: string, defaultName: string): Promis
         value.history.some((id) => !fingerprintOK(id)) || (value.name !== undefined && !friendName(value.name, 100)) ||
         (value.memberInvites !== undefined && typeof value.memberInvites !== 'boolean') ||
         (value.owner !== undefined && (!fingerprintOK(value.owner) || !value.trusted.some(m => m.fingerprint === value.owner))) ||
+        (value.disbandedBy !== undefined && (!fingerprintOK(value.disbandedBy) || value.trusted.length !== 0 || value.owner !== undefined)) ||
         (value.advertise !== undefined && !validAdvertise(value.advertise)) ||
         (value.redeemed !== undefined && (!value.redeemed || Array.isArray(value.redeemed) || typeof value.redeemed !== 'object' ||
           Object.entries(value.redeemed).some(([hash, entry]) => !fingerprintOK(hash) || !fingerprintOK(entry?.fingerprint) || !Number.isSafeInteger(entry.expiresAt))))) throw new Error();
