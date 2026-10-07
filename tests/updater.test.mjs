@@ -51,11 +51,21 @@ function releasesServer(shape) {
       response.writeHead(200, { 'content-type': 'application/json', 'content-length': body.length });
       return response.end(body);
     }
+    // GitHub serves release assets through a redirect to a CDN URL that carries signed query parameters,
+    // so the fixture does the same: the clean /dl/ URL 302s to a query-carrying /cdn/ URL.
     if (request.url === `/dl/${shape.name}`) {
+      response.writeHead(302, { location: `${base}/cdn/${shape.name}?sig=fixture&jwt=fixture-token` });
+      return response.end();
+    }
+    if (request.url?.startsWith(`/cdn/${shape.name}?`)) {
       response.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': shape.bytes.length });
       return response.end(shape.bytes);
     }
     if (request.url === '/dl/SHA256SUMS.txt') {
+      response.writeHead(302, { location: `${base}/cdn/SHA256SUMS.txt?sig=fixture&jwt=fixture-token` });
+      return response.end();
+    }
+    if (request.url?.startsWith('/cdn/SHA256SUMS.txt?')) {
       const body = Buffer.from(`${shape.sha}  ${shape.name}\n`);
       response.writeHead(200, { 'content-type': 'text/plain', 'content-length': body.length });
       return response.end(body);

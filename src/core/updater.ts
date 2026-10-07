@@ -216,10 +216,11 @@ export class Updater {
     return new URL(raw).origin;
   }
 
-  private assertUrl(raw: string, hosts: string[]): URL {
+  private assertUrl(raw: string, hosts: string[], allowQuery = false): URL {
     const url = new URL(raw);
     const test = this.testOrigin();
-    if (url.username || url.password || url.hash || url.search) throw new Error('Update URL is not an allowed endpoint');
+    // Download hops may carry GitHub's signed CDN parameters; API requests and everything else may not.
+    if (url.username || url.password || url.hash || (!allowQuery && url.search)) throw new Error('Update URL is not an allowed endpoint');
     if (test) { if (url.origin !== test) throw new Error('Update URL left the allowed test origin'); return url; }
     if (url.protocol !== 'https:' || url.port !== '' || !hosts.includes(url.hostname)) throw new Error('Update URL is not an allowed endpoint');
     return url;
@@ -227,14 +228,14 @@ export class Updater {
 
   private headless(): string[] { return ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass']; }
 
-  private async readBounded(raw: string, hosts: string[], maxBytes: number, accept: string): Promise<Buffer> {
-    let url = this.assertUrl(raw, hosts);
+  private async readBounded(raw: string, hosts: string[], maxBytes: number, accept: string, allowQuery = false): Promise<Buffer> {
+    let url = this.assertUrl(raw, hosts, allowQuery);
     for (let hop = 0; hop < 4; hop++) {
       const response = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(30000), headers: { 'User-Agent': 'SeedHost-Updater', Accept: accept } });
       if (response.status >= 300 && response.status < 400) {
         const location = response.headers.get('location');
         if (!location) throw new Error('An update redirect is missing its destination');
-        url = this.assertUrl(new URL(location, url).href, hosts);
+        url = this.assertUrl(new URL(location, url).href, hosts, allowQuery);
         continue;
       }
       if (!response.ok) throw new Error(`The update service answered ${response.status}`);
@@ -248,14 +249,14 @@ export class Updater {
   }
 
   private async streamToFile(raw: string, destination: string, expectedSize: number, onProgress: (received: number) => void): Promise<void> {
-    let url = this.assertUrl(raw, ASSET_HOSTS);
+    let url = this.assertUrl(raw, ASSET_HOSTS, true);
     let response: Response | null = null;
     for (let hop = 0; hop < 4 && !response; hop++) {
       const candidate = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(60000), headers: { 'User-Agent': 'SeedHost-Updater', Accept: 'application/octet-stream' } });
       if (candidate.status >= 300 && candidate.status < 400) {
         const location = candidate.headers.get('location');
         if (!location) throw new Error('An update redirect is missing its destination');
-        url = this.assertUrl(new URL(location, url).href, ASSET_HOSTS);
+        url = this.assertUrl(new URL(location, url).href, ASSET_HOSTS, true);
         continue;
       }
       response = candidate;
@@ -284,7 +285,7 @@ export class Updater {
 
   private async expectedDigest(candidate: UpdateCandidate): Promise<string | null> {
     if (!candidate.checksum) return null;
-    const body = await this.readBounded(candidate.checksum.url, ASSET_HOSTS, MAX_CHECKSUM_BYTES, 'text/plain');
+    const body = await this.readBounded(candidate.checksum.url, ASSET_HOSTS, MAX_CHECKSUM_BYTES, 'text/plain', true);
     const text = body.toString('utf8');
     const zipName = path.basename(new URL(candidate.asset.url).pathname);
     if (/^[a-f0-9]{64}$/i.test(text.trim())) return text.trim().toLowerCase();
