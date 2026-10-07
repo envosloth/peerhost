@@ -126,6 +126,12 @@ Packaging creates a fresh unsigned Windows folder under `release/alpha-*`, check
 node tools/desktop-handoff-check.mjs --packaged="C:/absolute/path/to/SeedHost.exe"
 ```
 
+## Updates
+
+Packaged builds check the project's official [GitHub releases](https://github.com/envosloth/seedhost/releases) and can update themselves: open **Settings → App → Updates**, press **Check for updates**, then **Download update**. The download is verified against the release's published SHA-256 (`SHA256SUMS.txt`) before anything runs. **Restart & update** closes the app, replaces the files in the app's own folder with the verified download, and opens the app again. Updates install only from this project's releases, on Windows, in packaged builds; a development (source) run can check but not install. The build stays unsigned as described below.
+
+Release maintainers: `npm run package:windows` produces the folder under `release/alpha-*`; `node tools/package-release.mjs` then writes `release/SeedHost-<version>-win32-x64.zip` and `release/SHA256SUMS.txt` — the two assets the updater consumes. Keep the ZIP's internal top-level folder named `SeedHost-win32-x64`.
+
 ## Architecture and license
 
 Portable TypeScript/Node core; isolated sandboxed Electron renderer; narrow sender/frame-bound IPC; SQLite ownership ledger; SHA256 content-addressed snapshots; mutual certificate-pinned TLS; private identity encrypted by Electron `safeStorage` on Windows.

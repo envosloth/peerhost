@@ -16,6 +16,7 @@ import type { SimpleProfileInput } from '../../src/core/java-arguments.js';
 import type { ModSort } from '../../src/core/modrinth.js';
 import { onboardingChecks } from '../../src/core/onboarding.js';
 import { AlwaysOnHost } from '../../src/core/always-on.js';
+import { Updater } from '../../src/core/updater.js';
 import { PerServerPublicAddresses, playitClaim } from '../../src/core/public-address.js';
 const setupLinks: Record<string,string> = Object.freeze({
   eula:'https://www.minecraft.net/en-us/eula',
@@ -75,6 +76,9 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
       servers:async()=>(await backend.getState()).servers,
       reservedPorts:async()=>{const helper=await alwaysOn.status();return helper.running&&helper.gamePort!==null?[helper.gamePort]:[];}});
     await publicAddress.restore((await backend.getState()).servers);
+    // In-app updates: checks the official GitHub releases, downloads and verifies the Windows package,
+    // and stages the swap that runs after this app exits. SEEDHOST_UPDATE_ORIGIN redirects it for tests.
+    const updater=new Updater({root:path.join(root,'updates'),currentVersion:app.getVersion(),packaged:app.isPackaged,platform:process.platform,arch:process.arch,apiOrigin:process.env.SEEDHOST_UPDATE_ORIGIN||undefined});
     let publicSelectionEpoch=0;
     const image=nativeImage.createFromPath(fileURLToPath(new URL('../../../apps/desktop/icon.png',import.meta.url)));
     if(image.isEmpty())throw new Error('App icon could not be loaded');
@@ -323,6 +327,21 @@ Joining pins the relay certificate and authorizes this PC. Members of this group
         case 'claimFromRelay':if(await confirm('Claim the server from the relay?','The newest stored revision is copied into a new folder on this PC and this PC becomes the host. Old folders are kept. Nothing starts automatically; review the launch profile and executable/mod trust first.'))return backend.claimFromRelay();return;
         case 'cleanUp':if(await confirm('Delete old server copies and revisions?','This permanently deletes earlier managed server folders, interrupted transfers, and snapshot revisions older than the current one and its two parents. The current server folder and current revision are kept. Your original imported folder is never touched.'))return backend.cleanUp();return;
         case 'getWindowState':return windowState();
+        case 'updateStatus':return updater.status();
+        case 'updateCheck':return updater.check();
+        case 'updateDownload':return updater.download();
+        case 'updateInstall':{
+          if(!app.isPackaged)throw new Error('Updates install only in the packaged app');
+          if(process.platform!=='win32')throw new Error('Automatic install is available on Windows only');
+          const staged=updater.status().staged;
+          if(!staged)throw new Error('No verified update is staged yet; download an update first');
+          const state=await backend.getState();
+          if(state.busy||state.server?.state==='running'||state.server?.state==='starting')throw new Error('Stop the server before installing an update');
+          if(!await confirm('Restart and install Seed Hosting '+staged.version+'?','The app will close, replace its files with the downloaded, checksum-verified update and open again. Worlds, servers and settings are unchanged.'))return updater.status();
+          await updater.install();
+          void quit();
+          return updater.status();
+        }
         // Wayland tiling compositors may ignore native minimize requests; the tray keeps a hidden window recoverable.
         case 'windowMinimize':if(process.platform==='linux' && process.env.WAYLAND_DISPLAY)window.hide();else window.minimize();return windowState();
         case 'windowToggleFullscreen':window.setFullScreen(!window.isFullScreen());return windowState();
@@ -340,5 +359,7 @@ Joining pins the relay certificate and authorizes this PC. Members of this group
     Menu.setApplicationMenu(Menu.buildFromTemplate(applicationMenuTemplate(app.isPackaged,{show,quit:()=>{void quit();}})));
     if(app.isPackaged)window.webContents.on('devtools-opened',()=>window.webContents.closeDevTools());
     await window.loadFile(html);
+    // Quietly check for updates shortly after launch; the Settings card shows the result.
+    setTimeout(()=>{void updater.check().catch(()=>undefined);},4000);
   }).catch(error=>{console.error(error);dialog.showErrorBox('Seed Hosting startup failed',String(error));quitAllowed=true;app.quit();});
 }

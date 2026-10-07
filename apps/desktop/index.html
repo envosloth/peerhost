@@ -442,6 +442,13 @@
                 <label class="setting-row switch-row" for="start-at-login"><span class="setting-label">Start at login<small>Saved preference only in this alpha; this does not configure Windows startup.</small></span><input id="start-at-login" class="switch" type="checkbox" disabled></label>
                 <div class="setting-row setting-row-static"><span class="setting-label">Fullscreen<small>Use the title-bar button or F11. Esc returns to a borderless window.</small></span><kbd class="kbd">F11</kbd></div>
               </div>
+              <div class="card settings-card">
+                <div class="settings-card-head"><div><h2>Updates</h2><p class="field-help">Seed Hosting checks its official GitHub releases and can download, verify and install a newer version for you.</p></div><span id="update-badge" class="badge badge-neutral">Not checked</span></div>
+                <p id="update-version" class="field-help">Current version: —</p>
+                <p id="update-notes" class="field-help" hidden></p>
+                <div class="setting-row"><span class="setting-label">Version check<small>Downloads are verified against the published SHA-256 before anything is installed.</small></span><div class="update-buttons"><button id="update-check" type="button" class="button button-small">Check for updates</button><button id="update-download" type="button" class="button button-small button-primary" hidden>Download update</button><button id="update-restart" type="button" class="button button-small button-primary" hidden>Restart &amp; update</button></div></div>
+                <p id="update-feedback" class="field-help" role="status" aria-live="polite">Nothing checked yet.</p>
+              </div>
             </div>
             <div id="settings-savebar" class="savebar" hidden>
               <span id="settings-feedback" class="field-help" role="status">Preferences loaded from this PC.</span><button id="save-settings" type="submit" class="button button-small button-primary" disabled>Save settings</button>

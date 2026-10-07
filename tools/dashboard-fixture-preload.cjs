@@ -83,6 +83,7 @@ contextBridge.exposeInMainWorld('seedhost', { call: async (method, payload) => {
   if (method === 'publicAddressStatus') return { state: 'off', address: null, detail: 'needs-always-on' };
   if (method === 'playitStatus') return { state: 'unconnected' };
   if (method === 'alwaysOnStatus') return { running: false };
+  if (method === 'updateStatus' || method === 'updateCheck') return { current: '0.5.0-test', packaged: false, platform: 'win32', checkedAt: method === 'updateCheck' ? new Date().toISOString() : null, latest: null, upToDate: method === 'updateCheck', error: null, busy: null, downloading: null, staged: null };
   if (method === 'managePlayer') { const d = fixture.dashboard[payload.id]; if (payload.action === 'kick') { d.players.sample = d.players.sample.filter(p => p.name !== payload.name); d.players.online = d.players.sample.length; } }
   if (method === 'disbandGroup') {
     const target=fixture.state;

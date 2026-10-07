@@ -1516,10 +1516,65 @@
     }
     return select;
   }
+  // In-app updates: the main process owns every network and filesystem step; this only renders and polls.
+  let updateInfo = null, updatePoll = null;
+  function stopUpdatePoll() { if (updatePoll) { clearInterval(updatePoll); updatePoll = null; } }
+  function renderUpdates() {
+    const busy = updateInfo?.busy ?? null;
+    const downloading = updateInfo?.downloading ?? null;
+    const staged = updateInfo?.staged ?? null;
+    const latest = updateInfo?.latest ?? null;
+    $('update-version').textContent = updateInfo ? `Current version: ${updateInfo.current}${updateInfo.packaged ? '' : ' · development build — updates install in the packaged app'}` : 'Current version: —';
+    const badge = $('update-badge');
+    if (updateInfo?.error) badge.textContent = 'Check failed';
+    else if (busy === 'checking') badge.textContent = 'Checking…';
+    else if (downloading) badge.textContent = 'Downloading…';
+    else if (staged) badge.textContent = 'Ready to install';
+    else if (latest) badge.textContent = 'Update available';
+    else if (updateInfo?.upToDate) badge.textContent = 'Up to date';
+    else badge.textContent = 'Not checked';
+    $('update-notes').hidden = !latest?.notes;
+    if (latest?.notes) $('update-notes').textContent = String(latest.notes).replace(/\s+/g, ' ').slice(0, 320);
+    $('update-check').hidden = Boolean(downloading || staged);
+    $('update-check').disabled = Boolean(busy);
+    $('update-download').hidden = !latest || Boolean(downloading || staged);
+    $('update-download').disabled = Boolean(busy || staged);
+    $('update-restart').hidden = !staged;
+    const feedback = $('update-feedback');
+    if (downloading) feedback.textContent = `Downloading and verifying ${latest ? latest.version : 'the update'}… ${Math.floor(downloading.received / 1048576)} of ${Math.max(1, Math.floor(downloading.total / 1048576))} MB. The file is checked against its published SHA-256 before anything is installed.`;
+    else if (staged) feedback.textContent = `${staged.version} is downloaded and verified. “Restart & update” closes the app, replaces its files and opens it again.`;
+    else if (busy === 'checking') feedback.textContent = 'Checking the official releases…';
+    else if (updateInfo?.error) feedback.textContent = updateInfo.error;
+    else if (latest) feedback.textContent = `A newer version (${latest.version}) is available.`;
+    else if (updateInfo?.upToDate) feedback.textContent = 'This is the newest published version.';
+    else feedback.textContent = 'Nothing checked yet.';
+    if (downloading) { if (!updatePoll) updatePoll = setInterval(() => void refreshUpdates(), 1300); }
+    else stopUpdatePoll();
+  }
+  async function refreshUpdates() {
+    try { updateInfo = await window.seedhost.call('updateStatus'); } catch { updateInfo = null; }
+    renderUpdates();
+  }
+  $('update-check').addEventListener('click', async () => {
+    if ($('update-check').disabled) return;
+    try { updateInfo = await window.seedhost.call('updateCheck'); } catch (error) { $('update-feedback').textContent = errorMessage(error); }
+    renderUpdates();
+  });
+  $('update-download').addEventListener('click', async () => {
+    if ($('update-download').disabled) return;
+    try { updateInfo = await window.seedhost.call('updateDownload'); } catch { await refreshUpdates(); return; }
+    renderUpdates();
+  });
+  $('update-restart').addEventListener('click', async () => {
+    if ($('update-restart').disabled) return;
+    try { await window.seedhost.call('updateInstall'); } catch (error) { showError(errorMessage(error)); }
+  });
+  void refreshUpdates();
   selectPage = window.seedDashboard.bind({ runAction, refresh, showError });
   selectCategory = tabGroup(['appearance', 'network', 'app'], (n) => `settings-cat-${n}`, (n) => `settings-${n}`, (name) => {
     settingsCategory = name;
     $('settings-savebar').hidden = name === 'appearance' && !settingsDirty;
+    if (name === 'app') void refreshUpdates(); else stopUpdatePoll();
   });
   $('open-console').addEventListener('click', () => selectPage('console'));
   $('start-listener').addEventListener('click', () => {

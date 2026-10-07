@@ -58,3 +58,10 @@ test('window chrome controls take no payload and still require the trusted rende
   }
   assert.throws(()=>mod.validateCall('windowSetBounds',{x:0},renderer,renderer,trusted),/method/i);
 });
+test('in-app update operations take no payload and stay on the trusted main frame',()=>{
+  for(const method of ['updateStatus','updateCheck','updateDownload','updateInstall']){
+    assert.deepEqual(mod.validateCall(method,undefined,renderer,renderer,trusted),{},method);
+    assert.throws(()=>mod.validateCall(method,{},renderer,renderer,trusted),/payload/i,method+' rejects arguments');
+    assert.throws(()=>mod.validateCall(method,undefined,'https://attacker.invalid',renderer,trusted),/sender/i,method+' requires the trusted sender');
+  }
+});
