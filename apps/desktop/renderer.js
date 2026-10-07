@@ -1548,7 +1548,9 @@
     else if (latest) feedback.textContent = `A newer version (${latest.version}) is available.`;
     else if (updateInfo?.upToDate) feedback.textContent = 'This is the newest published version.';
     else feedback.textContent = 'Nothing checked yet.';
-    if (downloading) { if (!updatePoll) updatePoll = setInterval(() => void refreshUpdates(), 1300); }
+    // Keep polling while any operation runs (including the quiet launch check and a re-check that
+    // reported "already running"), so the card settles on its own instead of staying stale.
+    if (downloading || busy) { if (!updatePoll) updatePoll = setInterval(() => void refreshUpdates(), 1300); }
     else stopUpdatePoll();
   }
   async function refreshUpdates() {
@@ -1557,7 +1559,7 @@
   }
   $('update-check').addEventListener('click', async () => {
     if ($('update-check').disabled) return;
-    try { updateInfo = await window.seedhost.call('updateCheck'); } catch (error) { $('update-feedback').textContent = errorMessage(error); }
+    try { updateInfo = await window.seedhost.call('updateCheck'); } catch (error) { $('update-feedback').textContent = errorMessage(error); await refreshUpdates(); return; }
     renderUpdates();
   });
   $('update-download').addEventListener('click', async () => {
