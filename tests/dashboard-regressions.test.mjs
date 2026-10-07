@@ -58,7 +58,12 @@ function state(id = A, running = false, logs = []) {
 function data(id = A) { return { serverId: id, performance: { cpuPercent: null, memoryMiB: null, pid: null, uptimeSeconds: null, sampledAt: null, error: 'Server is not running' }, players: { online: null, max: null, sample: [], error: 'Server is not running' }, settings: { motd: 'World', pvp: 'true', 'max-players': '20' }, settingsError: null, schedules: [], scheduleError: null, logs: [] }; }
 async function harness(options = {}) {
   const d = dom(), dashboards = { [A]: data(A), [B]: data(B) }, calls = [];
-  const ctx = { document: d.document, console, Buffer, Date, Number, JSON, Object, Array, String, Math, Error, RegExp, Set, window: {} };
+  // Browser-faithful minimum for page-change notifications: the dashboard dispatches Event('seedhost-page-changed').
+  const windowListeners = new Map();
+  const ctx = { document: d.document, console, Buffer, Date, Number, JSON, Object, Array, String, Math, Error, RegExp, Set,
+    Event: class Event { constructor(type) { this.type = String(type); } },
+    window: { addEventListener: (type, fn) => { const list = windowListeners.get(type) || []; list.push(fn); windowListeners.set(type, list); },
+      dispatchEvent: event => { for (const fn of windowListeners.get(event.type) || []) fn(event); return true; } } };
   ctx.state = state(options.id || A, Boolean(options.running), []); ctx.bridgeReady = true; ctx.pendingMethod = null; ctx.refreshInFlight = null;
   ctx.$ = id => d.document.getElementById(id); ctx.isBusy = () => Boolean(ctx.pendingMethod || ctx.state.busy);
   ctx.showError = message => { ctx.$('error-text').textContent = message; }; ctx.ACTION_FAILURES = {}; ctx.errorMessage = e => e.message || String(e); ctx.invitationProblem = ctx.errorMessage; ctx.refreshFriends = async () => {};

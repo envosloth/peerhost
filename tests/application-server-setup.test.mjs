@@ -85,8 +85,8 @@ test('application creation locks preparation and adds a second server without di
   const library = await f.app.getState();
   assert.equal(library.servers.length, 2);
   assert.notEqual(library.server.id, before.id);
-  // The first server keeps its own lineage entry, folder and revision.
-  assert.deepEqual(library.servers.find(entry => entry.id === before.id), { id: before.id, name: before.name, active: false, state: 'offline', ownerName: 'this PC', configured: true, playerPort: 25565 });
+  // The first server keeps its own lineage entry, folder and revision (group: null = not bound to a hosting group yet).
+  assert.deepEqual(library.servers.find(entry => entry.id === before.id), { id: before.id, name: before.name, active: false, state: 'offline', ownerName: 'this PC', configured: true, playerPort: 25565, group: null });
   assert.ok((await readdir(before.serverDir)).includes('server.jar'), 'the first server keeps its own managed copy');
   const corrupt = await fixture(t, { tamper: true });
   await assert.rejects(corrupt.app.createServer(corrupt.input), /integrity/);

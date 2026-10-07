@@ -6,13 +6,15 @@ function reset() {
   const deviceId = 'a'.repeat(64);
   const make = (id, name, ownerName) => ({ id, name, state: 'offline', ownerName, serverDir: '/fixture/' + id, storeDir: '/fixture/store/' + id, snapshotId: id + '-backup', ownership: { state: 'owned', owner: deviceId }, profile: { executable: 'fixture-java', args: ['-Xmx2048M', '-jar', 'server.jar', 'nogui'] }, mods: { server: [], client: [] }, modTarget: { loader: 'fabric', gameVersion: '1.21.1' } });
   const alpha = make('alpha', 'Mossy Hollow', 'This PC'), bravo = make('bravo', 'Sky Islands', null);
-  fixture = { calls: [], serverMap: { alpha, bravo }, state: { version: 'renderer-fixture', deviceId, server: alpha, servers: [{ id: 'alpha', name: alpha.name, active: true, state: 'offline', ownerName: 'This PC', configured: true }, { id: 'bravo', name: bravo.name, active: false, state: 'offline', ownerName: null, configured: true }], peers: [], settings: {}, relay: null, logs: [], onboarding: { version: 1, step: 'ready', dismissed: true, completed: false, skipped: [], draft: { name: '', loader: 'vanilla', gameVersion: '', memoryMiB: 2048 }, error: null }, gateway: { enabled: false, localPort: 25565, state: 'off', detail: '' } }, dashboard: {}, files: {}, held: null, fail: null };
+  fixture = { calls: [], serverMap: { alpha, bravo }, state: { version: 'renderer-fixture', deviceId, server: alpha, servers: [{ id: 'alpha', name: alpha.name, active: true, state: 'offline', ownerName: 'This PC', configured: true, publicJoinAddress: { address: 'mossy-hollow.playit.gg:25565', reachability: 'unverified', source: 'playit', targetServerId: 'alpha' } }, { id: 'bravo', name: bravo.name, active: false, state: 'offline', ownerName: null, configured: true, publicJoinAddress: null }], peers: [], settings: {}, relay: null, logs: [], onboarding: { version: 1, step: 'ready', dismissed: true, completed: false, skipped: [], draft: { name: '', loader: 'vanilla', gameVersion: '', memoryMiB: 2048 }, error: null }, gateway: { enabled: false, localPort: 25565, state: 'off', detail: '' } }, dashboard: {}, files: {}, held: null, heldFriend: null, fail: null };
   for (const id of ['alpha', 'bravo']) fixture.dashboard[id] = { serverId: id, state: 'offline', performance: { pid: null, cpuPercent: null, memoryMiB: null, uptimeSeconds: null, sampledAt: null, error: null }, players: { online: null, max: null, sample: [], error: null }, settings: { motd: id + ' world', 'max-players': 20, difficulty: 'normal', gamemode: 'survival', pvp: true, 'white-list': false, 'view-distance': 10, 'simulation-distance': 10, 'server-port': 25565 }, schedules: [], logs: [id + ' log'] };
 }
 reset();
 contextBridge.exposeInMainWorld('dashboardFixture', {
   reset, read: () => clone(fixture), set: value => { for (const [k, v] of Object.entries(value)) fixture[k] = v; },
-  release: () => { fixture.held?.resolve(); fixture.held = null; fixture.heldFiles?.resolve(); fixture.heldFiles = null; }
+  release: () => { fixture.held?.resolve(); fixture.held = null; fixture.heldFiles?.resolve(); fixture.heldFiles = null; fixture.heldFriend?.resolve(); fixture.heldFriend = null; },
+  // TEST-ONLY: reads the real OS clipboard so tests verify copy completion independently of the page's own claim.
+  clipboardText: () => ipcRenderer.invoke('fixture:clipboard', 'read')
 });
 contextBridge.exposeInMainWorld('seedhost', { call: async (method, payload) => {
   fixture.calls.push({ method, payload: payload ?? null });
@@ -22,6 +24,43 @@ contextBridge.exposeInMainWorld('seedhost', { call: async (method, payload) => {
   if (method.includes('Window') || method.startsWith('window')) return ipcRenderer.invoke('fixture:window', method);
   if (method === 'accountStatus') return clone(fixture.accountStatus ?? {configured:false,signedIn:false,online:false,username:null,detail:'No directory configured'});
   if (method === 'accountRequests') return clone(fixture.accountRequests ?? []);
+  // TEST-ONLY friendship seam: simulates the accountFriend* IPC the parent merges; no real backend.
+  if (method === 'accountFriends') return clone(fixture.accountFriends ?? []);
+  if (method === 'accountFriendRequests') return clone(fixture.accountFriendRequests ?? []);
+  if (method === 'accountFriendSend') {
+    if (fixture.holdFriendOp === 'accountFriendSend') { await new Promise(resolve => { fixture.heldFriend = { resolve }; }); }
+    if (fixture.failFriendOp === 'accountFriendSend') throw new Error('TEST failure for ' + method);
+    fixture.friendSends = [...(fixture.friendSends ?? []), payload.username];
+    return clone(fixture.friendSendResult ?? { sent: true, username: payload.username, id: 'friend-sent-' + fixture.friendSends.length });
+  }
+  if (method === 'accountFriendAccept') {
+    if (fixture.holdFriendOp === 'accountFriendAccept') { await new Promise(resolve => { fixture.heldFriend = { resolve }; }); }
+    if (fixture.failFriendOp === 'accountFriendAccept') throw new Error('TEST failure for ' + method);
+    const request = (fixture.accountFriendRequests ?? []).find(r => r.id === payload.id);
+    if (!request) throw new Error('Unknown friend request');
+    fixture.accountFriendRequests = fixture.accountFriendRequests.filter(r => r.id !== payload.id);
+    fixture.accountFriends = [...(fixture.accountFriends ?? []), { username: request.from, since: 1720000000000 }];
+    return { added: true, username: request.from };
+  }
+  if (method === 'accountFriendDecline') {
+    if (fixture.holdFriendOp === 'accountFriendDecline') { await new Promise(resolve => { fixture.heldFriend = { resolve }; }); }
+    fixture.accountFriendRequests = (fixture.accountFriendRequests ?? []).filter(r => r.id !== payload.id);
+    return { declined: true, id: payload.id };
+  }
+  if (method === 'accountFriendRemove') {
+    if (fixture.failFriendOp === 'accountFriendRemove') throw new Error('TEST failure for ' + method);
+    fixture.accountFriends = (fixture.accountFriends ?? []).filter(f => f.username !== payload.username);
+    return { removed: true, username: payload.username };
+  }
+  if (method === 'accountSend') { fixture.hostInvites = [...(fixture.hostInvites ?? []), payload.username]; return { sent: true, username: payload.username }; }
+  if (method === 'accountStartGroup') { fixture.state.relay = fixture.state.relay ?? { name: 'Fixture group', fingerprint: 'c'.repeat(64), parkOnStop: true }; return { created: true }; }
+  if (method === 'accountAccept') {
+    const request = (fixture.accountRequests ?? []).find(r => r.id === payload.id);
+    fixture.accountRequests = (fixture.accountRequests ?? []).filter(r => r.id !== payload.id);
+    if (fixture.accountAcceptState) Object.assign(fixture.state, clone(fixture.accountAcceptState));
+    return clone(fixture.accountAcceptResult ?? { joined: true, group: request?.group });
+  }
+  if (method === 'accountDecline') { fixture.accountRequests = (fixture.accountRequests ?? []).filter(r => r.id !== payload.id); return { declined: true, id: payload.id }; }
   if (method === 'accountUpdateProfile') {
     if (fixture.profileResponseMismatch) return clone(fixture.accountStatus);
     fixture.accountStatus = { ...fixture.accountStatus, username: payload.username };

@@ -99,10 +99,12 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
       switch(method){
         case 'accountStartGroup':{
           const a=await accounts.status();if(!a.signedIn||!a.online||!a.username)throw new Error('Sign in first');
-          if((await backend.getState()).relay)throw new Error('This PC already belongs to a group');
-          await alwaysOn.enable(a.username+'’s group',(await backend.getState()).servers.map(server=>server.playerPort));
+          const state=await backend.getState();
+          if(state.relay)throw new Error('This PC already belongs to a group');
+          await alwaysOn.enable(a.username+'’s group',state.servers.map(server=>server.playerPort));
           const invite=await alwaysOn.ownerInvite(a.username,identity.fingerprint);
-          await backend.joinWithInvite({code:invite.code,name:a.username});
+          // Bind the group to the selected world when there is one; otherwise it is stored as this PC's group to use.
+          await backend.joinHostingGroup({code:invite.code,name:a.username,serverId:state.server?.id??null});
           return {created:true};
         }
         case 'accountStatus':return accounts.status();
@@ -114,6 +116,12 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         case 'accountSend':return accounts.send(p.username);
         case 'accountAccept':return accounts.accept(p.id);
         case 'accountDecline':return accounts.decline(p.id);
+        case 'accountFriends':return accounts.socialFriends();
+        case 'accountFriendRequests':return accounts.socialRequests();
+        case 'accountFriendSend':return accounts.socialSend(p.username);
+        case 'accountFriendAccept':return accounts.socialAccept(p.id);
+        case 'accountFriendDecline':return accounts.socialDecline(p.id);
+        case 'accountFriendRemove':return accounts.socialRemove(p.username);
         case 'removeFriend':{
           const friends=await backend.listFriends(),target=friends.members.find(m=>m.fingerprint===p.fingerprint);
           if(!friends.canManage||!target||target.you||target.fingerprint===friends.owner)throw new Error('Only the group owner can remove a friend');
@@ -165,8 +173,16 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         }
         case 'getState':{
           const state=await backend.getState();
-          const checks=onboardingChecks(state.onboarding,{...state,alwaysOn:await alwaysOn.status()});
-          return {...state,onboarding:{...state.onboarding,checks,completed:checks.ready==='complete'}};
+          const alwaysStatus=await alwaysOn.status();
+          const checks=onboardingChecks(state.onboarding,{...state,alwaysOn:alwaysStatus});
+          // The one public address points at this PC's always-on player gateway. It truthfully belongs only to
+          // worlds whose group is THIS always-on relay; every other card has no public address.
+          const pub=publicAddress.status();
+          const address=pub.address&&pub.state!=='off'&&pub.state!=='error'?pub.address:null;
+          const publicJoin=(entry:{id:string;group:{fingerprint:string}|null})=>address&&alwaysStatus.running&&entry.group&&entry.group.fingerprint===alwaysStatus.fingerprint
+            ?{address,reachability:(pub.state==='reachable'?'verified':'unverified') as 'verified'|'unverified',source:'playit' as const,targetServerId:entry.id}:null;
+          return {...state,servers:state.servers.map(entry=>({...entry,publicJoinAddress:publicJoin(entry)})),
+            onboarding:{...state.onboarding,checks,completed:checks.ready==='complete'}};
         }
         case 'alwaysOnStatus':return alwaysOn.status();
         case 'alwaysOnEnable':{

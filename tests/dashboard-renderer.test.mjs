@@ -27,15 +27,19 @@ const fixture = () => page.evaluate(() => window.dashboardFixture.read());
 const settle = () => page.waitForFunction(() => document.querySelector('#activity-message').textContent === 'Ready');
 async function set(value) { await page.evaluate(v => window.dashboardFixture.set(v), value); await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange'))); await settle(); }
 
-test('Friends and Multi-host expose only one movable username enrollment card even without a directory', async () => {
+test('Friends and Multi-host keep one account card in the Friends page without moving it between contexts', async () => {
   await reset(); await click('#friends-tab');
   assert.equal(await page.locator('#friend-code, #invite-code, #create-invite, #friends-intent-join, #friends-intent-invite').count(), 0, 'manual enrollment is removed, not hidden');
   assert.match(await page.locator('#account-directory-note').textContent(), /shared directory.*usernames/i);
   assert.equal(await page.locator('#account-open').isDisabled(), true);
+  assert.equal(await page.locator('#friends-panel #account-card').isVisible(), true);
+  assert.equal(await page.locator('#friends-panel #account-card').count(), 1);
   await click('#home-tab'); await click('#server-list [data-action="open"][data-id="alpha"]'); await click('#peers-tab');
-  assert.equal(await page.locator('#peers-panel #account-card').isVisible(), true);
+  assert.equal(await page.locator('#peers-panel #hosting-card').isVisible(), true);
   assert.equal(await page.locator('#peers-panel #friends-controls').isVisible(), true);
+  assert.equal(await page.locator('#peers-panel #account-card').count(), 0, 'the ordinary account card is never moved into hosting');
   assert.equal(await page.locator('#account-card').count(), 1);
+  assert.equal(await page.evaluate(() => Boolean(document.querySelector('#account-card')?.closest('#friends-panel'))), true);
   await click('#home-tab'); await click('#friends-tab');
   assert.equal(await page.locator('#friends-panel #account-card').isVisible(), true);
   assert.deepEqual(errors, []);
@@ -50,7 +54,6 @@ test('failed local uncertain ownership requires recovery, never self-takeover or
   assert.doesNotMatch(await page.locator('#server-action-hint').textContent(), /hosting.*right now|take over/i);
   assert.match(await page.locator('#server-action-hint').textContent(), /No server process is tracked here\. Confirm previous processes are stopped & recover local ownership/i);
   assert.doesNotMatch(await page.locator('#server-action-hint').textContent(), /This server is stopped/i);
-  assert.match(await page.locator('#marquee-host').textContent(), /local recovery/i);
   assert.equal(await page.locator('#recover-ownership').isVisible(), true);
   assert.equal(await page.locator('#recover-ownership').isEnabled(), true);
   await click('#peers-tab');
@@ -65,15 +68,18 @@ test('failed local uncertain ownership requires recovery, never self-takeover or
   }
 });
 
-test('Friends guide returns the single account card to its originating Multi-host workspace', async () => {
+test('the guide links to the Friends page without moving the account card or group controls', async () => {
   await reset(); const f = await fixture(); f.state.onboarding.step = 'friends'; await set({state:f.state});
   await click('#server-list [data-action="open"][data-id="alpha"]'); await click('#peers-tab');
   await click('#nav-setup');
-  await page.locator('#setup-friends-slot #account-card').waitFor({state:'visible'});
-  assert.equal(await page.locator('#setup-friends-slot #account-card').isVisible(), true);
-  await click('#setup-save-close');
+  await page.waitForFunction(() => !document.querySelector('#setup-friends').hidden);
+  assert.equal(await page.locator('#setup-friends-slot #account-card').count(), 0, 'the guide never adopts the account card');
+  assert.equal(await page.locator('#setup-friends #friends-controls').count(), 0, 'group controls stay in their workspace');
+  assert.equal(await page.locator('#peers-panel #account-card').count(), 0);
+  await click('#setup-open-friends');
   await page.waitForFunction(() => !document.querySelector('#setup-dialog').open);
-  assert.equal(await page.locator('#peers-panel #account-card').isVisible(), true);
+  assert.equal(await page.locator('#friends-panel').isVisible(), true, 'Open Friends lands on the Friends page');
+  assert.equal(await page.locator('#friends-panel #account-card').count(), 1);
   assert.equal(await page.locator('#account-card').count(), 1);
   await click('#home-tab'); await click('#friends-tab');
   assert.equal(await page.locator('#friends-panel #account-card').isVisible(), true);
@@ -96,7 +102,8 @@ test('global Friends and Settings sit below Home, outside server-only navigation
   assert.deepEqual(await page.locator('.nav-tabs > button').evaluateAll(nodes => nodes.filter(n => !n.hidden).map(n => n.id)), ['home-tab', 'friends-tab', 'settings-tab']);
   await click('#friends-tab');
   assert.equal(await page.locator('#friends-panel #account-card').isVisible(), true);
-  assert.equal(await page.locator('#friends-panel #friends-controls').count(), 1);
+  assert.equal(await page.locator('#friends-panel #friends-controls').count(), 0, 'hosting controls stay out of the ordinary Friends page');
+  assert.equal(await page.locator('#peers-panel #friends-controls').count(), 1);
   assert.equal(await page.locator('#server-workspace-header').isVisible(), false);
   await page.locator('#friends-tab').press('ArrowDown');
   assert.equal(await page.locator('#settings-panel').isVisible(), true);
@@ -187,12 +194,13 @@ test('Profile rejects a mismatched account response rather than reporting saved'
   assert.equal(await page.locator('#profile-current-password').inputValue(), '');
 });
 
-test('username invitations explain private control routes and stale-endpoint recovery before accepting', async () => {
+test('hosting invitations explain private control routes and stale-endpoint recovery before accepting', async () => {
   await reset();
   await page.evaluate(() => { window.dashboardFixture.set({accountStatus:{configured:true,signedIn:true,online:true,username:'fixture_user',detail:'Signed in'},accountRequests:[{id:'test-request',from:'owner',group:'Test group',controlEndpoint:{host:'192.168.1.50',port:8443,privateRoute:true,reachability:'unverified'}}]}); window.dispatchEvent(new Event('seedhost-account-changed')); });
-  await page.waitForFunction(() => document.querySelector('#account-inbox').textContent.includes('Test group'));
-  await click('#friends-tab');
-  const text=await page.locator('#account-inbox').textContent();
+  await click('#server-list [data-action="open"][data-id="alpha"]');
+  await click('#peers-tab');
+  await page.waitForFunction(() => document.querySelector('#hosting-request-list').textContent.includes('Test group'));
+  const text=await page.locator('#hosting-request-list').textContent();
   assert.match(text,/192\.168\.1\.50:8443/);
   assert.match(text,/private.*same network|same network.*private/i);
   assert.match(text,/Minecraft.*address.*not|not.*Minecraft.*address/i);
@@ -385,10 +393,11 @@ test('Multi-host reuses group/relay controls, explicitly distinguishes app-wide 
   assert.equal(await page.locator('#peers-tab .nav-text').textContent(), 'Multi-host'); await click('#peers-tab');
   assert.match(await page.locator('#multi-host-scope').textContent(), /app-wide.*group/i);
   assert.equal(await page.locator('#peers-panel #relay-card').count(), 1);
+  assert.equal(await page.locator('#peers-panel #hosting-card').count(), 1);
   assert.equal(await page.locator('#peers-panel #friends-controls').count(), 1);
-  assert.equal(await page.locator('#peers-panel #account-card').count(), 1);
+  assert.equal(await page.locator('#peers-panel #account-card').count(), 0);
   await click('#home-tab'); await click('#friends-tab');
-  assert.equal(await page.locator('#friends-panel #friends-controls').count(), 1);
+  assert.equal(await page.locator('#friends-panel #friends-controls').count(), 0);
   assert.equal(await page.locator('#friends-panel #account-card').count(), 1);
   assert.equal(await page.locator('#friend-code, #invite-code').count(), 0);
   await click('#home-tab'); await click('#server-list [data-action="open"][data-id="alpha"]'); await click('#peers-tab');
@@ -415,7 +424,7 @@ test('Tunnels retains public/playit/gateway controls without claiming separate t
   await reset(); await click('#server-list [data-action="open"][data-id="alpha"]');
   assert.equal(await page.locator('#tunnels-tab').count(), 1, 'Tunnels navigation exists'); await click('#tunnels-tab');
   for (const id of ['public-card', 'playit-panel', 'player-gateway']) assert.equal(await page.locator('#tunnels-panel #' + id).count(), 1, 'relocated ' + id);
-  assert.equal(await page.locator('#home-panel #join-help').count(), 1, 'join instructions live on Home');
+  assert.equal(await page.locator('#home-panel #join-help, #home-panel .marquee').count(), 0, 'the recap and join widgets are gone from Home');
   assert.match(await page.locator('#tunnels-scope').textContent(), /app-wide/i);
   await click('#playit-panel summary'); await click('#playit-check');
   await page.waitForFunction(() => window.dashboardFixture.read().calls.some(c => c.method === 'playitCheck'));

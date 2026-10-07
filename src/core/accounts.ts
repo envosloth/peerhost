@@ -42,7 +42,10 @@ export class AccountService {
       CREATE TABLE IF NOT EXISTS sessions(digest TEXT PRIMARY KEY, username TEXT NOT NULL REFERENCES accounts(username), fingerprint TEXT NOT NULL, expires INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS sessions_user ON sessions(username);
       CREATE TABLE IF NOT EXISTS requests(id TEXT PRIMARY KEY, sender TEXT NOT NULL, recipient TEXT NOT NULL, fingerprint TEXT NOT NULL, code TEXT NOT NULL, expires INTEGER NOT NULL);
-      CREATE INDEX IF NOT EXISTS requests_recipient ON requests(recipient);`);
+      CREATE INDEX IF NOT EXISTS requests_recipient ON requests(recipient);
+      CREATE TABLE IF NOT EXISTS friend_requests(id TEXT PRIMARY KEY, sender TEXT NOT NULL REFERENCES accounts(username), recipient TEXT NOT NULL REFERENCES accounts(username), expires INTEGER NOT NULL, UNIQUE(sender,recipient), CHECK(sender<>recipient));
+      CREATE INDEX IF NOT EXISTS friend_requests_recipient ON friend_requests(recipient);
+      CREATE TABLE IF NOT EXISTS account_friends(username TEXT NOT NULL REFERENCES accounts(username), friend TEXT NOT NULL REFERENCES accounts(username), since INTEGER NOT NULL, PRIMARY KEY(username,friend), CHECK(username<>friend));`);
     try {
       // Any certificate may reach account registration; this is a separate listener with no transfer APIs.
       this.listener = await listenPeer(this.identity,[],(socket,fp)=>{void this.handle(socket,fp);},{...options,authorizeCertificate:async()=> 'trusted'});
@@ -104,6 +107,55 @@ export class AccountService {
       return {username,token,expiresAt};
     }
     const username=this.session(p.token,fp);
+    if(['friend-send','friend-accept','friend-decline','friend-remove'].includes(op))this.limit('social:'+username,30);
+    if(op==='friend-list') {
+      if(Object.keys(p).join(',')!=='token')throw new Error('Invalid account request');
+      return {friends:db.prepare('SELECT friend AS username,since FROM account_friends WHERE username=? ORDER BY friend').all(username)};
+    }
+    if(op==='friend-inbox') {
+      if(Object.keys(p).join(',')!=='token')throw new Error('Invalid account request');
+      return {requests:db.prepare('SELECT id,sender AS "from",expires AS expiresAt FROM friend_requests WHERE recipient=? AND expires>? ORDER BY expires,id').all(username,Date.now()),
+        sent:db.prepare('SELECT id,recipient AS username,expires AS expiresAt FROM friend_requests WHERE sender=? AND expires>? ORDER BY expires,id').all(username,Date.now())};
+    }
+    if(op==='friend-send') {
+      if(Object.keys(p).sort().join(',')!=='token,username')throw new Error('Invalid account request');
+      const recipient=accountUsername(p.username);
+      if(recipient===username)throw new Error('You cannot add yourself');
+      if(!db.prepare('SELECT 1 FROM accounts WHERE username=?').get(recipient))throw new Error('That username does not exist');
+      db.prepare('DELETE FROM friend_requests WHERE expires<=?').run(Date.now());
+      if(db.prepare('SELECT 1 FROM account_friends WHERE username=? AND friend=?').get(username,recipient))throw new Error('Already friends');
+      if(db.prepare('SELECT 1 FROM friend_requests WHERE (sender=? AND recipient=?) OR (sender=? AND recipient=?)').get(username,recipient,recipient,username))throw new Error('A friend request is already waiting');
+      if(Number(db.prepare('SELECT COUNT(*) AS n FROM friend_requests WHERE sender=?').get(username)!.n)>=30 || Number(db.prepare('SELECT COUNT(*) AS n FROM friend_requests WHERE recipient=?').get(recipient)!.n)>=100)throw new Error('Too many pending friend requests');
+      const id=randomUUID();db.prepare('INSERT INTO friend_requests VALUES(?,?,?,?)').run(id,username,recipient,Date.now()+30*DAY);
+      return {sent:true,username:recipient,id};
+    }
+    if(op==='friend-accept'||op==='friend-decline') {
+      if(Object.keys(p).sort().join(',')!=='id,token'||typeof p.id!=='string'||! /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(p.id))throw new Error('Invalid friend request');
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const r=db.prepare('SELECT sender FROM friend_requests WHERE id=? AND recipient=? AND expires>?').get(p.id,username,Date.now());
+        if(!r)throw new Error('Friend request not found');
+        const sender=r.sender as string;
+        if(op==='friend-accept') {
+          for(const name of [username,sender])if(Number(db.prepare('SELECT COUNT(*) AS n FROM account_friends WHERE username=?').get(name)!.n)>=1000)throw new Error('Too many friends');
+          const since=Date.now();
+          db.prepare('INSERT INTO account_friends VALUES(?,?,?)').run(username,sender,since);
+          db.prepare('INSERT INTO account_friends VALUES(?,?,?)').run(sender,username,since);
+        }
+        db.prepare('DELETE FROM friend_requests WHERE id=?').run(p.id);db.exec('COMMIT');
+        return op==='friend-accept'?{added:true,username:r.sender}:{declined:true,id:p.id};
+      }catch(e){db.exec('ROLLBACK');throw e;}
+    }
+    if(op==='friend-remove') {
+      if(Object.keys(p).sort().join(',')!=='token,username')throw new Error('Invalid account request');
+      const friend=accountUsername(p.username);
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        if(!db.prepare('SELECT 1 FROM account_friends WHERE username=? AND friend=?').get(username,friend))throw new Error('Friend not found');
+        db.prepare('DELETE FROM account_friends WHERE (username=? AND friend=?) OR (username=? AND friend=?)').run(username,friend,friend,username);
+        db.exec('COMMIT');return {removed:true,username:friend};
+      }catch(e){db.exec('ROLLBACK');throw e;}
+    }
     if(op==='update-profile') {
       const keys=Object.keys(p).sort().join(',');
       if(keys!=='currentPassword,token,username'&&keys!=='currentPassword,newPassword,token,username')throw new Error('Invalid account request');
@@ -132,6 +184,10 @@ export class AccountService {
           db.prepare('UPDATE sessions SET username=? WHERE username=?').run(nextUsername,username);
           db.prepare('UPDATE requests SET sender=? WHERE sender=?').run(nextUsername,username);
           db.prepare('UPDATE requests SET recipient=? WHERE recipient=?').run(nextUsername,username);
+          db.prepare('UPDATE friend_requests SET sender=? WHERE sender=?').run(nextUsername,username);
+          db.prepare('UPDATE friend_requests SET recipient=? WHERE recipient=?').run(nextUsername,username);
+          db.prepare('UPDATE account_friends SET username=? WHERE username=?').run(nextUsername,username);
+          db.prepare('UPDATE account_friends SET friend=? WHERE friend=?').run(nextUsername,username);
           db.prepare('DELETE FROM accounts WHERE username=?').run(username);
         }
         if(newSecret!==undefined) {

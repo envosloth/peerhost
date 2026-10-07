@@ -25,11 +25,23 @@ export interface SavedServer {
   snapshotId: string;
   profile: LaunchProfile;
   ledgerFile: string;
+  /** The one hosting group this world belongs to; null means the world is hosted only by this PC. */
+  group: RelayConfig | null;
 }
 export interface SavedPeer { name: string; fingerprint: string; host: string; port: number }
-/** An always-on trusted peer that stores the server between hosts. Its endpoint lives in the matching peer entry. */
+/** An always-on trusted peer that stores ONE world between hosts. Its endpoint lives in the matching peer entry. */
 export interface RelayConfig { fingerprint: string; parkOnStop: boolean }
-export interface SavedState { version: 2; settings: Settings; servers: SavedServer[]; activeServerId: string | null; peers: SavedPeer[]; relay: RelayConfig | null }
+/** A hosting group this PC joined without any local copy of its world. Identified by the pinned relay fingerprint;
+ *  an explicit download/claim creates the new library server and consumes this entry. */
+export interface SavedPendingGroup { fingerprint: string; parkOnStop: boolean; relayName: string; since: number }
+export interface SavedState {
+  version: 2;
+  settings: Settings;
+  servers: SavedServer[];
+  activeServerId: string | null;
+  peers: SavedPeer[];
+  pendingGroups: SavedPendingGroup[];
+}
 
 export type LaunchProfileInput = { executable: string; args: string[]; startTimeoutSeconds?: number; stopTimeoutSeconds?: number };
 
@@ -38,6 +50,7 @@ function invalid(detail: string): never {
 }
 const isObject = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 const isAbsolutePath = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && path.isAbsolute(value) && !value.includes('\0');
+const isFingerprint = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 
 export function validTimeout(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= MIN_TIMEOUT_SECONDS && value <= MAX_TIMEOUT_SECONDS;
@@ -89,7 +102,7 @@ export const SERVER_ID_PATTERN = /^[a-f0-9]{32}$/;
 export function newServerId(): string { return randomUUID().replace(/-/g, ''); }
 export function isServerId(value: unknown): value is string { return typeof value === 'string' && SERVER_ID_PATTERN.test(value); }
 
-function validateSavedServer(value: unknown, index: number): SavedServer {
+function validateSavedServer(value: unknown, index: number, withGroup: boolean): SavedServer {
   if (!isObject(value)) invalid(`server ${index + 1}`);
   const saved = value;
   if (!isServerId(saved.id)) invalid(`server ${index + 1} id`);
@@ -98,11 +111,28 @@ function validateSavedServer(value: unknown, index: number): SavedServer {
   if (typeof saved.snapshotId !== 'string' || !/^[a-f0-9]{64}$/.test(saved.snapshotId)) invalid('server snapshotId');
   let profile: LaunchProfile;
   try { profile = validateLaunchProfile(saved.profile, true); } catch { invalid('server launch profile'); }
+  let group: RelayConfig | null = null;
+  if (withGroup && saved.group !== undefined && saved.group !== null) {
+    try { group = validateRelayConfig(saved.group); } catch { invalid(`server ${index + 1} hosting group`); }
+  }
   return { id: saved.id, name: saved.name, serverDir: saved.serverDir as string, storeDir: saved.storeDir as string,
-    snapshotId: saved.snapshotId, profile, ledgerFile: saved.ledgerFile as string };
+    snapshotId: saved.snapshotId, profile, ledgerFile: saved.ledgerFile as string, group };
 }
 
-/** Parse state.json without repairing it. State written by earlier alphas (single server, no launch timeouts) is migrated in memory. */
+function validatePendingGroup(value: unknown, index: number): SavedPendingGroup {
+  if (!isObject(value)) invalid(`pending hosting group ${index + 1}`);
+  if (!isFingerprint(value.fingerprint) || typeof value.parkOnStop !== 'boolean' ||
+      typeof value.relayName !== 'string' || !value.relayName.trim() || value.relayName.length > 100 || /\p{Cc}/u.test(value.relayName) ||
+      !Number.isSafeInteger(value.since) || (value.since as number) <= 0) invalid(`pending hosting group ${index + 1}`);
+  return { fingerprint: value.fingerprint, parkOnStop: value.parkOnStop, relayName: value.relayName, since: value.since as number };
+}
+
+/**
+ * Parse state.json without repairing it. Version 1 held a single server; version 2 is the current list form, which
+ * carries one hosting group PER SERVER (`server.group`) plus groups joined without a local world (`pendingGroups`).
+ * Legacy version-2 files kept ONE app-wide `relay`; those are migrated onto the old active world only — never onto
+ * every library world — and become a pending group when no world exists yet.
+ */
 export function parseSavedState(value: unknown): SavedState {
   if (!isObject(value) || (value.version !== 1 && value.version !== 2)) invalid('unsupported version');
   let settings: Settings;
@@ -111,16 +141,18 @@ export function parseSavedState(value: unknown): SavedState {
   const peers = value.peers.map((peer, index) => {
     try { return validatePeer(peer); } catch { return invalid(`peer ${index + 1}`); }
   });
+  // A legacy file is recognizable by the old app-wide relay field (or by being version 1); it never carries per-server groups.
+  const legacy = value.version === 1 || value.relay !== undefined;
   let servers: SavedServer[];
   let activeServerId: string | null;
   if (value.version === 1) {
-    // Every older alpha held exactly one server, and owning it was mandatory to host.
+    // Every v1 alpha held exactly one server, and owning it was mandatory to host.
     const single = value.server;
     if (single === null) { servers = []; activeServerId = null; }
-    else { const migrated = validateSavedServer({ ...(isObject(single) ? single : {}), id: newServerId() }, 0); servers = [migrated]; activeServerId = migrated.id; }
+    else { const migrated = validateSavedServer({ ...(isObject(single) ? single : {}), id: newServerId() }, 0, false); servers = [migrated]; activeServerId = migrated.id; }
   } else {
     if (!Array.isArray(value.servers) || value.servers.length > 200) invalid('servers must be a list');
-    servers = value.servers.map((entry, index) => validateSavedServer(entry, index));
+    servers = value.servers.map((entry, index) => validateSavedServer(entry, index, !legacy));
     if (new Set(servers.map((entry) => entry.id)).size !== servers.length) invalid('server ids must be unique');
     if (value.activeServerId === null || value.activeServerId === undefined) activeServerId = null;
     else if (!isServerId(value.activeServerId)) invalid('active server id');
@@ -128,8 +160,36 @@ export function parseSavedState(value: unknown): SavedState {
     if (activeServerId !== null && !servers.some((entry) => entry.id === activeServerId)) invalid('active server is missing from the library');
     if (activeServerId === null && servers.length > 0) invalid('a library with servers needs an active server');
   }
-  let relay: RelayConfig | null = null;
-  try { relay = validateRelayConfig(value.relay ?? null); } catch { invalid('relay'); }
-  if (relay && !peers.some((peer) => peer.fingerprint === relay.fingerprint)) invalid('relay is not a trusted peer');
-  return { version: 2, settings, servers, activeServerId, peers, relay };
+  let pendingGroups: SavedPendingGroup[];
+  if (legacy) {
+    if (value.version === 2) {
+      // Fail closed on an ambiguous hybrid: only legacy files (no per-server groups) may carry the old global relay.
+      const rawServers = Array.isArray(value.servers) ? value.servers : [];
+      const carriesGroups = rawServers.some((entry) => isObject(entry) && entry.group !== undefined && entry.group !== null);
+      const rawPending = value.pendingGroups;
+      if (carriesGroups || (rawPending !== undefined && (!Array.isArray(rawPending) || rawPending.length > 0))) invalid('relay cannot be combined with per-server hosting groups');
+    }
+    let relay: RelayConfig | null = null;
+    try { relay = validateRelayConfig(value.relay ?? null); } catch { invalid('relay'); }
+    if (relay && !peers.some((peer) => peer.fingerprint === relay.fingerprint)) invalid('relay is not a trusted peer');
+    pendingGroups = [];
+    if (relay) {
+      const target = activeServerId === null ? undefined : servers.find((entry) => entry.id === activeServerId);
+      if (target) target.group = { ...relay };
+      else pendingGroups = [{ fingerprint: relay.fingerprint, parkOnStop: relay.parkOnStop,
+        relayName: peers.find((peer) => peer.fingerprint === relay.fingerprint)?.name ?? 'Relay', since: Date.now() }];
+    }
+  } else {
+    if (value.pendingGroups !== undefined && !Array.isArray(value.pendingGroups)) invalid('pending hosting groups must be a list');
+    pendingGroups = (value.pendingGroups ?? []).map((entry, index) => validatePendingGroup(entry, index));
+    if (pendingGroups.length > 20) invalid('pending hosting groups must be a list');
+    if (new Set(pendingGroups.map((entry) => entry.fingerprint)).size !== pendingGroups.length) invalid('pending hosting groups must be unique');
+    for (const entry of servers) {
+      if (entry.group && !peers.some((peer) => peer.fingerprint === entry.group!.fingerprint)) invalid('a server hosting group is not a trusted peer');
+    }
+    for (const entry of pendingGroups) {
+      if (!peers.some((peer) => peer.fingerprint === entry.fingerprint)) invalid('a pending hosting group is not a trusted peer');
+    }
+  }
+  return { version: 2, settings, servers, activeServerId, peers, pendingGroups };
 }

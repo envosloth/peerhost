@@ -91,48 +91,6 @@
   };
   const setLed = (id, kind) => { $(id).className = kind ? `led led-${kind}` : 'led'; };
   const PROCESS_LABELS = { offline: 'Stopped', failed: 'Failed', running: 'Running', starting: 'Starting', stopping: 'Stopping' };
-  let renderedTicker = null;
-
-  // The marquee mirrors authoritative state at a glance; it never offers actions of its own.
-  function renderMarquee() {
-    const server = state?.server;
-    const ownership = server?.ownership;
-    const serverText = server ? PROCESS_LABELS[server.state] || 'Unknown' : 'Not set up';
-    setLed('marquee-server-led', server?.state === 'running' ? 'ok' : ['starting', 'stopping'].includes(server?.state) ? 'work' : server?.state === 'failed' ? 'bad' : '');
-    $('marquee-server').textContent = serverText;
-    setLed('nav-server-led', server?.state === 'running' ? 'ok' : ['starting', 'stopping'].includes(server?.state) ? 'work' : server?.state === 'failed' ? 'bad' : '');
-    const mine = ownership?.owner === state?.deviceId;
-
-    const hostText = !server ? '—' : !ownership || typeof ownership !== 'object' ? 'Unknown' : ownership.state === 'uncertain' ? mine && isStopped() ? 'Needs local recovery' : 'Needs checking' : ownership.state === 'offered' ? 'Handing over · not observed' : mine && ownership.state === 'hosting' && server.state === 'running' ? 'This PC' : mine && ownership.state === 'owned' && isStopped() ? 'Nobody · stopped' : 'Not observed';
-    setLed('marquee-host-led', !server ? '' : hostText === 'Unknown' ? 'bad' : ['Needs checking', 'Needs local recovery', 'Handing over · not observed'].includes(hostText) ? 'work' : mine ? 'ok' : 'info');
-    $('marquee-host').textContent = hostText;
-    setLed('marquee-group-led', state?.relay ? 'info' : '');
-    $('marquee-group').textContent = state?.relay ? state.relay.name : 'No group';
-    setLed('marquee-backup-led', server?.snapshotId ? 'ok' : '');
-    $('marquee-backup').textContent = server?.snapshotId ? 'Saved' : 'None yet';
-    setLed('device-led', bridgeReady ? 'ok' : 'bad');
-    setLed('listener-led', state?.peerEndpoint ? 'info' : '');
-    const port = server?.playerPort ?? 25565;
-    const address = state?.settings?.persistentAddress && state.settings.gatewayAddress ? state.settings.gatewayAddress : `localhost${port === 25565 ? '' : `:${port}`}`;
-    const mods = server?.mods ? server.mods.server.length + server.mods.client.length : 0;
-    const facts = [
-      ['Server', serverText], ['Hosting', hostText], ['Friends', state?.relay ? state.relay.name : 'No group'],
-      ['Latest backup', server?.snapshotId ? server.snapshotId.slice(0, 10) : 'None'], ['Mods', String(mods)],
-      ['Join at', address], ['Seed Hosting', 'Runs on your PCs · Nothing is shared unless you choose'],
-    ];
-    const signature = JSON.stringify(facts);
-    if (signature === renderedTicker) return;
-    renderedTicker = signature;
-    const items = [];
-    for (let copy = 0; copy < 4; copy++) { // Identical copies, even count: a -50% translate loops seamlessly.
-      for (const [label, value] of facts) {
-        const item = element('span', 'ticker-item', `${label} `);
-        item.append(element('b', '', value));
-        items.push(item);
-      }
-    }
-    $('ticker-track').replaceChildren(...items);
-  }
   // Opens every page / settings category that contains a control, so focus and errors land on something visible.
   let selectPage = () => {};
   let selectCategory = () => {};
@@ -334,24 +292,17 @@
     $('setup-ready-list').replaceChildren(...rows.map(([done, text]) => { const item = element('li', done ? 'is-done' : '', text); return item; }));
     $('setup-ready-copy').textContent = state?.onboarding?.completed && optional.every(check => check === 'complete' || check === 'skipped') ? 'Setup is complete. You can reopen this guide any time from the sidebar.' : 'Finish your server and memory, then either set up Friends and the always-on PC or skip those optional steps. Nothing is falsely marked done.';
   }
-  function restoreAccountCard() {
-    const anchor = $('peers-tab').getAttribute('aria-selected') === 'true' ? $('relay-card') : $('friends-home');
-    anchor.before($('account-card'));
-  }
   function renderSetup() {
     const blocked = !bridgeReady || isBusy();
     $('nav-setup').disabled = !bridgeReady;
-    for (const id of ['create-server-empty', 'import-server-empty']) $(id).disabled = blocked;
+    for (const id of ['create-server-empty', 'import-server-empty', 'setup-open-friends']) $(id).disabled = blocked;
     if (!setupAutoChecked && bridgeReady) {
       setupAutoChecked = true;
       if (!state.server && state.onboarding && !state.onboarding.dismissed && !state.onboarding.completed) queueMicrotask(() => openSetup());
     }
     if (!$('setup-dialog').open || !setupDraft) return;
     const step = setupDraft.step, server = state.server;
-    // The guide's Friends stage hosts the username account flow (accounts.js binds by element id, so the node is safe to
-    // move). Group membership controls stay in their workspace; enrollment is username-only.
-    if (step === 'friends') { if ($('account-card').parentElement !== $('setup-friends-slot')) $('setup-friends-slot').append($('account-card')); }
-    else if ($('account-card').parentElement === $('setup-friends-slot')) restoreAccountCard();
+    // The guide never moves the account card: Friends and hosting stay in their own workspaces.
     for (const panel of document.querySelectorAll('[data-setup-panel]')) panel.hidden = panel.dataset.setupPanel !== step;
     for (const button of document.querySelectorAll('[data-setup-step]')) {
       button.setAttribute('aria-current', button.dataset.setupStep === step ? 'step' : 'false');
@@ -474,28 +425,30 @@
   $('setup-dialog').addEventListener('cancel', event => { event.preventDefault(); void saveSetup(setupDraft.step, true); });
   $('setup-close-unsaved').addEventListener('click', () => closeSetup());
   $('setup-dialog').addEventListener('close', () => {
-    restoreAccountCard();
     renderFriends();
   });
   $('setup-back').addEventListener('click', () => {
     if (setupDraft.step === 'server' && setupMode === 'create') { setupMode = 'choose'; return renderSetup(); }
     return saveSetup(setupSteps[Math.max(0, setupSteps.indexOf(setupDraft.step) - 1)]);
   });
-  // “Join a friend’s world” lands on the username flow: sign in when signed out, otherwise add by username / check invitations.
+  // “Join a friend’s world” lands on the Friends page: the guide closes first, then sign-in or the add-by-username form is focused.
+  let joinRouteToken = 0;
   async function routeGuideToAccountJoin() {
-    $('account-card').scrollIntoView({ block: 'nearest' });
+    const token = ++joinRouteToken;
+    if ($('setup-dialog').open && !closeSetup()) return;
+    window.seedDashboard.selectPage('friends');
     let account = null;
     try { account = await window.seedhost.call('accountStatus'); } catch { account = null; }
-    if (account && account.signedIn) {
-      if (!$('username-friend-form').hidden) return $('friend-username').focus();
-      if (!$('account-create-group').hidden) return $('account-start-group').focus();
-      return $('account-refresh').focus();
-    }
-    // Signed out (or status unavailable): surface the sign-in prompt when this build can, otherwise focus its call to action.
-    // Focus the opener before its programmatic click so native dialog dismissal returns to the guide's sign-in action.
+    // A slow status reply never focuses stale controls after another navigation, guide open, or sign-out.
+    if (token !== joinRouteToken || $('friends-tab').getAttribute('aria-selected') !== 'true' || $('setup-dialog').open) return;
+    if (account && account.signedIn && !$('friend-add-form').hidden) return $('friend-add-username').focus();
+    // Signed out (or status unavailable): surface the sign-in prompt. Focus the opener before its click so dismissal returns there.
     $('account-open').focus();
     if (!$('account-open').disabled) $('account-open').click();
   }
+  $('setup-open-friends').addEventListener('click', () => { if (!$('setup-open-friends').disabled) void routeGuideToAccountJoin(); });
+  // A page change closes the guide, so it can never float over a different workspace.
+  window.addEventListener('seedhost-page-changed', () => { if ($('setup-dialog').open && !isBusy()) closeSetup(); });
   $('setup-next').addEventListener('click', () => saveSetup(setupSteps[Math.min(4, setupSteps.indexOf(setupDraft.step) + 1)], setupDraft.step === 'ready'));
   $('setup-skip').addEventListener('click', () => saveSetup(setupSteps[setupSteps.indexOf(setupDraft.step) + 1], false, true));
   $('setup-unskip').addEventListener('click', () => {
@@ -857,52 +810,11 @@
     await loadSnapshots();
   });
 
-  let playHelpRequested = false;
-  // The relay's actual player endpoint, read from the relay itself (not the display-only preference).
-  let relayPlayerAddress = null, relayPlayerContext = null, relayPlayerLoading = false;
-  function refreshRelayPlayerAddress() {
-    const context = JSON.stringify([state?.relay?.fingerprint, state?.gateway?.enabled, state?.gateway?.state]);
-    if (context === relayPlayerContext || relayPlayerLoading) return;
-    relayPlayerContext = context; relayPlayerAddress = null;
-    if (!bridgeReady || !state?.relay || state?.gateway?.state !== 'ready') return;
-    relayPlayerLoading = true;
-    window.seedhost.call('checkGameGateway').then(result => {
-      if (context !== relayPlayerContext) return;
-      if (result?.ready && typeof result.host === 'string' && Number.isInteger(result.port)) { relayPlayerAddress = formatEndpoint(result.host, result.port); renderJoinHelp(); }
-      else relayPlayerContext = null; // Not routable yet: ask again on the next poll.
-    }).catch(() => { if (context === relayPlayerContext) relayPlayerContext = null; }).finally(() => { relayPlayerLoading = false; });
-  }
   function gatewayStatusText(label) {
     const detail = state?.gateway?.detail || '';
     if (/Park and Claim once/.test(detail)) return 'One-time step: Stop server (it hands the world to your always-on PC), then press Take over hosting and Start server again. After that, the always-on PC address works every time you host.';
     if (state?.gateway?.state === 'ready') return `Ready · ${detail || 'tunnel connected'}. Friends can join through your always-on PC while this server runs.`;
     return `${label}${detail ? ` · ${detail}` : ''}.`;
-  }
-  function renderJoinHelp() {
-    const server = state?.server;
-    const port = server?.playerPort ?? 25565;
-    const suffix = port === 25565 ? '' : `:${port}`;
-    const show = Boolean(server) && ownsServer() || isHosting();
-    $('join-help').hidden = !show && !playHelpRequested;
-    if (!show) {
-      if (playHelpRequested) $('join-help').replaceChildren(element('p', 'join-title', 'To play, ask your host for the Minecraft server address.'), element('p', 'field-help', 'Open Minecraft Java → Multiplayer → Add Server. A hosting invitation is not a Minecraft address. If you are the host, create or import a server here first; nothing starts automatically.'));
-      return;
-    }
-    const lan = (state?.lanAddresses || []).map(address => `${address}:${port}`);
-    const running = server.state === 'running';
-    const rows = [
-      ['On this PC', `localhost${suffix}`],
-      ...(lan.length ? [['Same Wi-Fi / home network', lan.join('  ·  ')]] : []),
-      ...(relayPlayerAddress ? [['Through your always-on PC (may require VPN)', relayPlayerAddress]] : state?.settings?.persistentAddress && state.settings.gatewayAddress ? [['Through your always-on PC', state.settings.gatewayAddress]] : []),
-    ];
-    const signature = JSON.stringify([rows, running]);
-    if ($('join-help').dataset.signature === signature) return;
-    $('join-help').dataset.signature = signature;
-    const heading = element('p', 'join-title', running ? 'Your server is running. In Minecraft: Multiplayer → Add Server, then use:' : 'How to join: press Start server, then in Minecraft choose Multiplayer → Add Server and use:');
-    const list = element('dl', 'join-list');
-    for (const [label, value] of rows) { const row = element('div'); row.append(element('dt', '', label), element('dd', 'mono', value)); list.append(row); }
-    const note = element('p', 'field-help', 'Friends anywhere else: use the “Let friends join from anywhere” card above.');
-    $('join-help').replaceChildren(heading, list, note);
   }
   // One row per server on this PC. Only the server in use can run; deleting is guarded in the backend.
   function renderServers(blocked) { window.seedDashboard.renderServers(state, blocked); }
@@ -994,6 +906,10 @@
     $('listener-endpoint').textContent = state?.peerEndpoint ? formatEndpoint(state.peerEndpoint.host, state.peerEndpoint.port) : 'No listener endpoint';
     const localOnly = ['127.0.0.1', '::1', 'localhost'].includes(state?.peerEndpoint?.host);
     $('listener-help').textContent = state?.peerEndpoint ? localOnly ? 'Loopback only: other computers cannot reach this endpoint. No router or firewall configuration is changed.' : 'This is the actual listener endpoint, not proof of public reachability. No automatic NAT traversal.' : 'Start the listener to see the actual endpoint. An endpoint is not proof of public reachability.';
+    // Status LEDs mirror authoritative state only: they never imply reachability beyond what is known.
+    $('nav-server-led').className = server?.state === 'running' ? 'led led-ok' : ['starting', 'stopping'].includes(server?.state) ? 'led led-work' : server?.state === 'failed' ? 'led led-bad' : 'led';
+    $('device-led').className = bridgeReady ? 'led led-ok' : 'led led-bad';
+    $('listener-led').className = state?.peerEndpoint ? 'led led-info' : 'led';
     renderPeerList();
     renderRelay();
     renderMods();
@@ -1017,7 +933,7 @@
     $('player-gateway').hidden = !(state?.gateway?.enabled || state?.relay || state?.settings?.persistentAddress);
     $('player-gateway-status').textContent = gatewayStatusText(gatewayLabel);
     $('player-address').textContent = state?.settings?.persistentAddress && state.settings.gatewayAddress ? `Displayed player address: ${state.settings.gatewayAddress}` : '';
-    refreshRelayPlayerAddress(); renderJoinHelp(); renderGettingStarted();
+    renderGettingStarted();
     $('open-gateway-setup').disabled = blocked;
     $('settings-feedback').textContent = settingsDirty ? 'Unsaved preferences.' : 'Preferences loaded from this PC.';
     const busy = pendingMethod || state?.busy;
@@ -1030,7 +946,6 @@
     $('confirm-send').disabled = !allowed || !sendStillCurrent;
     if (selectedSend) $('send-dialog-snapshot').textContent = `Snapshot: ${selectedSend.snapshotId}${sendStillCurrent ? '' : ' · State changed. Cancel and review again.'}`;
     $('settings-savebar').hidden = settingsCategory === 'appearance' && !settingsDirty;
-    renderMarquee();
     window.seedDashboard.update(state, blocked);
   }
 

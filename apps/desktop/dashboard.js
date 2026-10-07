@@ -13,15 +13,14 @@
   document.querySelector('.nav-tabs').prepend(homeTab);
   const home = el('section', 'page'); home.id = 'home-panel'; home.setAttribute('role', 'tabpanel'); home.setAttribute('aria-labelledby', 'home-tab');
   const inner = el('div', 'page-inner'); home.append(inner); $('operate-panel').before(home);
-  inner.append(document.querySelector('.marquee'));
-  $('workspace-title').textContent = 'Home';
-  document.querySelector('.mode-label').textContent = 'Your worlds, on your PCs. Choose a server to manage it.';
+  const homeHeader = el('header', 'page-header');
+  const homeTitle = el('h1', '', 'Home'); homeTitle.id = 'home-title';
+  homeHeader.append(homeTitle, el('p', 'page-lead', 'Your worlds, on your PCs. Choose a server to manage it.'));
+  inner.append(homeHeader);
   const library = $('server-library'); inner.append(library); library.classList.add('card', 'home-library');
   const actions = el('div', 'home-actions'); actions.append($('add-server'), $('import-server')); library.querySelector('.server-library-head').append(actions);
   const limit = library.querySelector('.field-help'); limit.id = 'home-concurrency'; limit.textContent = 'One server can run at a time on this PC. Stop the server before switching; each world keeps its own settings and backups.';
   library.append($('server-empty'));
-  // Join instructions live with the library so they are readable even before a server exists.
-  inner.append($('join-help'));
   const selectionHint = el('p', 'field-help'); selectionHint.id = 'home-selection-hint'; selectionHint.setAttribute('role', 'status'); library.append(selectionHint);
   const stopFirst = button('Stop server', 'button button-stop button-small'); stopFirst.id = 'home-stop-first'; stopFirst.hidden = true; library.append(stopFirst);
   stopFirst.addEventListener('click', () => {
@@ -211,17 +210,15 @@
 
   const modsBody = addPage('mods', 'Mods', 'Modrinth & client pack', 'i-puzzle'); modsBody.append($('mods-details'));
 
-  const friendsBody = addPage('friends', 'Friends', 'People & invitations', 'i-friends');
-  friendsBody.append($('account-card'), $('friends-home'), $('friends-controls'));
+  // Friends is a static global page: its account card never moves between ordinary and hosting contexts.
+  pages.splice(pages.length - 1, 0, 'friends');
   // Direct device trust is an advanced app setting, not friend enrollment.
   $('settings-panel').querySelector('.page-inner').append($('advanced-peers'));
-  $('friends-tab').append($('nav-friend-count'));
-  friendsBody.append(el('p', 'alpha-note', 'Hosting invitations share world-file access. Minecraft players only need the player address. Seed Hosting never changes your router or firewall.'));
 
   const multiBody = $('peers-panel').querySelector('.page-inner');
   $('peers-tab').querySelector('.nav-text').textContent = 'Multi-host'; $('peers-tab').querySelector('.nav-sub').textContent = 'Group & world handoff';
   multiBody.querySelector('h1').textContent = 'Multi-host';
-  const multiScope = el('p', 'field-help multi-host-scope', 'App-wide hosting group: membership and invitations apply across this app, not a separate group per server. World handoff controls below act on the selected server.'); multiScope.id = 'multi-host-scope';
+  const multiScope = el('p', 'field-help multi-host-scope', 'App-wide hosting group: membership and invitations apply across this app, not a separate group per server yet — per-server scoping is provided by the core hosting service, not this page. World handoff controls below act on the selected server.'); multiScope.id = 'multi-host-scope';
   multiBody.querySelector('.page-header').after(multiScope, $('relay-card'));
 
   const schedulerBody = addPage('scheduler', 'Scheduler', 'Jobs while app is open', 'i-settings');
@@ -348,18 +345,17 @@
   function selectPage(name, focus = false) {
     if (!pages.includes(name)) return;
     if (!['home', 'friends', 'settings'].includes(name) && !state?.server) return;
+    const pageChanged = currentPage !== name;
     currentPage = name;
     for (const p of pages) {
       $(p + '-panel').hidden = p !== name;
       const tab = $(p + '-tab'); tab.setAttribute('aria-selected', String(p === name)); tab.tabIndex = p === name ? 0 : -1; tab.classList.toggle('is-active', p === name);
     }
-    if (name === 'friends' || name === 'peers') {
-      const anchor = name === 'friends' ? $('friends-home') : $('relay-card');
-      anchor.before($('account-card'), $('friends-controls'));
-    }
     if (name === 'console' && $('follow-logs').checked) $('console-output').scrollTop = $('console-output').scrollHeight;
     syncRoute();
     if (focus) $(name + '-tab').focus();
+    // Ordinary page changes are observable so the guide closes instead of floating over another workspace.
+    if (pageChanged) window.dispatchEvent(new Event('seedhost-page-changed'));
   }
   // One fixed information architecture: the library first, then the selected server's sections.
   const TAB_ORDER = ['home', 'friends', 'settings', 'operate', 'console', 'players', 'backups', 'scheduler', 'peers', 'mods', 'tunnels', 'server-settings', 'server-files'];
@@ -385,7 +381,59 @@
       }
       selectPage('operate');
     });
+    // Copying an address is its own action: it must never select a server or disturb the current selection.
+    $('server-list').addEventListener('click', event => {
+      const copy = event.target instanceof Element ? event.target.closest('button[data-copy-address]') : null;
+      if (!copy || copy.disabled) return;
+      event.stopPropagation();
+      void copyJoinAddress(copy);
+    });
     selectPage('home'); return selectPage;
+  }
+  // A card only offers a public playit address that the core explicitly attributed to that exact server.
+  // No localhost/LAN/global address is ever fabricated here; a missing or mismatched record stays "not set".
+  const validJoinAddress = value => typeof value === 'string' && value.trim().length > 0 && !/[\u0000-\u001f\u007f]/.test(value);
+  function joinAddressFor(entry) {
+    const record = entry?.publicJoinAddress;
+    if (!record || typeof record !== 'object' || Array.isArray(record)) return null;
+    if (record.source !== 'playit' || record.targetServerId !== entry.id) return null;
+    if (!validJoinAddress(record.address)) return null;
+    return { address: record.address.trim(), reachability: record.reachability === 'verified' ? 'verified' : 'unverified' };
+  }
+  function joinAddressRow(entry) {
+    const row = el('div', 'server-card-address'); row.dataset.addressFor = entry.id;
+    const record = joinAddressFor(entry);
+    if (!record) { row.append(el('span', 'field-help server-address-missing', 'Playit address not set')); return row; }
+    row.append(el('span', 'subtle-label', 'PLAYIT ADDRESS'), el('code', 'mono server-address-value', record.address));
+    row.append(el('span', 'field-help', record.reachability === 'verified' ? 'Reachability verified.' : 'Reachability unverified.'));
+    const copy = button('Copy', 'text-button server-address-copy'); copy.dataset.copyAddress = entry.id;
+    copy.setAttribute('aria-label', `Copy Playit address for ${entry.name || 'this server'}`);
+    const status = el('span', 'field-help server-address-status'); status.setAttribute('role', 'status');
+    row.append(copy, status); return row;
+  }
+  let addressCopyToken = 0;
+  async function copyJoinAddress(copy) {
+    const id = copy.dataset.copyAddress;
+    const status = copy.closest('.server-card-address')?.querySelector('.server-address-status') ?? null;
+    const label = text => { if (status) status.textContent = text; };
+    const record = joinAddressFor(state?.servers?.find(s => s.id === id));
+    if (!record) { label('This address is no longer available. Refresh data.'); return; }
+    const token = ++addressCopyToken;
+    copy.disabled = true;
+    try {
+      await navigator.clipboard.writeText(record.address);
+      // Completion is only claimed for the address that is still on this card: stale or cross-server addresses never report success.
+      const current = joinAddressFor(state?.servers?.find(s => s.id === id));
+      if (token !== addressCopyToken || !current || current.address !== record.address) return;
+      let verified = null;
+      try { verified = (await navigator.clipboard.readText()) === record.address; } catch { verified = null; }
+      if (token !== addressCopyToken) return;
+      label(verified === true ? 'Copied and verified against the clipboard.' : verified === false ? 'Copied, but the clipboard could not be verified. Copy again.' : 'Copied to the clipboard.');
+    } catch {
+      if (token === addressCopyToken) label('Copy failed. Select the address and copy it manually.');
+    } finally {
+      if (token === addressCopyToken) copy.disabled = false;
+    }
   }
   function renderServers(next, busy) {
     state = next; blocked = busy;
@@ -405,6 +453,7 @@
       const copy = el('div', 'server-card-copy'); copy.append(el('strong', 'server-row-name', entry.name || 'Untitled server'));
       copy.append(el('span', 'server-card-meta', `${processLabels[entry.state] || 'Unknown state'} · Owner: ${entry.ownerName || 'Unknown'}`));
       copy.append(el('span', 'field-help', entry.configured === true ? 'Launch profile configured' : entry.configured === false ? 'Launch profile needs setup' : 'Launch configuration unknown'));
+      copy.append(joinAddressRow(entry));
       const a = el('div', 'server-row-actions'); const open = button(entry.active ? 'Open server' : 'Select server', 'button button-primary button-small'); open.dataset.action = 'open'; open.dataset.id = entry.id; open.disabled = busy || (active && !entry.active); open.title = active && !entry.active ? `Stop ${state.server.name} before switching` : `Open ${entry.name}`;
       const remove = button('Delete…', 'button button-small button-danger'); remove.dataset.action = 'delete'; remove.dataset.id = entry.id; remove.disabled = busy || active;
       a.append(open, remove); row.append(art, copy, a); return row;

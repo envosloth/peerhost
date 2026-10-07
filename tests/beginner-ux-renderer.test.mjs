@@ -117,7 +117,7 @@ test('Operate without a server shows a getting-started checklist', async t => {
   for (const id of ['mods-details', 'profile-details', 'console-section']) assert.equal(await page.locator('#' + id).isVisible(), false, id + ' hidden until a server exists');
 });
 
-test('Operate with a server uses plain words and explains how to join', async t => {
+test('Operate with a server uses plain words and keeps addresses honest', async t => {
   const page = await renderer(t, appState(server(), { onboarding: { ...progress('ready'), dismissed: true } }));
   await openSelectedServer(page);
   assert.equal(await page.getByRole('button', { name: 'Start server', exact: true }).count(), 1);
@@ -126,20 +126,24 @@ test('Operate with a server uses plain words and explains how to join', async t 
   assert.equal(await page.locator('#snapshot-history-title').textContent(), 'Backups');
   assert.equal(await page.locator('#server-details').evaluate(d => d.open), false, 'paths and IDs are folded away');
   assert.equal(await page.locator('#server-directory').isVisible(), false);
-  const join = await page.locator('#join-help').textContent();
-  assert.match(join, /localhost/);
-  assert.match(join, /192\.168\.1\.20:25565/);
+  assert.equal(await page.locator('#join-help, .marquee, #ticker-track').count(), 0, 'the recap and join widgets are gone');
+  assert.match(await page.locator('#server-list .server-card-address').textContent(), /Playit address not set/, 'no address is fabricated without a playit record');
   await page.waitForFunction(() => document.querySelectorAll('#snapshot-list li').length === 1);
   assert.match(await page.locator('#snapshot-list').textContent(), /5\.0 MB/);
 });
 
-test('join help shows the always-on PC player address once the tunnel is ready', async t => {
+test('the server card shows a playit address only from the playit record, never from tunnel readiness', async t => {
   const running = server(); running.state = 'running'; running.ownership.state = 'hosting';
-  const state = appState(running, { relay: { fingerprint: 'c'.repeat(64), name: 'Home relay', parkOnStop: true }, gateway: { enabled: true, localPort: 25565, state: 'ready', detail: 'Pinned host tunnel is ready' }, onboarding: { ...progress('ready'), dismissed: true } });
+  const state = appState(running, {
+    relay: { fingerprint: 'c'.repeat(64), name: 'Home relay', parkOnStop: true },
+    gateway: { enabled: true, localPort: 25565, state: 'ready', detail: 'Pinned host tunnel is ready' },
+    onboarding: { ...progress('ready'), dismissed: true },
+    servers: [{ id: 'beginner-fixture', name: 'Weekend world', active: true, state: 'running', configured: true, publicJoinAddress: { address: 'weekend.playit.example:25565', reachability: 'verified', source: 'playit', targetServerId: 'beginner-fixture' } }]
+  });
   const page = await renderer(t, state);
-  await page.evaluate(() => { window.fixture.gatewayCheck = { enabled: true, host: '100.97.20.84', port: 25565, ready: true, detail: 'Confirmed host route' }; document.dispatchEvent(new Event('visibilitychange')); });
-  await page.waitForFunction(() => document.querySelector('#join-help').textContent.includes('100.97.20.84:25565'), undefined, { timeout: 8000 });
-  assert.match(await page.locator('#join-help').textContent(), /always-on PC/i);
+  await page.waitForFunction(() => document.querySelector('.server-card-address').textContent.includes('weekend.playit.example:25565'));
+  assert.match(await page.locator('.server-card-address').textContent(), /Reachability verified/);
+  assert.doesNotMatch(await page.locator('.server-card-address').textContent(), /localhost|100\.97\./);
 });
 
 test('first gateway start explains the one-time hand-off in plain words', async t => {
@@ -208,13 +212,14 @@ test('Friends held custody never claims a stopped foreign holder is hosting', as
     const call=window.seedhost.call;
     window.seedhost.call=async(method,payload)=>method==='listFriends'?{members:[],custody:'held',holder:'Stopped friend',owner:'d'.repeat(64)}:call(method,payload);
   });
-  await page.locator('#friends-tab').click();await page.locator('#refresh-friends').click();
+  await openSelectedServer(page);await page.locator('#peers-tab').click();
+  await page.locator('#refresh-friends').click();
   await page.waitForFunction(()=>document.querySelector('#group-status').textContent==='Members confirmed');
   assert.equal(await page.locator('#friend-holder').textContent(),'World held by Stopped friend · hosting not observed');
 });
 
-test('username acceptance rejects a truthy but non-boolean enrollment result', async t => {
-  const page=await renderer(t,appState(null,{onboarding:{...progress('ready'),dismissed:true}}));
+test('hosting acceptance rejects a truthy but non-boolean enrollment result', async t => {
+  const page=await renderer(t,appState(server(),{onboarding:{...progress('ready'),dismissed:true}}));
   await page.evaluate(()=>{
     const call=window.seedhost.call;
     window.seedhost.call=async(method,payload)=>{
@@ -228,11 +233,10 @@ test('username acceptance rejects a truthy but non-boolean enrollment result', a
       return call(method,payload);
     };window.dispatchEvent(new Event('seedhost-account-changed'));
   });
-  await page.locator('#friends-tab').click();
-  await page.locator('#account-inbox [data-account-accept]').click();
-  await page.waitForFunction(()=>!document.querySelector('#account-refresh').disabled);
-  assert.match(await page.locator('#account-friend-feedback').textContent(),/could not be confirmed/i);
-  assert.doesNotMatch(await page.locator('#account-friend-feedback').textContent(),/^Joined/);
+  await openSelectedServer(page);await page.locator('#peers-tab').click();
+  await page.locator('#hosting-request-list [data-account-accept]').click();
+  await page.waitForFunction(()=>document.querySelector('#hosting-request-feedback').textContent.includes('could not be confirmed'));
+  assert.doesNotMatch(await page.locator('#hosting-request-feedback').textContent(),/^Joined/);
 });
 
 for (const [label, pin, port] of [
@@ -240,8 +244,8 @@ for (const [label, pin, port] of [
   ['uppercase agreeing pins', 'C'.repeat(64), 8443], ['nonhex agreeing pins', 'g'.repeat(64), 8443],
   ['matching string ports', 'c'.repeat(64), '8443'], ['zero ports', 'c'.repeat(64), 0],
   ['overflow ports', 'c'.repeat(64), 65536], ['fractional ports', 'c'.repeat(64), 8443.5],
-]) test('username acceptance rejects ' + label + ' in enrollment readback', async t => {
-  const page = await renderer(t, appState(null, {onboarding:{...progress('ready'),dismissed:true}}));
+]) test('hosting acceptance rejects ' + label + ' in enrollment readback', async t => {
+  const page = await renderer(t, appState(server(), {onboarding:{...progress('ready'),dismissed:true}}));
   await page.evaluate(({pin,port}) => {
     const call = window.seedhost.call;
     window.seedhost.call = async (method,payload) => {
@@ -256,18 +260,17 @@ for (const [label, pin, port] of [
       return call(method,payload);
     };window.dispatchEvent(new Event('seedhost-account-changed'));
   },{pin,port});
-  await page.locator('#friends-tab').click();
-  await page.locator('#account-inbox [data-account-accept]').click();
-  await page.waitForFunction(()=>!document.querySelector('#account-refresh').disabled);
-  assert.match(await page.locator('#account-friend-feedback').textContent(),/could not be confirmed/i);
-  assert.doesNotMatch(await page.locator('#account-friend-feedback').textContent(),/^Joined/);
+  await openSelectedServer(page);await page.locator('#peers-tab').click();
+  await page.locator('#hosting-request-list [data-account-accept]').click();
+  await page.waitForFunction(()=>document.querySelector('#hosting-request-feedback').textContent.includes('could not be confirmed'));
+  assert.doesNotMatch(await page.locator('#hosting-request-feedback').textContent(),/^Joined/);
 });
 
 for (const [label,host,group] of [
   ['missing hosts',null,'Group'], ['empty hosts','','Group'], ['numeric hosts',42,'Group'],
   ['missing group', '127.0.0.1',null], ['empty group','127.0.0.1',''], ['numeric group','127.0.0.1',42],
-]) test('username acceptance rejects ' + label + ' even when readback agrees', async t => {
-  const page=await renderer(t,appState(null,{onboarding:{...progress('ready'),dismissed:true}}));
+]) test('hosting acceptance rejects ' + label + ' even when readback agrees', async t => {
+  const page=await renderer(t,appState(server(),{onboarding:{...progress('ready'),dismissed:true}}));
   await page.evaluate(({host,group})=>{
     const call=window.seedhost.call;
     const route=host===null?{port:8443}:{host,port:8443};
@@ -283,13 +286,12 @@ for (const [label,host,group] of [
       return call(method,payload);
     };window.dispatchEvent(new Event('seedhost-account-changed'));
   },{host,group});
-  await page.locator('#friends-tab').click();
-  await page.locator('#account-inbox [data-account-accept]').click();
-  await page.waitForFunction(()=>!document.querySelector('#account-refresh').disabled);
-  assert.match(await page.locator('#account-friend-feedback').textContent(),/could not be confirmed/i);
+  await openSelectedServer(page);await page.locator('#peers-tab').click();
+  await page.locator('#hosting-request-list [data-account-accept]').click();
+  await page.waitForFunction(()=>document.querySelector('#hosting-request-feedback').textContent.includes('could not be confirmed'));
 });
 
-test('username acceptance keeps an existing local world and never suggests receiving it', async t => {
+test('hosting acceptance keeps an existing local world and never suggests receiving it', async t => {
   const world=server();
   const page=await renderer(t,appState(world,{onboarding:{...progress('ready'),dismissed:true}}));
   const relay={fingerprint:'c'.repeat(64),name:'Home relay',host:'100.97.20.84',port:47625};
@@ -307,12 +309,12 @@ test('username acceptance keeps an existing local world and never suggests recei
       return call(method,payload);
     };window.dispatchEvent(new Event('seedhost-account-changed'));
   },relay);
-  await page.locator('#friends-tab').click();
-  await page.locator('#account-inbox [data-account-accept]').waitFor({state:'visible'});
-  assert.match(await page.locator('#account-inbox').textContent(),/@friend/);
-  await page.locator('#account-inbox [data-account-accept]').click();
-  await page.waitForFunction(()=>document.querySelector('#account-friend-feedback').textContent.startsWith('Joined'));
-  const message=await page.locator('#account-friend-feedback').textContent();
+  await openSelectedServer(page);await page.locator('#peers-tab').click();
+  await page.locator('#hosting-request-list [data-account-accept]').waitFor({state:'visible'});
+  assert.match(await page.locator('#hosting-request-list').textContent(),/@friend/);
+  await page.locator('#hosting-request-list [data-account-accept]').click();
+  await page.waitForFunction(()=>document.querySelector('#hosting-request-feedback').textContent.startsWith('Joined'));
+  const message=await page.locator('#hosting-request-feedback').textContent();
   assert.doesNotMatch(message,/receive the world|take over/i);
   assert.match(message,/existing world stays on this PC.*nothing was downloaded or started/i);
   assert.deepEqual(await page.evaluate(()=>window.fixture.state.server),world);

@@ -13,7 +13,7 @@ import { ModrinthClient, assertModTarget, isGameVersion, isModLoader, isProjectK
 import { indexedMods, modTarget, readModIndex, writeModIndex, type ModVerificationCache } from './mod-index.js';
 import { installMod, assertModInstallComplete, type InstallModInput } from './mod-install.js';
 import { openRelayOperation, relayRequest, relayStatus, relayInvite, relayInviteFor, relayRemoveFriend, relayFriends, joinRelayInvite, type RelayStatus, relayPublic } from './relay-client.js';
-import { decodeInvite } from './invites.js';
+import { decodeInvite, type Invite } from './invites.js';
 import { friendName } from './relay-friends-store.js';
 import { readOnboarding, saveOnboarding, validateOnboarding, onboardingChecks, type SetupConfiguration } from './onboarding.js';
 import { ServerSetupClient, probeJava, type CreateServerInput } from './server-setup.js';
@@ -31,7 +31,7 @@ import { createSchedule, readScheduleSnapshot, writeSchedules, validateScheduleI
 import { patchServerProperties, readServerProperties, validateServerProperties } from './server-properties.js';
 import {
   parseSavedState, validateLaunchProfile, validatePeer, validateRelayConfig, newServerId, isServerId,
-  type LaunchProfileInput, type RelayConfig, type SavedPeer, type SavedServer, type SavedState,
+  type LaunchProfileInput, type RelayConfig, type SavedPeer, type SavedPendingGroup, type SavedServer, type SavedState,
 } from './saved-state.js';
 
 export interface LaunchApproval {
@@ -41,6 +41,18 @@ export interface LaunchApproval {
   readonly profile: { readonly executable: string; readonly args: readonly string[] };
 }
 export interface CleanUpResult { serverDirsRemoved: number; snapshotsRemoved: number; objectsRemoved: number; bytesFreed: number }
+/**
+ * The hosting-group context of one library world, for per-server UI/main helpers. `relay.endpoint` is the trusted
+ * peer's endpoint; `relay` is null when the world is hosted only by this PC.
+ */
+export interface ServerGroupInfo {
+  serverId: string;
+  /** True when this exact world is bound to a hosting group. A pending group is never a property of a world. */
+  bound: boolean;
+  relay: { fingerprint: string; parkOnStop: boolean; name: string; endpoint: { host: string; port: number } | null } | null;
+}
+/** Result of accepting an invitation through joinHostingGroup: which local world (if any) the group now belongs to. */
+export interface HostingGroupJoinResult { relayName: string; fingerprint: string; serverId: string | null; pending: boolean }
 interface ApplicationOptions {
   serverSetup?: ServerSetupClient;
   modrinth?: ModrinthClient;
@@ -53,7 +65,7 @@ const CLEANUP_ANCESTORS = 2;
 const isStoppedState = (state: string | undefined) => state === undefined || state === 'offline' || state === 'failed';
 
 export class SeedHostApplication {
-  private saved: SavedState = { version: 2, settings: defaultSettings(), servers: [], activeServerId: null, peers: [], relay: null };
+  private saved: SavedState = { version: 2, settings: defaultSettings(), servers: [], activeServerId: null, peers: [], pendingGroups: [] };
   private gatewayTunnel?: { close: () => Promise<void> };
   private gatewayEpoch = 0;
   private gatewayState: {state: 'off' | 'connecting' | 'ready' | 'error'; detail: string} = { state: 'off', detail: 'No local host tunnel is active' };
@@ -129,7 +141,7 @@ export class SeedHostApplication {
         state: this.process?.state ?? 'offline', ownership, ownerName: this.nameOf(ownership.owner), mods, modsError, modInstallError, modTarget: target,
         playerPort: await readServerPort(serverDir) };
     }
-    const relay = this.saved.relay;
+    const relay = this.relayReadback();
     const gateway = await readGameGateway(this.root);
     if (gateway.error && this.gatewayTunnel) await this.closeGameGateway();
     return {
@@ -145,9 +157,12 @@ export class SeedHostApplication {
           ownerName = this.nameOf(ownership.owner);
           state = entry.id === active?.id ? this.process?.state ?? 'offline' : 'offline';
         } catch { /* An unreadable ledger is unknown, not proof of local ownership. */ }
-        return { id: entry.id, name: entry.name, active: entry.id === this.saved.activeServerId, state, ownerName, configured: Boolean(entry.profile.executable && entry.profile.args.length), playerPort: await readServerPort(entry.serverDir) };
+        return { id: entry.id, name: entry.name, active: entry.id === this.saved.activeServerId, state, ownerName, configured: Boolean(entry.profile.executable && entry.profile.args.length), playerPort: await readServerPort(entry.serverDir),
+          group: entry.group ? { fingerprint: entry.group.fingerprint, parkOnStop: entry.group.parkOnStop } : null };
       })),
-      relay: relay ? { ...relay, name: this.relayPeer()?.name ?? 'Relay' } : null,
+      relay,
+      /** Groups joined without a local world yet; claimPendingGroup turns one into a new library server. */
+      pendingGroups: this.saved.pendingGroups.map((entry) => ({ ...this.groupReadback(entry, entry.relayName), since: entry.since })),
       peers: this.saved.peers.map((peer) => ({ ...peer })),
       logs: this.serverLogs(id),
       peerEndpoint: this.listener ? { host: this.listener.host, port: this.listener.port } : null,
@@ -173,7 +188,7 @@ export class SeedHostApplication {
       if (progress.completed && (!active || !active.profile.executable || !active.profile.args.length)) throw new Error('Configure a server and its launch profile before completing setup');
       if (progress.completed) {
         await assertModInstallComplete(active!.serverDir);
-        const checks = onboardingChecks(progress, { server: active!, relay: this.saved.relay, gateway: await readGameGateway(this.root), alwaysOn });
+        const checks = onboardingChecks(progress, { server: active!, relay: this.activeServer()?.group ?? null, gateway: await readGameGateway(this.root), alwaysOn });
         if (checks.ready !== 'complete') throw new Error('Resolve Friends and Always-on PC, or explicitly skip those optional steps before completing setup');
       }
       await saveOnboarding(this.root, progress);
@@ -197,8 +212,23 @@ export class SeedHostApplication {
   }
 
   private addServer(entry: SavedServer): void {
+    const first = this.saved.servers.length === 0;
     this.saved.servers.push(entry);
     this.saved.activeServerId = entry.id;
+    if (first) this.adoptPendingGroup(entry);
+  }
+
+  /**
+   * A group joined (or chosen) while this PC still had no world belongs to the first world added afterwards — the
+   * legacy single-world continuity. It never attaches to a world that already existed when the group was joined,
+   * so an unrelated local world can never be handed to someone else's group.
+   */
+  private adoptPendingGroup(entry: SavedServer): void {
+    if (entry.group || this.saved.pendingGroups.length !== 1) return;
+    const pending = this.saved.pendingGroups[0]!;
+    entry.group = { fingerprint: pending.fingerprint, parkOnStop: pending.parkOnStop };
+    this.saved.pendingGroups = [];
+    this.log('The joined hosting group now belongs to ' + entry.name + '. Nothing was downloaded or started.');
   }
 
   /** Swap the active entry in place; `null` removes it, which is how a rolled-back activation is undone. */
@@ -280,18 +310,66 @@ export class SeedHostApplication {
   /** Human name for an ownership fingerprint, for status lines and errors. */
   private nameOf(fingerprint: string): string | null {
     if (fingerprint === this.identity.fingerprint) return 'this PC';
-    if (fingerprint === this.saved.relay?.fingerprint) return 'the relay';
+    if (this.saved.servers.some((entry) => entry.group?.fingerprint === fingerprint) ||
+        this.saved.pendingGroups.some((entry) => entry.fingerprint === fingerprint)) return 'the relay';
     return this.saved.peers.find((peer) => peer.fingerprint === fingerprint)?.name ?? null;
   }
 
+  /**
+   * The hosting group governing what the app shows now: the selected world's own binding, or — while this PC still
+   * has no world — the single joined group (legacy single-world continuity). Several pending groups are ambiguous
+   * and resolve to nothing until one is chosen explicitly.
+   */
+  private selectedGroup(): { relay: RelayConfig; name?: string } | null {
+    const active = this.activeServer();
+    if (active) return active.group ? { relay: active.group } : null;
+    const pending = this.saved.pendingGroups;
+    if (pending.length === 1) return { relay: { fingerprint: pending[0]!.fingerprint, parkOnStop: pending[0]!.parkOnStop }, name: pending[0]!.relayName };
+    return null;
+  }
+
+  /** Readback for one binding: always names and locates the endpoint through the trusted peer entry. */
+  private groupReadback(relay: { fingerprint: string; parkOnStop: boolean }, fallbackName?: string) {
+    const peer = this.saved.peers.find((entry) => entry.fingerprint === relay.fingerprint);
+    return { fingerprint: relay.fingerprint, parkOnStop: relay.parkOnStop, name: peer?.name ?? fallbackName ?? 'Relay',
+      endpoint: peer ? { host: peer.host, port: peer.port } : null };
+  }
+
+  /** getState().relay keeps its contract: the selected world's group as { fingerprint, parkOnStop, name }, else null. */
+  private relayReadback(): { fingerprint: string; parkOnStop: boolean; name: string } | null {
+    const group = this.selectedGroup();
+    if (!group) return null;
+    const readback = this.groupReadback(group.relay, group.name);
+    return { fingerprint: readback.fingerprint, parkOnStop: readback.parkOnStop, name: readback.name };
+  }
+
   private relayPeer(): SavedPeer | undefined {
-    return this.saved.relay ? this.saved.peers.find((peer) => peer.fingerprint === this.saved.relay!.fingerprint) : undefined;
+    const group = this.selectedGroup();
+    return group ? this.saved.peers.find((peer) => peer.fingerprint === group.relay.fingerprint) : undefined;
   }
 
   private requireRelay(): SavedPeer {
-    const peer = this.relayPeer();
-    if (!peer) throw new Error('No relay is configured. Trust the always-on PC as a peer, then choose it as the relay in Settings.');
+    const group = this.selectedGroup();
+    if (!group) {
+      if (!this.activeServer() && this.saved.pendingGroups.length > 1) {
+        throw new Error('This PC has joined more than one hosting group. Choose the group to use first.');
+      }
+      if (this.activeServer()) {
+        throw new Error('This world is not part of a hosting group, so no relay applies to it. Choose a group for this world explicitly; a group joined without a local world is downloaded as a new server instead.');
+      }
+      throw new Error('No relay is configured. Trust the always-on PC as a peer, then choose it as the relay in Settings.');
+    }
+    const peer = this.saved.peers.find((entry) => entry.fingerprint === group.relay.fingerprint);
+    if (!peer) throw new Error('This hosting group’s always-on PC is missing from trusted peers. Restore its peer entry before continuing.');
     return peer;
+  }
+
+  /** The hosting-group context of one library world, for per-server helpers. Read-only; any library server may be asked. */
+  async getServerGroup(serverId: string): Promise<ServerGroupInfo> {
+    if (!isServerId(serverId)) throw new Error('Invalid server id');
+    const server = this.saved.servers.find((entry) => entry.id === serverId);
+    if (!server) throw new Error('That server is no longer in the library. Refresh and try again.');
+    return { serverId, bound: Boolean(server.group), relay: server.group ? this.groupReadback(server.group) : null };
   }
 
   private log(line: string): void {
@@ -577,7 +655,7 @@ export class SeedHostApplication {
       await new OwnershipLedger(ledgerFile, this.identity.fingerprint).initialize(result.snapshot.id);
       this.addServer({
         id: newServerId(), name: input.name, serverDir: result.serverDir, storeDir: result.storeDir, snapshotId: result.snapshot.id,
-        profile: validateLaunchProfile(prepared.profile), ledgerFile,
+        profile: validateLaunchProfile(prepared.profile), ledgerFile, group: null,
       });
       try { await this.persist(); }
       catch (error) { await new OwnershipLedger(ledgerFile, this.identity.fingerprint).markUncertain(); throw error; }
@@ -595,7 +673,7 @@ export class SeedHostApplication {
       await new OwnershipLedger(ledgerFile, this.identity.fingerprint).initialize(result.snapshot.id);
       this.addServer({
         id: newServerId(), name: path.basename(source), serverDir: result.serverDir, storeDir: result.storeDir, snapshotId: result.snapshot.id,
-        profile: validateLaunchProfile({ executable: '', args: [] }, true), ledgerFile,
+        profile: validateLaunchProfile({ executable: '', args: [] }, true), ledgerFile, group: null,
       });
       await this.persist();
       this.log('Imported a separate managed copy. Original folder was not modified.');
@@ -794,7 +872,7 @@ export class SeedHostApplication {
       } finally {
         this.controlledProcess = undefined;
       }
-      if (this.saved.relay?.parkOnStop) {
+      if (server.group?.parkOnStop) {
         // The stop itself succeeded; a park failure is reported, not thrown.
         try { await this.park(); }
         catch (error) { this.log(`Could not park on the relay: ${(error as Error).message}`); }
@@ -1058,31 +1136,91 @@ export class SeedHostApplication {
     return this.operation('createInvite', () => relayInvite(this.identity, this.requireRelay()));
   }
 
-  /** A private invitation pins the relay, enrolls this identity, then saves its endpoint locally. */
+  /**
+   * Legacy invitation protocol, kept backward compatible for internal callers: it never silently replaces the group
+   * this PC already belongs to, and it never binds the selected world — a group accepted without an explicit target
+   * stays a separate pending group until an explicit download/claim creates its new library server.
+   */
   async joinWithInvite({ code, name }: { code: string; name: string }): Promise<{ relayName: string }> {
     this.assertStopped();
     const invite = decodeInvite(code);
     const memberName = friendName(name);
     if (invite.relayFingerprint === this.identity.fingerprint) throw new Error('Cannot join your own relay');
     return this.operation('joinWithInvite', async () => {
-      if (this.saved.relay && this.saved.relay.fingerprint !== invite.relayFingerprint) {
+      const known = [...new Set([...this.saved.servers.flatMap((entry) => entry.group ? [entry.group.fingerprint] : []),
+        ...this.saved.pendingGroups.map((entry) => entry.fingerprint)])];
+      if (known.length > 0 && !known.includes(invite.relayFingerprint)) {
         throw new Error('This PC already uses another relay. Clear it explicitly in Settings before joining a different relay.');
       }
-      const joined = await joinRelayInvite(this.identity, code, memberName);
-      const peer = validatePeer({ name: joined.relayName, fingerprint: invite.relayFingerprint, host: invite.host, port: invite.port });
-      const previousPeers = this.saved.peers;
-      const previousRelay = this.saved.relay;
-      this.saved.peers = [...previousPeers.filter(p => p.fingerprint !== peer.fingerprint), peer];
-      this.saved.relay = { fingerprint: peer.fingerprint, parkOnStop: true };
-      try { await this.persist(); }
-      catch (error) {
-        this.saved.peers = previousPeers;
-        this.saved.relay = previousRelay;
-        throw new Error('The relay enrolled this PC, but its local settings could not be saved. Retry the same invite on this PC.', { cause: error });
-      }
-      this.log(`Joined ${joined.relayName} as ${memberName}. Nothing was downloaded or started.`);
-      return joined;
+      const result = await this.enrollGroup({ code, invite, memberName, target: null });
+      return { relayName: result.relayName };
     });
+  }
+
+  /**
+   * Accept an invitation for a hosting group and record where it belongs locally. This is the exact seam for main's
+   * per-server helper and AccountIntegration:
+   * - `serverId` present: only the CURRENTLY SELECTED server may be targeted (a stale id fails closed); the group is
+   *   bound to that one world and to nothing else. An id already bound to another group is refused, never replaced.
+   * - `serverId` absent or null: membership only. If a local world is already bound to the same group it is returned;
+   *   otherwise the group is stored as a separate pending entry. No world is created, downloaded, started or changed.
+   * A definitive refusal from the pinned relay surfaces unchanged (`code = 'PEER_AUTHORIZATION_DENIED'`, not retryable),
+   * so AccountIntegration can mark the request declined instead of retrying it.
+   */
+  async joinHostingGroup(input: { code: string; name: string; serverId?: string | null }): Promise<HostingGroupJoinResult> {
+    this.assertStopped();
+    if (!input || typeof input !== 'object' || Array.isArray(input) || typeof input.code !== 'string' || typeof input.name !== 'string' ||
+        (input.serverId !== undefined && input.serverId !== null && typeof input.serverId !== 'string')) {
+      throw new Error('Invalid invite code or friend name');
+    }
+    const invite = decodeInvite(input.code);
+    const memberName = friendName(input.name);
+    if (invite.relayFingerprint === this.identity.fingerprint) throw new Error('Cannot join your own relay');
+    let target: SavedServer | null = null;
+    if (input.serverId !== undefined && input.serverId !== null) {
+      if (!isServerId(input.serverId)) throw new Error('Invalid server id');
+      target = this.selectedServer(input.serverId);
+      if (target.group && target.group.fingerprint !== invite.relayFingerprint) {
+        throw new Error('This server already belongs to another hosting group. Clear it explicitly before joining a different group.');
+      }
+    }
+    return this.operation('joinHostingGroup', () => this.enrollGroup({ code: input.code, invite, memberName, target }));
+  }
+
+  /** Redeem the pinned invitation, then persist the group's local association atomically (peers + binding or pending). */
+  private async enrollGroup(input: { code: string; invite: Invite; memberName: string; target: SavedServer | null }): Promise<HostingGroupJoinResult> {
+    const previousPeers = this.saved.peers;
+    const previousPending = this.saved.pendingGroups;
+    const targetGroup = input.target ? input.target.group : undefined;
+    const joined = await joinRelayInvite(this.identity, input.code, input.memberName);
+    const peer = validatePeer({ name: joined.relayName, fingerprint: input.invite.relayFingerprint, host: input.invite.host, port: input.invite.port });
+    // Re-verify the target after the await: a switch mid-enrollment must never rebind a different world.
+    if (input.target && (!this.saved.servers.includes(input.target) || input.target.group !== targetGroup)) {
+      throw new Error('The selected server changed. Refresh before continuing.');
+    }
+    this.saved.peers = [...previousPeers.filter((entry) => entry.fingerprint !== peer.fingerprint), peer];
+    let serverId: string | null = null;
+    if (input.target) {
+      input.target.group = { fingerprint: peer.fingerprint, parkOnStop: targetGroup?.parkOnStop ?? true };
+      serverId = input.target.id;
+    } else {
+      const bound = this.saved.servers.find((entry) => entry.group?.fingerprint === peer.fingerprint);
+      if (bound) serverId = bound.id;
+      else {
+        const existing = this.saved.pendingGroups.find((entry) => entry.fingerprint === peer.fingerprint);
+        this.saved.pendingGroups = [...this.saved.pendingGroups.filter((entry) => entry.fingerprint !== peer.fingerprint),
+          { fingerprint: peer.fingerprint, parkOnStop: existing?.parkOnStop ?? true, relayName: joined.relayName, since: existing?.since ?? Date.now() }];
+      }
+    }
+    try { await this.persist(); }
+    catch (error) {
+      this.saved.peers = previousPeers;
+      this.saved.pendingGroups = previousPending;
+      if (input.target) input.target.group = targetGroup ?? null;
+      throw new Error('The relay enrolled this PC, but its local settings could not be saved. Retry the same invite on this PC.', { cause: error });
+    }
+    this.log(`Joined ${joined.relayName} as ${input.memberName}. Nothing was downloaded or started.`);
+    return { relayName: joined.relayName, fingerprint: peer.fingerprint, serverId, pending: serverId === null };
   }
 
   /** One-click pairing with an always-on PC: find it on this network from its short code, join it, and turn on
@@ -1093,7 +1231,8 @@ export class SeedHostApplication {
     const found = await find(code);
     if (found.fingerprint === this.identity.fingerprint) throw new Error('That code belongs to this PC. Type it on your gaming PC instead.');
     const invitation = await pairingInvite(code, found);
-    const joined = await this.joinWithInvite({ code: invitation, name });
+    // The selected world, when there is one, is the world this user is pairing; otherwise the group stays pending.
+    const joined = await this.joinHostingGroup({ code: invitation, name, serverId: this.activeServer()?.id ?? null });
     let gatewayOn = false;
     if (found.gamePort !== null) {
       try {
@@ -1162,7 +1301,8 @@ export class SeedHostApplication {
     });
   }
 
-  /** Choose (or clear) the always-on relay. It must already be a trusted peer, which supplies its endpoint. */
+  /** Choose (or clear) the always-on group of the SELECTED world. With no world yet, the choice is the PC's single
+   *  pending group, which continues onto the first world added later. It must already be a trusted peer. */
   async saveRelay(input: RelayConfig | null): Promise<void> {
     const relay = validateRelayConfig(input);
     if (relay && !this.saved.peers.some((peer) => peer.fingerprint === relay.fingerprint)) {
@@ -1171,9 +1311,19 @@ export class SeedHostApplication {
     if (relay?.fingerprint === this.identity.fingerprint) throw new Error('This PC cannot be its own relay');
     await this.operation('saveRelay', async () => {
       await this.closeGameGateway();
-      this.saved.relay = relay;
-      await this.persist();
-      this.log(relay ? `Relay set to ${this.relayPeer()!.name}${relay.parkOnStop ? '; the server is parked there after each clean stop' : ''}.` : 'Relay cleared.');
+      const active = this.activeServer();
+      const previous = active ? active.group : this.saved.pendingGroups;
+      if (active) active.group = relay ? { ...relay } : null;
+      else this.saved.pendingGroups = relay ? [{ fingerprint: relay.fingerprint, parkOnStop: relay.parkOnStop,
+        relayName: this.saved.peers.find((peer) => peer.fingerprint === relay.fingerprint)?.name ?? 'Relay', since: Date.now() }] : [];
+      try { await this.persist(); }
+      catch (error) {
+        if (active) active.group = previous as RelayConfig | null;
+        else this.saved.pendingGroups = previous as SavedPendingGroup[];
+        throw error;
+      }
+      if (relay) this.log(`Relay set to ${this.relayPeer()?.name ?? 'the relay'}${active ? ` for ${active.name}` : ''}${relay.parkOnStop ? '; the server is parked there after each clean stop' : ''}.`);
+      else this.log(active ? `Relay cleared for ${active.name}.` : 'Relay cleared.');
     });
   }
 
@@ -1232,7 +1382,7 @@ export class SeedHostApplication {
   }
 
   private isRelay(peer: SavedPeer): boolean {
-    return peer.fingerprint === this.saved.relay?.fingerprint;
+    return peer.fingerprint === this.selectedGroup()?.relay.fingerprint;
   }
 
   private async reachRelay(relay: SavedPeer, consequence: string): Promise<RelayStatus | null> {
@@ -1296,11 +1446,22 @@ export class SeedHostApplication {
   }
 
   /**
-   * Take the server from the relay. Clicking Claim is the consent, so no second dialog is shown. A claim whose
-   * acknowledgment is lost is completed by claiming again; the relay keeps it pending for this PC only.
+   * Take the server from the RELAY BOUND TO THE SELECTED WORLD. Clicking Claim is the consent, so no second dialog is
+   * shown. A claim whose acknowledgment is lost is completed by claiming again; the relay keeps it pending for this PC
+   * only. Before any world exists, the single joined group is downloaded into a new library server instead.
    */
   async claimFromRelay(): Promise<void> {
     this.assertStopped();
+    const active = this.activeServer();
+    if (!active) {
+      const pending = this.saved.pendingGroups;
+      if (pending.length === 1) {
+        const group = pending[0]!;
+        await this.operation('claimFromRelay', (token) => this.claimIntoNewServer(group, token));
+        return;
+      }
+      if (pending.length > 1) throw new Error('This PC has joined more than one hosting group. Choose the group to download first.');
+    }
     const relay = this.requireRelay();
     await this.operation('claimFromRelay', async (token) => {
       const me = this.identity.fingerprint;
@@ -1330,6 +1491,55 @@ export class SeedHostApplication {
       if (!accepted) throw new Error('The relay sent no ownership offer; nothing changed.');
       this.log('Claimed the server from the relay. Configure this PC\'s launch profile and approve executable/mod trust before starting.');
     });
+  }
+
+  /**
+   * Download a joined group's world on request, even while OTHER unrelated worlds are in the library: the newest
+   * revision is materialized into a NEW library server bound to that group. Existing worlds are never replaced.
+   */
+  async claimPendingGroup(fingerprint: string): Promise<void> {
+    this.assertStopped();
+    if (typeof fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error('Invalid hosting group');
+    const pending = this.saved.pendingGroups.find((entry) => entry.fingerprint === fingerprint);
+    if (!pending) {
+      const bound = this.saved.servers.filter((entry) => entry.group?.fingerprint === fingerprint);
+      if (bound.length === 1 && this.saved.activeServerId === bound[0]!.id) { await this.claimFromRelay(); return; }
+      if (bound.length > 0) throw new Error('That hosting group is already part of this library. Select its server and use Claim instead.');
+      throw new Error('This PC has not joined that hosting group. Accept its invitation first.');
+    }
+    await this.operation('claimPendingGroup', (token) => this.claimIntoNewServer(pending, token));
+  }
+
+  /** Claim the group's world into a NEW library server. Never touches the files or ledger of any existing world. */
+  private async claimIntoNewServer(group: SavedPendingGroup, token: symbol): Promise<void> {
+    const me = this.identity.fingerprint;
+    const peer = this.saved.peers.find((entry) => entry.fingerprint === group.fingerprint);
+    if (!peer) throw new Error('This hosting group’s always-on PC is missing from trusted peers. Restore its peer entry before claiming.');
+    const status = await this.reachRelay(peer, 'Nothing was changed.');
+    if (!status) throw new Error('The group holds no server yet. Park one on it from the PC that has it.');
+    if (status.state === 'transferred') {
+      if (status.owner === me) throw new Error('This PC already holds the server; there is nothing to claim.');
+      throw new Error(`The server is checked out by ${status.ownerName ?? 'another PC'}. That PC must park it on the group’s always-on PC before another PC can claim it.`);
+    }
+    if (status.state === 'offered' && status.pendingTarget !== me) {
+      throw new Error(`The server is pending checkout to ${status.pendingName ?? 'another PC'}; that PC must retry its claim first.`);
+    }
+    const socket = await openRelayOperation(this.identity, peer, 'claim');
+    let activation: Promise<boolean> | undefined;
+    let accepted = false;
+    try {
+      await receiveSnapshot(socket, peer.fingerprint, path.join(this.root, 'managed', 'store'), async (snapshot, source, offer) => {
+        accepted = await this.considerIncoming(socket, token, snapshot, source, offer, (pending) => { activation = pending; }, { approved: true, appendGroup: group });
+        return accepted;
+      });
+    } catch (error) {
+      throw new Error(`Claim did not complete (${(error as Error).message}). If this PC accepted, it holds the server now; the group keeps the claim pending for this PC only. Retry the claim to finish it; it is never applied twice.`, { cause: error });
+    } finally {
+      await activation?.catch((error) => this.log('Claim activation failed: ' + String(error)));
+      socket.destroy();
+    }
+    if (!accepted) throw new Error('The group sent no ownership offer; nothing changed.');
+    this.log('Claimed the group’s world into a new library server. Configure this PC’s launch profile and approve executable/mod trust before starting.');
   }
 
   /** What the relay currently holds and who has it checked out. Read-only. */
@@ -1363,9 +1573,11 @@ export class SeedHostApplication {
    * `approved` means the user already consented by starting this transfer (a relay claim).
    */
   private async considerIncoming(socket: TLSSocket, token: symbol, snapshot: SnapshotManifest, authenticatedSource: string,
-    offer: TransferOffer | undefined, track: (activation: Promise<boolean>) => void, { approved = false } = {}): Promise<boolean> {
+    offer: TransferOffer | undefined, track: (activation: Promise<boolean>) => void,
+    { approved = false, appendGroup = null }: { approved?: boolean; appendGroup?: SavedPendingGroup | null } = {}): Promise<boolean> {
     this.log('Received verified snapshot ' + snapshot.id + ' from ' + (this.nameOf(authenticatedSource) ?? authenticatedSource) + '. Replication alone does not grant hosting ownership.');
     if (!offer) return false;
+    if (appendGroup) return this.materializeGroupIncoming(socket, token, snapshot, authenticatedSource, offer, track, appendGroup);
     const previous = this.activeServer(), original = JSON.stringify(this.activeServer());
     let originalAuthority: string | undefined;
     if (previous) {
@@ -1405,7 +1617,7 @@ export class SeedHostApplication {
     revalidate();
     const ledgerFile = previous?.ledgerFile ?? path.join(this.root, `ownership-${randomUUID()}.sqlite`);
     const profile = previous ? { ...previous.profile, args: [...previous.profile.args] } : validateLaunchProfile({ executable: '', args: [] }, true);
-    const candidate: SavedServer = { id: previous?.id ?? newServerId(), name: previous?.name ?? 'Received server', serverDir, storeDir, snapshotId: snapshot.id, profile, ledgerFile };
+    const candidate: SavedServer = { id: previous?.id ?? newServerId(), name: previous?.name ?? 'Received server', serverDir, storeDir, snapshotId: snapshot.id, profile, ledgerFile, group: previous?.group ?? null };
     const activation = (async () => {
       let authorityAttempted = false;
       this.replaceActive(candidate);
@@ -1427,6 +1639,59 @@ export class SeedHostApplication {
       } catch (error) {
         if (!authorityAttempted) { this.replaceActive(previous); await this.persist(); }
         else this.log('Ownership acceptance may have committed; candidate retained for explicit reconciliation.');
+        throw error;
+      }
+    })();
+    track(activation);
+    return activation;
+  }
+
+  /**
+   * Claim a group's world into a NEW library server: append-only and independent of the selected world, whose files and
+   * ledger are never read or replaced. The entry is recorded before authority; a pre-authority failure rolls the whole
+   * append back, while authority that may have committed is retained for explicit reconciliation.
+   */
+  private async materializeGroupIncoming(socket: TLSSocket, token: symbol, snapshot: SnapshotManifest, authenticatedSource: string,
+    offer: TransferOffer, track: (activation: Promise<boolean>) => void, group: SavedPendingGroup): Promise<boolean> {
+    // Clicking Claim is this PC's consent; there is no second dialog and no read of the selected world's ledger.
+    this.assertStopped();
+    const previousActive = this.saved.activeServerId;
+    const previousPending = this.saved.pendingGroups;
+    const storeDir = path.join(this.root, 'managed', 'store');
+    const serverDir = path.join(this.root, 'managed', 'servers', randomUUID());
+    await materializeSnapshot(storeDir, snapshot.id, serverDir);
+    const candidate: SavedServer = { id: newServerId(), name: 'Received server', serverDir, storeDir, snapshotId: snapshot.id,
+      profile: validateLaunchProfile({ executable: '', args: [] }, true), ledgerFile: path.join(this.root, `ownership-${randomUUID()}.sqlite`),
+      group: { fingerprint: group.fingerprint, parkOnStop: group.parkOnStop } };
+    const assertSession = () => {
+      if (this.operationToken !== token || socket.destroyed || socket.readableEnded || socket.writableEnded) throw new Error('Incoming session or operation has ended');
+      this.assertStopped();
+    };
+    const revalidate = () => {
+      assertSession();
+      if (!this.saved.servers.includes(candidate) || this.saved.activeServerId !== candidate.id) throw new Error('Claimed server entry changed during activation');
+    };
+    assertSession();
+    const activation = (async () => {
+      let authorityAttempted = false;
+      this.saved.servers.push(candidate);
+      this.saved.activeServerId = candidate.id;
+      this.saved.pendingGroups = this.saved.pendingGroups.filter((entry) => entry.fingerprint !== group.fingerprint);
+      try {
+        // Record the new server before authority. Missing/mismatched ledgers fail closed on restart.
+        await this.persist();
+        revalidate();
+        authorityAttempted = true;
+        await new OwnershipLedger(candidate.ledgerFile, this.identity.fingerprint).acceptTransfer(offer, authenticatedSource, snapshot.id);
+        this.log('Accepted ownership of ' + snapshot.id + ' as a new library server. Existing worlds were not changed. Configure a local launch profile and approve executable/mod trust before starting.');
+        return true;
+      } catch (error) {
+        if (!authorityAttempted) {
+          this.saved.servers = this.saved.servers.filter((entry) => entry !== candidate);
+          this.saved.activeServerId = previousActive;
+          this.saved.pendingGroups = previousPending;
+          await this.persist();
+        } else this.log('Ownership acceptance may have committed; the new server entry is retained for explicit reconciliation.');
         throw error;
       }
     })();

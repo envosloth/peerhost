@@ -101,6 +101,7 @@
       <div class="nav-tabs" role="tablist" aria-orientation="vertical" aria-labelledby="nav-heading">
         <button id="operate-tab" class="nav-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="operate-panel" tabindex="0"><span class="nav-icon"><svg class="icon" aria-hidden="true"><use href="#i-server"/></svg></span><span class="nav-copy"><span class="nav-text">My server</span><span class="nav-sub">Start, backups &amp; mods</span></span><span id="nav-server-led" class="led" aria-hidden="true"></span></button>
         <button id="console-tab" class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="console-panel" tabindex="-1" hidden><span class="nav-icon"><svg class="icon" aria-hidden="true"><use href="#i-console"/></svg></span><span class="nav-copy"><span class="nav-text">Console</span><span class="nav-sub">Live server output</span></span></button>
+        <button id="friends-tab" class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="friends-panel" tabindex="-1"><span class="nav-icon"><svg class="icon" aria-hidden="true"><use href="#i-friends"/></svg></span><span class="nav-copy"><span class="nav-text">Friends</span><span class="nav-sub">People &amp; requests</span></span></button>
         <button id="peers-tab" class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="peers-panel" tabindex="-1"><span class="nav-icon"><svg class="icon" aria-hidden="true"><use href="#i-friends"/></svg></span><span class="nav-copy"><span class="nav-text">Friends</span><span class="nav-sub">Share hosting</span></span><span id="nav-friend-count" class="nav-count" hidden></span></button>
         <button id="settings-tab" class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-panel" tabindex="-1"><span class="nav-icon"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg></span><span class="nav-copy"><span class="nav-text">Settings</span><span class="nav-sub">Look, network &amp; app</span></span></button>
       </div>
@@ -133,24 +134,6 @@
       <!-- ===== My server ===== -->
       <section id="operate-panel" class="page" role="tabpanel" aria-labelledby="operate-tab">
         <div class="page-inner">
-          <section class="marquee" aria-labelledby="workspace-title">
-            <svg class="phyllo marquee-phyllo" viewBox="-100 -100 200 200" data-seeds="240" aria-hidden="true"></svg>
-            <div class="marquee-body">
-              <div class="marquee-title">
-                <p class="marquee-brand"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg>Seed Hosting<span>· This PC</span></p>
-                <h1 id="workspace-title">My server</h1>
-                <p class="mode-label">Run Minecraft Java on this PC and take turns hosting with friends.</p>
-              </div>
-              <dl class="marquee-gauges">
-                <div class="gauge"><dt>Server</dt><dd><span id="marquee-server-led" class="led" aria-hidden="true"></span><span id="marquee-server">Not set up</span></dd></div>
-                <div class="gauge"><dt>Hosting</dt><dd><span id="marquee-host-led" class="led" aria-hidden="true"></span><span id="marquee-host">—</span></dd></div>
-                <div class="gauge"><dt>Friends</dt><dd><span id="marquee-group-led" class="led" aria-hidden="true"></span><span id="marquee-group">No group</span></dd></div>
-                <div class="gauge"><dt>Backups</dt><dd><span id="marquee-backup-led" class="led" aria-hidden="true"></span><span id="marquee-backup">None yet</span></dd></div>
-              </dl>
-            </div>
-            <div class="ticker" aria-hidden="true"><div id="ticker-track" class="ticker-track"></div></div>
-          </section>
-
           <section class="server-section" aria-labelledby="server-heading">
             <div class="server-card card">
               <div class="server-identity">
@@ -189,7 +172,6 @@
                   </div>
                 </div>
               </div>
-              <div id="join-help" class="join-help well" role="note" hidden></div>
               <details class="well" id="playit-panel">
                 <summary>Advanced: use your own playit.gg agent</summary>
                 <p>Give friends one Minecraft Java address, without a VPN or router changes.</p>
@@ -307,34 +289,63 @@
         </div>
       </section>
 
-      <!-- ===== Friends ===== -->
-      <section id="peers-panel" class="page" role="tabpanel" aria-labelledby="peers-tab" hidden>
+      <!-- ===== Friends (ordinary social) ===== -->
+      <section id="friends-panel" class="page" role="tabpanel" aria-labelledby="friends-tab" hidden>
         <div class="page-inner">
           <header class="page-header">
-            <div><p class="eyebrow">OPTIONAL</p><h1>Friends</h1><p class="page-lead">Find friends by username, invite them to your group, and take turns hosting the same world. Your world files stay on your own PCs.</p></div>
+            <div><p class="eyebrow">OPTIONAL</p><h1>Friends</h1><p class="page-lead">Find friends by username. A friendship is a name you recognize — sharing a world is separate and invited per server from Multi-host.</p></div>
           </header>
           <section id="account-card" class="card account-card" aria-labelledby="account-heading">
             <div class="compact-heading"><h2 id="account-heading">Your Seed Hosting account</h2><button id="account-open" type="button" class="button button-primary">Create account / sign in</button><button id="account-signout" type="button" class="text-button" hidden>Sign out</button></div>
             <p id="account-status" class="field-help" role="status">Checking account…</p>
             <p id="account-directory-note" class="field-help">Usernames work with people using the same account directory. Worlds stay on your PCs.</p>
-            <form id="username-friend-form" class="account-invite-form" hidden>
-              <label for="friend-username">Add a friend by username</label>
-              <div class="account-input-row"><input id="friend-username" type="text" maxlength="24" autocomplete="off" spellcheck="false" placeholder="Their Seed Hosting username" required><button id="username-invite" type="submit" class="button button-primary">Send invitation</button></div>
-              <p class="field-help">They accept in their app. Your group shares hosting access, not just a Minecraft address.</p>
+            <form id="friend-add-form" class="account-invite-form" hidden>
+              <label for="friend-add-username">Add a friend by username</label>
+              <div class="account-input-row"><input id="friend-add-username" type="text" maxlength="24" autocomplete="off" spellcheck="false" placeholder="Their Seed Hosting username" required><button id="friend-add-submit" type="submit" class="button button-primary">Send friend request</button></div>
+              <p class="field-help">They accept it in their app. This cannot be a username you already added or your own. A friendship alone grants no hosting or world-file access.</p>
             </form>
-            <div id="account-create-group" hidden><p class="field-help">No group yet. Create one on this PC, or accept a friend’s invitation below. Keep this PC on with Seed Hosting open to store the shared world.</p><button id="account-start-group" type="button" class="button">Create my group on this PC</button></div>
-            <div class="compact-heading"><h3>Invitations for you</h3><button id="account-refresh" type="button" class="text-button" hidden>Refresh invitations</button></div>
-            <ul id="account-inbox" class="friend-list" aria-label="Hosting invitations"></ul>
-            <p id="account-friend-feedback" class="field-help" role="status" aria-live="polite"></p>
+            <div class="compact-heading"><h3>Friend requests <span id="friend-requests-count" class="section-caption"></span></h3><button id="friend-requests-refresh" type="button" class="text-button" hidden>Refresh</button></div>
+            <ul id="friend-request-list" class="friend-list" aria-label="Friend requests"></ul>
+            <div class="compact-heading"><h3>Your friends <span id="friends-count" class="section-caption"></span></h3></div>
+            <ul id="account-friends-list" class="friend-list" aria-label="Your friends"></ul>
+            <p id="account-friends-feedback" class="field-help" role="status" aria-live="polite"></p>
           </section>
-          <div id="friends-home"></div>
-          <section id="friends-controls" class="friends-section" aria-label="Group membership">
+          <p class="alpha-note">Seed Hosting never changes your router or firewall.</p>
+        </div>
+      </section>
+
+      <!-- ===== Multi-host (hosting with friends for the selected server) ===== -->
+      <section id="peers-panel" class="page" role="tabpanel" aria-labelledby="peers-tab" hidden>
+        <div class="page-inner">
+          <header class="page-header">
+            <div><p class="eyebrow">OPTIONAL</p><h1>Multi-host</h1><p class="page-lead">Hosting invitations, group membership and world handoff for the selected server.</p></div>
+          </header>
+          <section id="hosting-card" class="card account-card" aria-labelledby="hosting-heading">
+            <div class="compact-heading"><h2 id="hosting-heading">Hosting with friends</h2><button id="hosting-open-account" type="button" class="button button-small">Sign in</button></div>
+            <p id="hosting-status" class="field-help" role="status">Checking account…</p>
+            <p class="field-help">Hosting invitations share hosting control and world-file access through your account directory group. Adding someone as a friend does not share a world: invite each friend explicitly below.</p>
+            <div id="hosting-create-group" hidden><p class="field-help">No hosting group yet. Create one on this PC, or accept a friend’s hosting invitation below. Keep this PC on with Seed Hosting open to store the shared world.</p><button id="hosting-start-group" type="button" class="button">Create my group on this PC</button></div>
+            <section id="friends-controls" class="friends-section" aria-label="Group membership">
 
             <div class="card card-tight members-card">
               <div class="compact-heading friend-list-heading"><h3>Group members <span id="group-status" class="section-caption" role="status">No group</span></h3><button id="refresh-friends" type="button" class="text-button" disabled>Refresh members</button></div>
               <p id="friend-feedback" class="field-help" role="status" aria-live="polite">Not in a group yet.</p>
               <p id="friend-last-checked" class="field-help"></p><p id="friend-holder" class="holder-line" role="status">Current holder: not checked</p><ul id="friend-list" class="friend-list" aria-label="Relay members"></ul>
             </div>
+          </section>
+            <div class="compact-heading"><h3>Invite a friend to host</h3></div>
+            <p class="field-help">Choose one of your friends to invite to host <strong id="hosting-server-name">this server</strong>. They accept in their app.</p>
+            <ul id="hosting-friend-list" class="friend-list" aria-label="Friends available to invite to host"></ul>
+            <form id="hosting-add-form" class="account-invite-form" hidden>
+              <label for="hosting-add-username">Add a friend by username</label>
+              <div class="account-input-row"><input id="hosting-add-username" type="text" maxlength="24" autocomplete="off" spellcheck="false" placeholder="Their Seed Hosting username" required><button id="hosting-add-submit" type="submit" class="button">Send friend request</button></div>
+              <p class="field-help">This sends an ordinary friend request. Hosting access needs an explicit invitation.</p>
+            </form>
+            <p id="hosting-friend-feedback" class="field-help" role="status" aria-live="polite"></p>
+            <div class="compact-heading"><h3>Hosting requests for you</h3><button id="hosting-requests-refresh" type="button" class="text-button" hidden>Refresh</button></div>
+            <p class="field-help">Accepting shares hosting control and world-file access with the inviter’s group — only accept people you trust. A Minecraft player address is never proof that a hosting invitation can connect.</p>
+            <ul id="hosting-request-list" class="friend-list" aria-label="Hosting invitations"></ul>
+            <p id="hosting-request-feedback" class="field-help" role="status" aria-live="polite"></p>
           </section>
           <details id="advanced-peers" class="advanced-peers card"><summary><svg class="icon summary-chevron" aria-hidden="true"><use href="#i-chevron"/></svg><span class="summary-title">Advanced: direct PC-to-PC transfers</span><span class="summary-meta">Fingerprints</span></summary>
             <div class="advanced-body">
@@ -398,7 +409,7 @@
                 <label class="segment"><input type="radio" name="density" value="comfortable"><span>Comfortable</span></label>
                 <label class="segment"><input type="radio" name="density" value="compact"><span>Compact</span></label>
               </div></fieldset>
-              <fieldset id="appearance-motion" class="setting-row"><legend class="setting-label">Motion<small>Reduced stops the ticker and animations.</small></legend><div class="segmented">
+              <fieldset id="appearance-motion" class="setting-row"><legend class="setting-label">Motion<small>Reduced stops animations and transitions.</small></legend><div class="segmented">
                 <label class="segment"><input type="radio" name="motion" value="full"><span>Animated</span></label>
                 <label class="segment"><input type="radio" name="motion" value="reduced"><span>Reduced</span></label>
               </div></fieldset>
@@ -533,7 +544,7 @@
           <p id="setup-runtime-feedback" class="field-help" role="status"></p>
           <details class="setup-more"><summary>Using a modpack or custom start command?</summary><p>Modpack start files and arguments are kept as they are. For anything unusual, edit the full command yourself.</p><button id="setup-advanced" type="button" class="text-button">Open advanced launch settings</button></details>
         </section>
-        <section id="setup-friends" data-setup-panel="friends" hidden><h3>Friends <span class="optional-tag">optional</span></h3><p class="setup-lead">Friends in a group can take turns hosting the same world: whoever is online starts it, and the world moves safely between your PCs. A group lives on an always-on PC (next step).</p><ul class="setup-points"><li><strong>Have an invitation?</strong> Sign in below — your friend adds you by username and you accept it here.</li><li><strong>Starting a group?</strong> Sign in, create your group, then add friends by username.</li><li><strong>Just playing on your own Wi-Fi?</strong> Skip this — friends can join your server directly.</li></ul><div id="setup-friends-slot"></div></section>
+        <section id="setup-friends" data-setup-panel="friends" hidden><h3>Friends <span class="optional-tag">optional</span></h3><p class="setup-lead">Friends can take turns hosting the same world. Friendships, requests and sign-in live on the Friends page; hosting invitations live in each server’s Multi-host page.</p><ul class="setup-points"><li><strong>Have a friend request or invitation?</strong> Sign in on the Friends page and accept it there.</li><li><strong>Starting a group?</strong> Sign in, then create your hosting group in a server’s Multi-host page.</li><li><strong>Just playing on your own Wi-Fi?</strong> Skip this — friends can join your server directly.</li></ul><div id="setup-friends-slot"><p id="setup-friends-status" class="field-help" role="status">Open the Friends page to sign in, add friends by username and answer requests.</p><button id="setup-open-friends" type="button" class="button button-primary">Open Friends</button></div></section>
         <section id="setup-gateway" data-setup-panel="gateway" hidden><h3>Always-on PC <span class="optional-tag">optional</span></h3><p class="setup-lead">A spare computer that stays on — an old laptop, mini PC or home server — keeps your world between play sessions and gives friends one address to join, even when you’re offline. It takes one click.</p>
           <div id="always-on-choices" class="setup-choices always-on-choices">
             <button id="always-on-be" type="button" class="choice-card"><span class="choice-icon" aria-hidden="true"><svg class="icon"><use href="#i-server"/></svg></span><strong>This PC stays on</strong><span>Make this computer the always-on PC. Seed Hosting runs it for you — nothing to install.</span><span class="choice-go" aria-hidden="true">Make it the always-on PC →</span></button>

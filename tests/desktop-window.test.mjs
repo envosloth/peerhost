@@ -67,11 +67,12 @@ test('splash, borderless/fullscreen toggle, page tabs, appearance, minimize, clo
     await page.waitForFunction(() => document.querySelector('#splash')?.hasAttribute('hidden'), undefined, { timeout: 10000 });
     await dismissInitialSetup(page);
 
-    // Seed Hosting brand: window title, sidebar wordmark, marquee brand and the fresh default accent.
+    // Seed Hosting brand: window title, sidebar wordmark, Home heading and the fresh default accent.
     assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getTitle()), 'Seed Hosting');
     assert.equal(await page.locator('.brand-name').textContent(), 'Seed Hosting');
     assert.equal(await page.locator('.splash-word').textContent(), 'Seed Hosting');
-    assert.match(await page.locator('.marquee-brand').textContent(), /Seed Hosting/);
+    assert.equal(await page.locator('#home-panel h1').textContent(), 'Home');
+    assert.equal(await page.locator('.marquee, #ticker-track, #join-help').count(), 0, 'recap and join widgets are gone');
     assert.equal(await page.evaluate(() => document.documentElement.dataset.accent), 'sprout', 'Sprout is the standard accent');
     // Failures read as plain sentences: no internal method names or Electron IPC wrapper text.
     await app.evaluate(({ dialog }) => { dialog.showOpenDialog = async () => { throw new Error('Folder picker unavailable'); }; });
@@ -124,8 +125,9 @@ test('splash, borderless/fullscreen toggle, page tabs, appearance, minimize, clo
     await page.locator('#nav-setup').click();
     await page.locator('[data-setup-step="friends"]').click();
     await page.waitForFunction(() => !document.querySelector('#setup-friends').hidden && document.querySelector('#activity-message').textContent.startsWith('Ready'));
-    assert.equal(await page.locator('#setup-friends #account-card').isVisible(), true, 'serverless username invitation setup stays accessible');
-    assert.equal(await page.locator('#account-open').isVisible(), true, 'username sign-in remains reachable without server tabs');
+    assert.equal(await page.locator('#setup-friends #setup-open-friends').isVisible(), true, 'the guide links to the Friends page without moving the account card');
+    assert.equal(await page.locator('#setup-friends #account-card').count(), 0, 'the guide never adopts the account card');
+    assert.equal(await page.locator('#friends-panel #account-card').count(), 1, 'username sign-in stays reachable on the Friends page without server tabs');
     await page.locator('#setup-later').click();
     await page.waitForFunction(() => !document.querySelector('#setup-dialog').open);
     for (const name of ['operate', 'players', 'backups', 'scheduler', 'mods', 'tunnels', 'server-settings', 'server-files']) assert.equal(await page.locator('#' + name + '-tab').isDisabled(), true, name + ' needs a server');

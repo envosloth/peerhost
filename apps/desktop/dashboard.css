@@ -10,6 +10,10 @@
 .server-card-copy { display: flex; flex-direction: column; gap: 7px; flex: 1; min-width: 0; }
 .server-card-copy .server-row-name { font-size: 19px; line-height: 1.25; overflow-wrap: anywhere; }
 .server-card-meta { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+/* Per-card public playit address: rendered only when the core attributed it to this exact server. */
+.server-card-address { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 10px; border-radius: 10px; background: var(--well); box-shadow: var(--sh-well); }
+.server-card-address .server-address-value { color: var(--accent-text); font-weight: 600; overflow-wrap: anywhere; user-select: all; }
+.server-card-address .server-address-status { margin: 0; }
 .home-library .server-row-actions { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
 .home-library .server-empty { border: 0; padding: 18px 0; }
 #home-concurrency { margin-top: 16px; }

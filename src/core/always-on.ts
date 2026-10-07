@@ -116,6 +116,8 @@ export interface AlwaysOnStatus {
   code: string | null; codeExpiresAt: number | null;
   members: Array<{ name: string; fingerprint: string }>;
   custody: string;
+  /** This always-on PC's relay identity; the fingerprint a hosting group binds to when it is created here. */
+  fingerprint: string;
 }
 
 /** Always-on PC side: the relay, its player address and the pairing responder, all inside the desktop app. */
@@ -288,6 +290,7 @@ export class AlwaysOnHost {
       port: relay?.endpoint?.port ?? null, gamePort: relay?.gameEndpoint?.port ?? null,
       code: session?.code ?? null, codeExpiresAt: session?.expiresAt ?? null,
       members: relay?.trusted ?? [], custody,
+      fingerprint: this.identity.fingerprint,
     };
   }
 

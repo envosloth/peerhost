@@ -30,6 +30,9 @@ async function renderer(t, state = appState()) {
       if (method === 'listSnapshots') return f.snapshots;
       if (method === 'accountStatus') return f.state.account?.status;
       if (method === 'accountRequests') return f.state.account?.requests ?? [];
+      // TEST-ONLY friendship seam: the merged IPC returns arrays; tests may seed state.account.friends.
+      if (method === 'accountFriendRequests') return f.state.account?.friendRequests ?? [];
+      if (method === 'accountFriends') return f.state.account?.friends ?? [];
       return undefined; // Cancellation, unless a test explicitly exercises a successful mutation.
     } };
   }, { state });
@@ -55,7 +58,7 @@ test('fresh empty state has exact centered create action and resumable optional 
   await reopened.locator('#nav-setup').click();
   assert.equal(await reopened.locator('#setup-name').inputValue(), 'Saved draft');
   assert.equal(await page.locator('#mod-search-form').count(), 1);
-  assert.equal(await page.locator('#username-friend-form').count(), 1);
+  assert.equal(await page.locator('#friend-add-form').count(), 1, 'the ordinary add-by-username form is present without a group');
   assert.equal(await page.locator('#join-friend-form').count(), 0);
 });
 
@@ -116,15 +119,16 @@ async function closeAutoSignIn(page) {
 }
 const signedOutAccount = { configured: true, signedIn: false, online: true, username: null, detail: 'Create an account or sign in to this account directory.' };
 
-test('optional friends stage uses username enrollment without retired code controls; skip persists', async t => {
+test('optional friends stage points to the Friends page without moving the account card; skip persists', async t => {
   const page = await renderer(t, { ...appState(), account: { status: signedOutAccount, requests: [] } });
   await closeAutoSignIn(page);
   await page.locator('[data-setup-step="friends"]').click(); await settled(page);
-  assert.equal(await page.locator('#setup-friends #account-card').count(), 1, 'wizard friends stage shows the username account card');
-  assert.equal(await page.locator('#setup-friends #friends-controls').count(), 0, 'the old invitation-code controls are not moved into the wizard');
-  assert.equal(await page.locator('#setup-friends #join-friend-form').count(), 0);
-  assert.equal(await page.locator('#setup-friends #friend-code').count(), 0, 'no code entry in the wizard');
-  assert.equal(await page.locator('#friends-panel #friends-controls').count(), 1, 'old controls remain on the Friends page');
+  assert.equal(await page.locator('#setup-friends #account-card').count(), 0, 'the wizard never adopts the account card');
+  assert.equal(await page.locator('#setup-friends #friends-controls').count(), 0, 'hosting controls stay in their workspace');
+  assert.equal(await page.locator('#setup-friends #setup-open-friends').isVisible(), true, 'the wizard links to the Friends page');
+  assert.equal(await page.locator('#friends-panel #account-card').count(), 1, 'the account card stays on the Friends page');
+  assert.equal(await page.locator('#peers-panel #friends-controls').count(), 1, 'group controls live in Multi-host');
+  assert.equal(await page.locator('#join-friend-form, #friend-code').count(), 0, 'no code entry anywhere');
   await page.locator('#setup-skip').click(); await settled(page);
   assert.equal(await page.locator('#setup-gateway').isVisible(), true);
   await page.locator('#setup-skip').click(); await settled(page);
@@ -134,47 +138,53 @@ test('optional friends stage uses username enrollment without retired code contr
   assert.doesNotMatch(JSON.stringify(saved), /SEEDHOST-private-secret|friend-code|invitation/);
   await page.locator('#setup-next').click(); await settled(page);
   assert.equal(await page.locator('#join-friend-form, #friend-code, #invite-code').count(), 0, 'manual enrollment is absent everywhere');
-  assert.equal(await page.locator('#friends-panel #refresh-friends').count(), 1, 'membership inspector stays usable');
-  assert.equal(await page.locator('#friends-panel #account-card').count(), 1, 'account card is restored to the Friends page');
+  assert.equal(await page.locator('#peers-panel #refresh-friends').count(), 1, 'membership inspector stays usable in Multi-host');
+  assert.equal(await page.locator('#friends-panel #account-card').count(), 1, 'the account card is never relocated');
   assert.equal(await page.locator('#setup-friends #account-card').count(), 0);
 });
 
-test('signed-out guide friends stage surfaces the sign-in prompt above the wizard and returns focus', async t => {
+test('signed-out guide friends stage opens the Friends page and surfaces the sign-in prompt', async t => {
   const page = await renderer(t, { ...appState(), account: { status: signedOutAccount, requests: [] } });
   await closeAutoSignIn(page);
   await page.locator('[data-setup-step="friends"]').click(); await settled(page);
-  const open = page.locator('#account-open');
-  assert.equal(await open.isVisible(), true, 'sign-in call to action is visible in the guide');
+  const open = page.locator('#setup-open-friends');
+  assert.equal(await open.isVisible(), true, 'the Friends link is visible in the guide');
   assert.equal(await open.isEnabled(), true);
   await open.click();
+  await page.waitForFunction(() => !document.querySelector('#setup-dialog').open, undefined, { timeout: 10000 });
   await page.waitForFunction(() => document.querySelector('#account-dialog').open);
+  assert.equal(await page.locator('#friends-panel').isVisible(), true, 'the guide closes onto the Friends page');
   const stacking = await page.evaluate(() => {
     const dialog = document.querySelector('#account-dialog');
     const rect = dialog.getBoundingClientRect();
     const top = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-    return { onTop: Boolean(top?.closest('#account-dialog')), wizardOpen: document.querySelector('#setup-dialog').open };
+    return { onTop: Boolean(top?.closest('#account-dialog')), friendsOpen: !document.querySelector('#friends-panel').hidden };
   });
-  assert.equal(stacking.wizardOpen, true, 'wizard stays open behind the sign-in dialog');
-  assert.equal(stacking.onTop, true, 'sign-in dialog paints above the wizard');
+  assert.equal(stacking.friendsOpen, true);
+  assert.equal(stacking.onTop, true, 'sign-in dialog paints above the Friends page');
   await page.locator('#account-dialog').press('Escape');
   await page.waitForFunction(() => !document.querySelector('#account-dialog').open);
   assert.equal(await page.evaluate(() => document.activeElement.id), 'account-open', 'focus returns to the sign-in call to action');
 });
 
-test('signed-in guide friends stage offers add-by-username and the invitations inbox', async t => {
+test('signed-in guide friends stage opens the ordinary Friends page; hosting invitations stay in Multi-host', async t => {
   const state = { ...appState(), relay: { fingerprint: 'c'.repeat(64), name: 'Home group', parkOnStop: true },
     account: { status: { configured: true, signedIn: true, online: true, username: 'alex', detail: 'Signed in · relay.example' },
       requests: [{ id: 'a'.repeat(36), from: 'sam', group: 'Sam’s group', expiresAt: Date.now() + 3600000 }] } };
   const page = await renderer(t, state);
   await page.locator('[data-setup-step="friends"]').click(); await settled(page);
-  assert.equal(await page.locator('#setup-friends #account-card').count(), 1);
-  assert.equal(await page.locator('#username-friend-form').isVisible(), true, 'add a friend by username is available in the guide');
-  assert.equal(await page.locator('#account-inbox').isVisible(), true, 'invitations inbox is available in the guide');
-  assert.match(await page.locator('#account-inbox').textContent(), /@sam invited you/);
+  assert.equal(await page.locator('#setup-friends #account-card').count(), 0, 'the guide never hosts the account card');
+  assert.equal(await page.locator('#setup-friends #setup-open-friends').isVisible(), true);
+  await page.locator('#setup-open-friends').click();
+  await page.waitForFunction(() => !document.querySelector('#setup-dialog').open);
+  assert.equal(await page.locator('#friends-panel #account-card').isVisible(), true);
+  assert.equal(await page.locator('#friend-add-form').isVisible(), true, 'add a friend by username is available on the Friends page');
+  assert.equal(await page.locator('#friends-panel #hosting-request-list').count(), 0, 'hosting invitations stay out of the ordinary Friends context');
+  assert.equal(await page.locator('#peers-panel #hosting-request-list').count(), 1, 'hosting invitations live in Multi-host');
   assert.equal(await page.locator('#setup-friends #friends-controls').count(), 0, 'code controls are never moved into the guide');
 });
 
-test('“Join a friend’s world” starts the username flow, not the code form', async t => {
+test('“Join a friend’s world” closes the guide onto the Friends sign-in flow', async t => {
   const state = { ...appState(), account: { status: signedOutAccount, requests: [] } };
   // A truly fresh draft opens the choices. The other fixtures deliberately use a named, resumable Create draft.
   state.onboarding.draft.name = 'My Minecraft server';
@@ -184,18 +194,19 @@ test('“Join a friend’s world” starts the username flow, not the code form'
   assert.equal(await page.locator('#setup-choose-join').isVisible(), true, 'fresh guide exposes the real join choice');
   assert.match(await page.locator('#setup-choose-join').textContent(), /username/i, 'choice copy describes the username flow');
   assert.doesNotMatch(await page.locator('#setup-choose-join').textContent(), /invitation code/i);
-  await page.locator('#setup-choose-join').click(); await settled(page);
-  assert.equal(await page.locator('#setup-friends').isVisible(), true, 'choice lands on the friends stage');
-  assert.equal(await page.locator('#setup-friends #account-card').count(), 1, 'the username flow is on screen');
+  await page.locator('#setup-choose-join').click();
+  await page.waitForFunction(() => !document.querySelector('#setup-dialog').open, undefined, { timeout: 10000 });
+  assert.equal(await page.locator('#friends-panel').isVisible(), true, 'the guide closes onto the Friends page');
+  assert.equal(await page.locator('#friends-panel #account-card').count(), 1, 'the account card stays on its own page');
   await page.waitForFunction(() => document.querySelector('#account-dialog').open);
-  assert.equal(await page.evaluate(() => document.querySelector('#setup-dialog').open), true, 'wizard stays open with the sign-in prompt on top');
+  assert.equal(await page.evaluate(() => document.querySelector('#setup-dialog').open), false, 'the guide does not linger behind the sign-in prompt');
   await page.keyboard.press('Tab'); await page.keyboard.press('Tab');
-  assert.equal(await page.evaluate(() => Boolean(document.activeElement.closest('#account-dialog'))), true, 'sign-in fields remain keyboard-usable above the guide');
+  assert.equal(await page.evaluate(() => Boolean(document.activeElement.closest('#account-dialog'))), true, 'sign-in fields remain keyboard-usable');
   await page.locator('#account-dialog').press('Escape');
   await page.waitForFunction(() => !document.querySelector('#account-dialog').open);
-  assert.equal(await page.evaluate(() => document.activeElement.id), 'account-open', 'Join-triggered sign-in returns focus to the guide sign-in action, not the close button');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'account-open', 'Join-triggered sign-in returns focus to the sign-in action');
   await page.keyboard.press('Tab');
-  assert.equal(await page.evaluate(() => Boolean(document.activeElement.closest('#setup-dialog'))), true, 'dismissing Join sign-in does not trap focus');
+  assert.equal(await page.evaluate(() => Boolean(document.activeElement?.closest('#account-dialog'))), false, 'dismissing Join sign-in does not trap focus');
 });
 
 test('gateway uses actual tunnel opt-in and explicit connectivity checks, not preference or viewed instructions', async t => {
@@ -248,12 +259,18 @@ test('modal keeps errors, close and navigation on-screen at both sizes; polling 
     account: { status: { configured: true, signedIn: true, online: true, username: 'alex', detail: 'Signed in · fixture directory' }, requests: [] } };
   const page = await renderer(t, state);
   await page.locator('[data-setup-step="friends"]').click(); await settled(page);
-  assert.equal(await page.locator('#setup-friends #username-friend-form').isVisible(), true, 'keyboard test uses the guide’s actual username control');
+  assert.equal(await page.locator('#setup-friends #account-card').count(), 0, 'the guide never hosts the account card');
   assert.equal(await page.locator('#setup-friends #friends-controls').count(), 0, 'legacy code controls stay outside the guide');
-  await page.locator('#friend-username').fill('keyboard_user');
+  // The guide hands off to the Friends page; its add-by-username control survives polling while focused.
+  await page.locator('#setup-open-friends').click();
+  await page.waitForFunction(() => !document.querySelector('#setup-dialog').open);
+  await page.waitForFunction(() => document.activeElement?.id === 'friend-add-username');
+  await page.locator('#friend-add-username').fill('keyboard_user');
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange'))); await settled(page);
-  assert.equal(await page.evaluate(() => document.activeElement.id), 'friend-username', 'polling must not detach focused username controls');
-  assert.equal(await page.locator('#friend-username').inputValue(), 'keyboard_user', 'polling preserves typed username input');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'friend-add-username', 'polling must not detach focused username controls');
+  assert.equal(await page.locator('#friend-add-username').inputValue(), 'keyboard_user', 'polling preserves typed username input');
+  await page.locator('#nav-setup').click();
+  await page.waitForFunction(() => document.querySelector('#setup-dialog').open);
   for (const [width, height] of [[1000, 700], [1240, 860]]) {
     await page.setViewportSize({ width, height });
     for (const stage of ['server', 'runtime', 'friends', 'gateway', 'ready']) {
