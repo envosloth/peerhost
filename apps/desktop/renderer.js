@@ -19,6 +19,9 @@
   let settingsCategory = 'appearance';
 
   const busyLabels = {
+    listServerVersions: 'Loading Minecraft versions…', discoverJava: 'Checking installed Java…',
+    searchSetupMods: 'Searching available mods…', searchMods: 'Searching available mods…',
+    listSnapshots: 'Loading backups…', updateCheck: 'Checking for updates…', updateDownload: 'Downloading and verifying the update…', updateInstall: 'Preparing to restart and install the update…',
     importServer: 'Choosing / copying your server…', createSnapshot: 'Saving a backup…',
     saveProfile: 'Saving launch settings…', startServer: 'Starting server…', stopServer: 'Stopping server and saving the world…',
     createServer: 'Setting up your world — downloading and checking the official files (and Java, if needed)… this can take a few minutes.', saveOnboarding: 'Saving…',
@@ -35,6 +38,7 @@
     pairAlwaysOn: 'Finding your always-on PC and connecting…', publicAddressEnable: 'Setting up your public address…', publicAddressDisable: 'Turning off the public address…', setupFabricMods: 'Installing your mods and anything they need…',
   };
   let relayStatus = null;
+  const trackedCall = (method, payload) => window.seedLoading ? window.seedLoading.run(busyLabels[method] || 'Working…', () => window.seedhost.call(method, payload)) : window.seedhost.call(method, payload);
   let relayStatusError = null;
   let relayContext = null;
   let relayRequest = 0;
@@ -116,6 +120,11 @@
   const RECENT_RELEASES = 10;
 
   let setupDraft = null;
+  // null is a new-world draft; never substitute the selected existing server.
+  let setupServerId = null;
+  let setupGeneration = 0;
+  const setupServer = () => setupServerId !== null && state?.server?.id === setupServerId ? state.server : null;
+  const setupProgress = () => setupServerId === null ? state?.newServerOnboarding || (!state?.server ? state?.onboarding : null) : state?.server?.id === setupServerId ? state.onboarding : null;
   let setupAutoChecked = false;
   let setupReturnFocus = null;
   let setupMetadataLoading = false;
@@ -130,8 +139,8 @@
   let setupCustomJavaDirty = false;
   // Display only the supported single-token prefix. The core validator is authoritative on save.
   const customJvmNames = new Set(['UseG1GC', 'UseZGC', 'UseShenandoahGC', 'UseParallelGC', 'UseSerialGC', 'MaxGCPauseMillis', 'DisableExplicitGC', 'AlwaysPreTouch', 'UseStringDeduplication', 'ParallelRefProcEnabled', 'UnlockExperimentalVMOptions', 'UnlockDiagnosticVMOptions', 'G1NewSizePercent', 'G1MaxNewSizePercent', 'G1HeapRegionSize', 'G1ReservePercent', 'G1HeapWastePercent', 'G1MixedGCCountTarget', 'InitiatingHeapOccupancyPercent', 'G1MixedGCLiveThresholdPercent', 'G1RSetUpdatingPauseTimePercent', 'SurvivorRatio', 'PerfDisableSharedMem', 'MaxTenuringThreshold', 'ParallelGCThreads', 'ConcGCThreads', 'UseNUMA', 'UseNUMAInterleaving']);
-  function profileCustomJavaArgs() {
-    const args = state?.server?.profile?.args || [];
+  function profileCustomJavaArgs(server = state?.server) {
+    const args = server?.profile?.args || [];
     const end = args.findIndex(arg => !arg.startsWith('-') || ['-jar', '-cp', '-classpath', '--class-path', '-p', '--module-path', '-m', '--module', '--'].includes(arg) || /^(?:--class-path|--module-path|--module)=/.test(arg));
     return args.slice(0, end < 0 ? args.length : end).filter(arg => {
       const property = /^-D([A-Za-z0-9_.-]{1,128})=(.*)$/.exec(arg);
@@ -142,11 +151,11 @@
   }
   $('setup-custom-java-args').addEventListener('input', () => { setupCustomJavaDirty = true; $('setup-custom-java-args').removeAttribute('aria-invalid'); });
   const defaultSetup = () => ({ step: 'server', dismissed: false, completed: false, skipped: [], draft: { name: DEFAULT_SERVER_NAME, loader: 'vanilla', gameVersion: '', memoryMiB: 2048 } });
-  const setupPrepared = () => Boolean(state?.server?.profile?.executable && state.server.profile.args?.length && !state.server.modInstallError);
+  const setupPrepared = () => Boolean(setupServer()?.profile?.executable && setupServer().profile.args?.length && !setupServer().modInstallError);
   const formatMemory = (mib) => mib % 1024 === 0 ? `${mib / 1024} GB` : `${(mib / 1024).toFixed(1)} GB`;
   const formatBytes = (bytes) => bytes >= 1073741824 ? `${(bytes / 1073741824).toFixed(1)} GB` : bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
-  function profileMemoryMiB() {
-    const flag = state?.server?.profile?.args?.find(arg => /^-Xmx\d+[mMgG]$/.test(arg));
+  function profileMemoryMiB(server = state?.server) {
+    const flag = server?.profile?.args?.find(arg => /^-Xmx\d+[mMgG]$/.test(arg));
     const match = flag && /^-Xmx(\d+)([mMgG])$/.exec(flag);
     return match ? Number(match[1]) * (match[2].toLowerCase() === 'g' ? 1024 : 1) : null;
   }
@@ -262,22 +271,23 @@
   }
   // Configured setup, not visited stages. The main process reports the same derivation after persistence.
   function setupChecks() {
-    const server = state?.server;
+    const server = setupServer();
+    const relay = server ? state?.relay : null;
     const runtime = server?.modInstallError ? 'unavailable' : setupPrepared() ? 'complete' : 'pending';
-    const gatewayConfigured = Boolean(alwaysOnStatus?.running && !alwaysOnStatus.error || state?.gateway?.enabled === true && state?.relay && !state?.gateway?.error);
+    const gatewayConfigured = Boolean(server && (alwaysOnStatus?.running && !alwaysOnStatus.error || state?.gateway?.enabled === true && relay && !state?.gateway?.error));
     const gateway = gatewayConfigured ? 'complete' : setupDraft?.skipped.includes('gateway') ? 'skipped' : state?.gateway?.error || alwaysOnStatus?.error ? 'unavailable' : 'pending';
     return {
       server: server ? 'complete' : 'pending',
       runtime,
-      friends: state?.relay ? 'complete' : setupDraft?.skipped.includes('friends') ? 'skipped' : 'pending',
+      friends: relay ? 'complete' : setupDraft?.skipped.includes('friends') ? 'skipped' : 'pending',
       gateway,
-      ready: state?.onboarding?.completed && !server?.modInstallError && Boolean(server?.profile?.executable && server.profile.args?.length) && runtime === 'complete' && ['complete', 'skipped'].includes(state?.relay ? 'complete' : setupDraft?.skipped.includes('friends') ? 'skipped' : 'pending') && ['complete', 'skipped'].includes(gateway) ? 'complete' : 'pending',
+      ready: setupProgress()?.completed && !server?.modInstallError && Boolean(server?.profile?.executable && server.profile.args?.length) && runtime === 'complete' && ['complete', 'skipped'].includes(relay ? 'complete' : setupDraft?.skipped.includes('friends') ? 'skipped' : 'pending') && ['complete', 'skipped'].includes(gateway) ? 'complete' : 'pending',
     };
   }
   function renderReadySummary() {
-    const server = state?.server;
+    const server = setupServer();
     const java = server?.profile?.executable ? setupJava.find(j => j.executable === server.profile.executable) : null;
-    const memory = profileMemoryMiB();
+    const memory = profileMemoryMiB(server);
     const checks = setupChecks();
     const optional = [checks.friends, checks.gateway];
     const rows = [
@@ -290,7 +300,7 @@
     if ($('setup-ready-list').dataset.signature === signature) return;
     $('setup-ready-list').dataset.signature = signature;
     $('setup-ready-list').replaceChildren(...rows.map(([done, text]) => { const item = element('li', done ? 'is-done' : '', text); return item; }));
-    $('setup-ready-copy').textContent = state?.onboarding?.completed && optional.every(check => check === 'complete' || check === 'skipped') ? 'Setup is complete. You can reopen this guide any time from the sidebar.' : 'Finish your server and memory, then either set up Friends and the always-on PC or skip those optional steps. Nothing is falsely marked done.';
+    $('setup-ready-copy').textContent = setupProgress()?.completed && optional.every(check => check === 'complete' || check === 'skipped') ? 'Setup is complete. You can reopen this guide any time from the sidebar.' : 'Finish your server and memory, then either set up Friends and the always-on PC or skip those optional steps. Nothing is falsely marked done.';
   }
   function renderSetup() {
     const blocked = !bridgeReady || isBusy();
@@ -301,7 +311,7 @@
       if (!state.server && state.onboarding && !state.onboarding.dismissed && !state.onboarding.completed) queueMicrotask(() => openSetup());
     }
     if (!$('setup-dialog').open || !setupDraft) return;
-    const step = setupDraft.step, server = state.server;
+    const step = setupDraft.step, server = setupServer();
     // The guide never moves the account card: Friends and hosting stay in their own workspaces.
     for (const panel of document.querySelectorAll('[data-setup-panel]')) panel.hidden = panel.dataset.setupPanel !== step;
     for (const button of document.querySelectorAll('[data-setup-step]')) {
@@ -345,23 +355,25 @@
     $('setup-gateway-status').textContent = setupGatewayCheck || `Not checked yet · player address is ${state.gateway?.enabled ? 'on' : 'off'}${state.gateway?.detail ? ` (${state.gateway.detail})` : ''}.`;
     $('setup-status').textContent = blocked ? busyLabels[pendingMethod || state?.busy] || 'Saving…' : 'Progress is saved automatically.';
     // Ready stage.
-    $('setup-ready-title').textContent = state?.onboarding?.completed && setupChecks().ready === 'complete' ? 'You’re all set' : 'Almost there';
+    $('setup-ready-title').textContent = setupProgress()?.completed && setupChecks().ready === 'complete' ? 'You’re all set' : 'Almost there';
     renderReadySummary();
     syncBridges();
     $('setup-random-name').disabled = $('setup-name').disabled;
     renderWorldPreview();
   }
-  function openSetup(step) {
+  function openSetup(step, newServer = false) {
     if (!bridgeReady || isBusy()) return;
     if (!$('setup-dialog').open) {
-      const saved = state.onboarding;
+      setupGeneration++;
+      setupServerId = newServer ? null : state.server?.id ?? null;
+      const saved = setupProgress();
       setupDraft = saved && setupSteps.includes(saved.step) && saved.draft ? { step: saved.step, dismissed: saved.dismissed, completed: saved.completed, skipped: [...(saved.skipped || [])], draft: { ...saved.draft } } : defaultSetup();
       setupMode = setupDraft.draft.gameVersion || setupDraft.draft.name !== DEFAULT_SERVER_NAME ? 'create' : 'choose';
       $('setup-name').value = setupDraft.draft.name;
       $('setup-loader').value = setupDraft.draft.loader;
-      fillMemory('setup-runtime-memory', profileMemoryMiB() ?? setupDraft.draft.memoryMiB);
+      fillMemory('setup-runtime-memory', profileMemoryMiB(setupServer()) ?? setupDraft.draft.memoryMiB);
       setupCustomJavaDirty = false;
-      $('setup-custom-java-args').value = JSON.stringify(profileCustomJavaArgs(), null, 2);
+      $('setup-custom-java-args').value = JSON.stringify(profileCustomJavaArgs(setupServer()), null, 2);
       $('setup-runtime-feedback').textContent = '';
       delete $('setup-storage-status').dataset.checked;
       setupGatewayDirty = false;
@@ -371,7 +383,7 @@
       setupReturnFocus = document.activeElement;
       $('setup-error').hidden = true;
       $('setup-close-unsaved').hidden = true;
-      if (state.onboarding?.error) { $('setup-error').textContent = state.onboarding.error; $('setup-error').hidden = false; }
+      if (saved?.error) { $('setup-error').textContent = saved.error; $('setup-error').hidden = false; }
       $('setup-dialog').showModal();
       if (!setupMetadataLoaded) void loadSetupMetadata();
       void refreshAlwaysOn();
@@ -381,29 +393,51 @@
   }
   function closeSetup() {
     if (isBusy()) return false;
+    setupGeneration++;
     $('setup-dialog').close(); setupReturnFocus?.focus();
     return true;
   }
-  async function saveSetup(step, close = false, skipped = false) {
-    if (!setupDraft || isBusy()) return;
+  async function saveSetup(step, close = false, skipped = false, generation = setupGeneration) {
+    if (!setupDraft || isBusy() || generation !== setupGeneration || !$('setup-dialog').open) return false;
     const payload = setupPayload();
+    const targetServerId = setupServerId;
     if (skipped && !payload.skipped.includes(payload.step)) payload.skipped.push(payload.step);
     payload.step = step; payload.dismissed = close;
     payload.completed = step === 'ready' && close && setupResolved();
     $('setup-error').hidden = true;
-    const saved = await runAction('saveOnboarding', payload, () => {
-      const actual = state.onboarding;
+    const saved = await runAction('saveOnboarding', {...payload, serverId: targetServerId}, () => {
+      if (generation !== setupGeneration || setupServerId !== targetServerId || targetServerId !== null && state.server?.id !== targetServerId) throw new Error('The selected setup guide changed. Reopen this server’s guide before saving.');
+      const actual = setupProgress();
       if (!actual || Object.keys(payload).some(key => JSON.stringify(actual[key]) !== JSON.stringify(payload[key]))) throw new Error('Saved setup could not be confirmed. Your draft remains open.');
       setupDraft = payload;
     });
-    if (!saved) { $('setup-close-unsaved').hidden = false; return; }
+    if (!saved) { $('setup-close-unsaved').hidden = false; return false; }
     if (close) closeSetup();
     else { renderSetup(); $('setup-dialog').querySelector('.setup-body').scrollTop = 0; $('setup-save-close').focus(); }
+    return true;
+  }
+  async function createOrImportForGuide(method, payload) {
+    const generation = setupGeneration;
+    const existingIds = new Set(state.servers.map(server => server.id));
+    return runAction(method, payload, () => {
+      const server = state.server;
+      if (generation !== setupGeneration || !$('setup-dialog').open || !server || existingIds.has(server.id) || !state.servers.some(entry => entry.id === server.id && entry.active)) throw new Error('The new server could not be confirmed. Check the server library before retrying.');
+      setupServerId = server.id;
+    });
+  }
+  async function clearCreatedDraft(generation, serverId) {
+    const current = () => generation === setupGeneration && setupServerId === serverId && state.server?.id === serverId && $('setup-dialog').open;
+    if (!current()) return;
+    const fresh = defaultSetup();
+    await runAction('saveOnboarding', {...fresh, serverId:null}, () => {
+      const actual = state.newServerOnboarding;
+      if (!current() || !actual || Object.keys(fresh).some(key => JSON.stringify(actual[key]) !== JSON.stringify(fresh[key]))) throw new Error('The server was created, but its new-world draft reset could not be confirmed. Check the library before creating another.');
+    });
   }
   $('nav-setup').addEventListener('click', () => openSetup());
   $('open-gateway-setup').addEventListener('click', () => openSetup('gateway'));
   $('create-server-empty').addEventListener('click', () => { openSetup('server'); if (!state?.server) { setupMode = 'create'; renderSetup(); $('setup-name').focus(); } });
-  $('add-server').addEventListener('click', () => { if ($('add-server').disabled) return; openSetup('server'); setupMode = 'create'; renderSetup(); $('setup-name').focus(); });
+  $('add-server').addEventListener('click', () => { if ($('add-server').disabled) return; openSetup('server', true); setupMode = 'create'; renderSetup(); $('setup-name').focus(); });
   $('server-list').addEventListener('click', (event) => {
     const button = event.target instanceof Element ? event.target.closest('button[data-action]') : null;
     if (!button || button.disabled) return;
@@ -456,12 +490,18 @@
     setupDraft.skipped = setupDraft.skipped.filter(name => name !== setupDraft.step);
     return saveSetup(setupDraft.step);
   });
-  $('setup-import').addEventListener('click', async () => { if (!$('setup-import').disabled) { await runAction('importServer'); if (state.server) await saveSetup('runtime'); } });
+  $('setup-import').addEventListener('click', async () => {
+    const generation = setupGeneration;
+    if (!$('setup-import').disabled && await createOrImportForGuide('importServer')) {
+      const serverId = setupServerId;
+      if (await saveSetup('runtime', false, false, generation)) await clearCreatedDraft(generation, serverId);
+    }
+  });
 
   async function loadSetupMetadata() {
     if (setupMetadataLoading) return;
     setupMetadataLoading = true; renderSetup();
-    const results = await Promise.allSettled([window.seedhost.call('listServerVersions'), window.seedhost.call('discoverJava')]);
+    const results = await Promise.allSettled([trackedCall('listServerVersions'), trackedCall('discoverJava')]);
     try {
       if (results[0].status === 'fulfilled') {
         const { latest, versions } = results[0].value;
@@ -543,14 +583,18 @@
   for (const button of document.querySelectorAll('[data-setup-link]')) button.addEventListener('click', () => runAction('openSetupLink', { page: button.dataset.setupLink }));
   $('setup-create-form').addEventListener('submit', async event => {
     event.preventDefault(); if ($('setup-create').disabled) return;
+    const generation = setupGeneration;
     const draft = setupPayload().draft;
     if (!draft.name.trim() || /[\0\r\n]/.test(draft.name)) return invalid('setup-name', 'Give your server a name.');
     if (!draft.gameVersion) return invalid('setup-version', 'Choose a Minecraft version.');
     if (!Number.isSafeInteger(draft.memoryMiB) || draft.memoryMiB < 512 || draft.memoryMiB > 65536) return invalid('setup-runtime-memory', 'Choose an amount of memory on the Memory step.');
     $('setup-error').hidden = true;
     // Empty Java = automatic. Pressing Create is the EULA agreement shown beside the button.
-    await runAction('createServer', { ...draft, javaExecutable: '', eulaAccepted: true });
-    if (state.server && draft.loader === 'fabric' && setupPickedMods.size) {
+    if (!await createOrImportForGuide('createServer', { ...draft, javaExecutable: '', eulaAccepted: true })) return;
+    const serverId = setupServerId;
+    const current = () => generation === setupGeneration && setupServerId === serverId && state.server?.id === serverId && $('setup-dialog').open;
+    if (!current()) return;
+    if (setupServer() && draft.loader === 'fabric' && setupPickedMods.size) {
       const picked = [...setupPickedMods.keys()];
       await runAction('setupFabricMods', { projectIds: picked }, result => {
         const failed = result?.failed ?? [];
@@ -558,7 +602,12 @@
         if (failed.length) showError(`Some mods couldn’t be added: ${failed.map(f => `${setupModTitles.get(f.projectId) ?? f.projectId} (${f.reason})`).join('; ')}. You can try others later under My server → Mods.`);
       });
     }
-    if (state.server) { fillMemory('setup-runtime-memory', profileMemoryMiB() ?? draft.memoryMiB); $('setup-runtime-feedback').textContent = 'Ready — Java and memory are already set up.'; await loadSetupMetadata(); await saveSetup('runtime'); }
+    if (current() && setupServer()) {
+      fillMemory('setup-runtime-memory', profileMemoryMiB(setupServer()) ?? draft.memoryMiB);
+      $('setup-runtime-feedback').textContent = 'Ready — Java and memory are already set up.';
+      await loadSetupMetadata();
+      if (current() && await saveSetup('runtime', false, false, generation)) await clearCreatedDraft(generation, serverId);
+    }
   });
 
   // ---------- Setup guide: pick Fabric mods before the world exists ----------
@@ -575,7 +624,7 @@
     const context = setupModContext;
     setupModLoading = true; setupModNotice = ''; setupModQuery = query; setupModSort = sort; setupModHits = []; renderSetup();
     try {
-      const result = await window.seedhost.call('searchSetupMods', { query, gameVersion, offset, sort });
+      const result = await trackedCall('searchSetupMods', { query, gameVersion, offset, sort });
       if (token !== setupModRequest || context !== setupModContext) return;
       if (!Array.isArray(result?.hits) || !Number.isSafeInteger(result.total) || result.total < 0) throw new Error('Modrinth returned an invalid search result.');
       setupModHits = result.hits; setupModOffset = offset; setupModTotal = result.total;
@@ -710,6 +759,7 @@
     if (!id || publicBusy || isBusy()) return;
     const generation = publicGeneration, request = ++publicRequest;
     publicBusy = true; renderPublicCard();
+    const finishLoading = window.seedLoading?.begin(busyLabels[method] || 'Opening public-address approval…');
     try {
       const result = await window.seedhost.call(method, { id });
       if (syncPublicContext() !== id || generation !== publicGeneration || request !== publicRequest) return;
@@ -718,6 +768,7 @@
       if (syncPublicContext() !== id || generation !== publicGeneration || request !== publicRequest) return;
       publicStatus = { state: 'error', address: null, detail: String(error?.message ?? error), approveUrl: null };
     } finally {
+      finishLoading?.();
       if (syncPublicContext() === id && generation === publicGeneration) { publicBusy = false; renderPublicCard(); }
     }
   }
@@ -824,14 +875,14 @@
     $('refresh-snapshots').disabled = !bridgeReady || isBusy() || !state?.server || snapshotLoading;
     $('snapshot-history-status').textContent = snapshotLoading ? 'Loading backups…' : snapshotNotice || (!state?.server ? '' : !isStopped() ? 'Stop the server to restore a backup.' : !ownsServer() ? 'Only the PC currently hosting this world can restore it.' : state.server.modInstallError ? 'Restore is unavailable until the unfinished mod install is repaired.' : snapshots?.length ? `${snapshots.length} backup${snapshots.length === 1 ? '' : 's'}. A backup is saved automatically each time you stop the server.` : 'No backups yet. One is saved each time you stop the server.');
     for (const button of $('snapshot-list').querySelectorAll('button')) button.disabled = !canSnapshot() || snapshotLoading || button.dataset.current === 'true';
-    if (bridgeReady && state?.server && isStopped() && ownsServer() && snapshots === null && !snapshotLoading && !snapshotNotice) queueMicrotask(() => void loadSnapshots());
+    if (bridgeReady && state?.server && isStopped() && ownsServer() && snapshots === null && !snapshotLoading && !snapshotNotice) queueMicrotask(() => void loadSnapshots(false));
   }
-  async function loadSnapshots() {
+  async function loadSnapshots(foreground = true) {
     if (!bridgeReady || !state?.server || snapshotLoading) return;
     const token = ++snapshotRequest, context = snapshotContext;
     snapshotLoading = true; snapshotNotice = ''; renderHistory();
     try {
-      const result = await window.seedhost.call('listSnapshots');
+      const result = await (foreground ? trackedCall('listSnapshots') : window.seedhost.call('listSnapshots'));
       if (token !== snapshotRequest || context !== snapshotContext) return;
       if (!Array.isArray(result) || result.some(item => typeof item.id !== 'string' || typeof item.current !== 'boolean' || !Number.isSafeInteger(item.fileCount) || !Number.isSafeInteger(item.bytes))) throw new Error('Invalid snapshot history.');
       snapshots = result;
@@ -1128,7 +1179,7 @@
     modNotice = '';
     renderModBrowser();
     try {
-      const result = await window.seedhost.call('searchMods', { query, offset, sort });
+      const result = await trackedCall('searchMods', { query, offset, sort });
       if (token !== modRequest || context !== modContext) return;
       if (!Array.isArray(result?.hits) || !Number.isSafeInteger(result.total) || result.total < 0) throw new Error('Modrinth returned an invalid search result.');
       modHits = result.hits;
@@ -1241,11 +1292,12 @@
     for (const button of $('friend-list').querySelectorAll('[data-remove-friend]')) button.disabled = !bridgeReady || isBusy();
   }
   window.addEventListener('seedhost-account-changed', () => { void refresh(); void refreshFriends(); });
-  async function refreshFriends() {
+  async function refreshFriends(foreground = false) {
     if (!bridgeReady || !friendContext || friendsLoading) return;
     const token = ++friendRequest;
     const context = friendContext;
     friendsLoading = true; friendError = ''; renderFriends();
+    const finishLoading = foreground ? window.seedLoading?.begin('Refreshing hosting-group members…') : null;
     try {
       const result = await window.seedhost.call('listFriends');
       if (token !== friendRequest || context !== friendContext) return;
@@ -1259,10 +1311,11 @@
         ? 'Group information could not be verified.'
         : 'Check your connection and that the always-on PC is running.';
     } finally {
+      finishLoading?.();
       if (token === friendRequest) { friendsLoading = false; friendCheckedAt = Date.now(); renderFriends(); }
     }
   }
-  $('refresh-friends').addEventListener('click', () => { if (!$('refresh-friends').disabled) void refreshFriends(); });
+  $('refresh-friends').addEventListener('click', () => { if (!$('refresh-friends').disabled) void refreshFriends(true); });
 
   function renderRelay() {
     syncRelayContext();
@@ -1352,6 +1405,7 @@
   async function runAction(method, payload, onVerified) {
     if (!bridgeReady || isBusy()) return false;
     pendingMethod = method;
+    const finishLoading = window.seedLoading?.begin(busyLabels[method] || 'Working…');
     $('error-banner').hidden = true;
     render();
     try {
@@ -1374,6 +1428,7 @@
     } finally {
       pendingMethod = null;
       render();
+      finishLoading?.();
     }
   }
 
@@ -1395,14 +1450,14 @@
     if ($('recover-ownership').disabled) return;
     return runAction('recoverStopped', { confirmed: true });
   });
-  async function checkRelay() {
+  async function checkRelay(foreground = true) {
     if (!state?.relay || !bridgeReady) return;
     const context = syncRelayContext();
     const token = ++relayRequest;
     // Generation rejects A → B → A and older requests to the same endpoint.
     const current = () => context === syncRelayContext() && token === relayRequest;
     try {
-      const status = await window.seedhost.call('checkRelay');
+      const status = await (foreground ? trackedCall('checkRelay') : window.seedhost.call('checkRelay'));
       if (!current()) return;
       relayStatus = status === null ? undefined : status;
       relayStatusError = null;
@@ -1559,17 +1614,17 @@
   }
   $('update-check').addEventListener('click', async () => {
     if ($('update-check').disabled) return;
-    try { updateInfo = await window.seedhost.call('updateCheck'); } catch (error) { $('update-feedback').textContent = errorMessage(error); await refreshUpdates(); return; }
+    try { updateInfo = await trackedCall('updateCheck'); } catch (error) { $('update-feedback').textContent = errorMessage(error); await refreshUpdates(); return; }
     renderUpdates();
   });
   $('update-download').addEventListener('click', async () => {
     if ($('update-download').disabled) return;
-    try { updateInfo = await window.seedhost.call('updateDownload'); } catch { await refreshUpdates(); return; }
+    try { updateInfo = await trackedCall('updateDownload'); } catch { await refreshUpdates(); return; }
     renderUpdates();
   });
   $('update-restart').addEventListener('click', async () => {
     if ($('update-restart').disabled) return;
-    try { await window.seedhost.call('updateInstall'); } catch (error) { showError(errorMessage(error)); }
+    try { await trackedCall('updateInstall'); } catch (error) { showError(errorMessage(error)); }
   });
   void refreshUpdates();
   selectPage = window.seedDashboard.bind({ runAction, refresh, showError });
@@ -1834,7 +1889,7 @@
     if (!ok) $('splash-status').textContent = 'Could not reach the app. Opening anyway…';
     dismissSplash();
     schedulePoll();
-    void checkRelay();
+    void checkRelay(false);
   });
   if (hasBridge()) void windowCall('getWindowState');
 })();

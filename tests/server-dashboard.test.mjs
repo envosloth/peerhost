@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, writeFile, rm, readdir, symlink } from 'node:fs/promises';
 import path from 'node:path';
+import { createServer } from 'node:net';
 import { createIdentity } from '../dist/src/core/peer-transport.js';
 import { SeedHostApplication } from '../dist/src/core/application.js';
 import { OwnershipLedger } from '../dist/src/core/ownership.js';
@@ -162,6 +163,11 @@ test('a scheduled command reaches only the selected owned running server console
 
 test('a running server reports measured process metrics and a real local status probe', async (t) => {
   const { app, server } = await fixture(t);
+  // Own a rejecting loopback endpoint: never probe a user's real server on the conventional 25565 port.
+  const refusingStatus = createServer(socket => socket.destroy());
+  await new Promise((resolve, reject) => { refusingStatus.once('error', reject); refusingStatus.listen(0, '127.0.0.1', resolve); });
+  t.after(() => new Promise((resolve, reject) => refusingStatus.close(error => error ? reject(error) : resolve())));
+  await writeFile(path.join(server.serverDir, 'server.properties'), `server-port=${refusingStatus.address().port}\nmax-players=20\n`);
   await app.saveProfile({ executable: process.execPath, args: [path.resolve('tools/fake-java-server.mjs'), '--lifetime-ms=30000'] });
   await app.startServer(true);
   try {

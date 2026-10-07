@@ -9,8 +9,8 @@ let browser;
 before(async () => { browser = await chromium.launch({ executablePath: existsSync(chromium.executablePath()) ? chromium.executablePath() : '/usr/bin/chromium', headless: false }); });
 after(async () => { await browser?.close(); });
 const progress = () => ({ version: 1, step: 'server', dismissed: false, completed: false, skipped: [], draft: { name: 'My server', loader: 'vanilla', gameVersion: '', memoryMiB: 2048 }, error: null });
-function appState(server = null) { return { version: 'test', deviceId: 'a'.repeat(64), server, peers: [], logs: [], settings: {}, relay: null, onboarding: progress(), gateway: { enabled: false, localPort: 25565, state: 'off', detail: '' } }; }
-function server() { return { name: 'Existing world', state: 'offline', serverDir: '/fixture/server', storeDir: '/fixture/store', snapshotId: 's1', ownership: { state: 'owned', owner: 'a'.repeat(64) }, profile: { executable: '/fixture/java', args: ['@args.txt', 'nogui'] }, mods: { server: [], client: [] } }; }
+function appState(server = null) { return { version: 'test', deviceId: 'a'.repeat(64), server, servers:server ? [{id:server.id,name:server.name,active:true,state:server.state,configured:true}] : [], peers: [], logs: [], settings: {}, relay: null, onboarding: progress(), gateway: { enabled: false, localPort: 25565, state: 'off', detail: '' } }; }
+function server() { return { id:'a'.repeat(32), name: 'Existing world', state: 'offline', serverDir: '/fixture/server', storeDir: '/fixture/store', snapshotId: 's1', ownership: { state: 'owned', owner: 'a'.repeat(64) }, profile: { executable: '/fixture/java', args: ['@args.txt', 'nogui'] }, mods: { server: [], client: [] } }; }
 async function renderer(t, state = appState()) {
   const page = await browser.newPage({ viewport: { width: 1000, height: 700 } });
   t.after(() => page.close());
@@ -23,7 +23,12 @@ async function renderer(t, state = appState()) {
       const f = window.fixture; f.calls.push({ method, payload });
       if (f.failure === method) throw Error('Fixture refusal: ' + method);
       if (method === 'getState') return f.state;
-      if (method === 'saveOnboarding') f.state.onboarding = { ...payload, version: 1, error: null };
+      if (method === 'saveOnboarding') {
+        const {serverId, ...input}=payload;const saved={...input,version:1,error:null};
+        if(serverId===null) {f.state.newServerOnboarding=saved;if(!f.state.server)f.state.onboarding=saved;}
+        else f.state.onboarding=saved;
+      }
+      if (method === 'createServer') return null; // Native Cancel is null, never a successful void result.
       if (method === 'listServerVersions') return { latest: '1.21.1', versions: [{ id: '1.21.1' }, { id: '1.20.1' }] };
       if (method === 'discoverJava') return [{ executable: '/fixture/java', major: 21, version: '21.0.1' }];
       if (method === 'pickJava') return f.pickedJava ?? null;
@@ -33,7 +38,7 @@ async function renderer(t, state = appState()) {
       // TEST-ONLY friendship seam: the merged IPC returns arrays; tests may seed state.account.friends.
       if (method === 'accountFriendRequests') return f.state.account?.friendRequests ?? [];
       if (method === 'accountFriends') return f.state.account?.friends ?? [];
-      return undefined; // Cancellation, unless a test explicitly exercises a successful mutation.
+      return undefined; // Successful void seam; explicit native cancellations above retain their null contract.
     } };
   }, { state });
   await page.goto('file://' + fileURLToPath(new URL('../apps/desktop/index.html', import.meta.url)));
@@ -76,7 +81,7 @@ test('creation needs no Java choice or EULA checkbox: Java is automatic and Crea
   await page.evaluate(() => { window.fixture.failure = 'createServer'; });
   await page.locator('#setup-create').click(); await settled(page);
   assert.equal(await page.locator('#setup-error').isVisible(), true, 'backend refusal is in the modal');
-  await page.evaluate(s => { const call = window.seedhost.call; window.seedhost.call = async (method, payload) => { if (method === 'createServer') { window.fixture.calls.push({ method, payload }); window.fixture.state.server = s; return {}; } return call(method, payload); }; }, { ...server(), profile: { ...server().profile, args: ['-Xmx4096M', '@args.txt', 'nogui'] } });
+  await page.evaluate(s => { const call = window.seedhost.call; window.seedhost.call = async (method, payload) => { if (method === 'createServer') { window.fixture.calls.push({ method, payload }); window.fixture.state.server = s; window.fixture.state.servers=[{id:s.id,name:s.name,active:true,state:s.state,configured:true}]; return undefined; } return call(method, payload); }; }, { ...server(), profile: { ...server().profile, args: ['-Xmx4096M', '@args.txt', 'nogui'] } });
   await page.locator('#setup-create').click(); await settled(page);
   await page.waitForFunction(() => !document.querySelector('#setup-runtime').hidden);
   assert.equal(await page.locator('#setup-runtime-java').inputValue(), '/fixture/java', 'created Java selection is already in runtime help');

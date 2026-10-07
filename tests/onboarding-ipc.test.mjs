@@ -1,6 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {validateCall} from '../dist/src/core/ipc-policy.js';
+import {validateOnboarding} from '../dist/src/core/onboarding.js';
+import {readFile} from 'node:fs/promises';
+
+test('desktop setup handler strips routing metadata and forwards null, explicit and compatibility scopes',async()=>{
+ const main=await readFile(new URL('../dist/apps/desktop/main.js',import.meta.url),'utf8');
+ const body=main.match(/case 'saveOnboarding':([\s\S]*?)case 'listSnapshots':/)?.[1];
+ assert.ok(body,'compiled setup handler must be present');
+ const invoke=new (Object.getPrototypeOf(async function(){}).constructor)('p','backend','alwaysOn',body);
+ const input={step:'server',dismissed:false,completed:false,skipped:[],draft:{name:'Pending world',loader:'vanilla',gameVersion:'',memoryMiB:2048}};
+ const calls=[]; const helper={enabled:false,error:null};
+ const backend={saveOnboarding:async(progress,alwaysOn,serverId)=>{validateOnboarding(progress);calls.push({progress,alwaysOn,serverId});}};
+ for(const serverId of [null,'a'.repeat(32),undefined]){
+  await invoke(serverId===undefined?input:{...input,serverId},backend,{status:async()=>helper});
+  assert.deepEqual(calls.at(-1),{progress:input,alwaysOn:helper,serverId});
+ }
+});
 const url='file:///trusted/seedhost/index.html';
 const ctx={senderId:9,expectedSenderId:9,isMainFrame:true};
 const call=(method,payload)=>validateCall(method,payload,url,url,ctx);
@@ -13,6 +29,13 @@ test('setup progress and retained-history IPC are narrow and main-frame only',()
  assert.throws(()=>call('restoreSnapshot',{snapshotId:'../escape'}),/Invalid/);
  assert.throws(()=>call('restoreSnapshot',{snapshotId:id,path:'/arbitrary'}),/Invalid/);
  assert.throws(()=>validateCall('saveOnboarding',input,url,url,{...ctx,isMainFrame:false}),/Untrusted/);
+});
+test('setup progress routes only to an explicitly validated server or independent new-world draft',()=>{
+ const input={step:'server',dismissed:false,completed:false,skipped:[],draft:{name:'Another world',loader:'vanilla',gameVersion:'',memoryMiB:2048}};
+ for(const serverId of [null,'a'.repeat(32)])assert.deepEqual(call('saveOnboarding',{...input,serverId}),{...input,serverId});
+ for(const serverId of ['../escape','',42,{},undefined,'A'.repeat(32)])assert.throws(()=>call('saveOnboarding',{...input,serverId}),/Invalid/);
+ assert.throws(()=>call('saveOnboarding',{...input,serverId:null,path:'/arbitrary'}),/Invalid/);
+ assert.throws(()=>call('saveOnboarding',{...input,serverId:null,code:'not a secret draft store'}),/Invalid/);
 });
 test('new server and runtime setup IPC refuse URLs, filesystem destinations, shell text and implicit EULA',()=>{
  const input={name:'World',loader:'fabric',gameVersion:'1.21.1',javaExecutable:'/native/selected/java',memoryMiB:2048,eulaAccepted:true};

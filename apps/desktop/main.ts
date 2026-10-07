@@ -239,11 +239,11 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         case 'createServer':{
           const input={...p} as CreateServerInput;
           if(input.eulaAccepted!==true)throw new Error('Explicit Minecraft EULA acceptance is required before creating a server');
-          if(!await confirm('Create “'+input.name+'”?', 'Seed Hosting downloads the official '+(input.loader==='fabric'?'Fabric':'Minecraft')+' server files'+(input.javaExecutable?'':' and, if this PC needs it, the matching official Java from Mojang')+', and checks every file. Nothing starts until you press Start.\n\nBy creating this world you agree to the Minecraft EULA: https://www.minecraft.net/en-us/eula'))return;
+          if(!await confirm('Create “'+input.name+'”?', 'Seed Hosting downloads the official '+(input.loader==='fabric'?'Fabric':'Minecraft')+' server files'+(input.javaExecutable?'':' and, if this PC needs it, the matching official Java from Mojang')+', and checks every file. Nothing starts until you press Start.\n\nBy creating this world you agree to the Minecraft EULA: https://www.minecraft.net/en-us/eula'))return null;
           return backend.createServer(input);
         }
         case 'configureSimpleProfile':
-          if(!await confirm('Check Java and save this launch profile?', 'Seed Hosting will execute '+p.javaExecutable+' with -version, without a shell, then save Java and RAM. Only approve a trusted installed runtime. Nothing starts automatically.'))return;
+          if(!await confirm('Check Java and save this launch profile?', 'Seed Hosting will execute '+p.javaExecutable+' with -version, without a shell, then save Java and RAM. Only approve a trusted installed runtime. Nothing starts automatically.'))return null;
           return backend.configureSimpleProfile(p as unknown as SimpleProfileInput);
         case 'saveGameGateway':return backend.saveGameGateway(p as {enabled:boolean;localPort:number});
         case 'checkGameGateway':return backend.checkGameGateway();
@@ -252,15 +252,18 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
           if(!url)throw new Error('Invalid setup link');
           return shell.openExternal(url);
         }
-        case 'saveOnboarding':return backend.saveOnboarding(p,await alwaysOn.status());
+        case 'saveOnboarding':{
+          const {serverId,...progress}=p;
+          return backend.saveOnboarding(progress,await alwaysOn.status(),serverId as string|null|undefined);
+        }
         case 'listSnapshots':return backend.listSnapshots();
         case 'restoreSnapshot':
           if(!await confirm('Restore this saved world revision?', 'Stop hosting first. Seed Hosting will preserve a safety snapshot and the previous folder, then restore into a separate managed folder. Hosting ownership is not rewound. Nothing starts automatically.'))return;
           return backend.restoreSnapshot(p.snapshotId);
         case 'importServer':{
           const selected=await dialog.showOpenDialog(window,{title:'Import a stopped Minecraft Java server',properties:['openDirectory']});
-          if(selected.canceled||!selected.filePaths[0])return;
-          if(!await confirm('Is the source server stopped?','Copying a running world can produce an inconsistent snapshot. Confirm that the source has stopped. Seed Hosting creates its own copy and will not edit the source.'))return;
+          if(selected.canceled||!selected.filePaths[0])return null;
+          if(!await confirm('Is the source server stopped?','Copying a running world can produce an inconsistent snapshot. Confirm that the source has stopped. Seed Hosting creates its own copy and will not edit the source.'))return null;
           return backend.importExisting(selected.filePaths[0],true);
         }
         case 'saveProfile':return backend.saveProfile(p as {executable:string;args:string[]});

@@ -14,16 +14,17 @@
     $('playit-disconnect').disabled = busy || !connected;
     $('playit-copy').disabled = busy || !address;
   }
-  async function action(method) {
+  async function action(method, foreground = true) {
     if (busy) return;
     busy = true; controls();
+    const finishLoading = foreground ? window.seedLoading?.begin(method === 'playitCheck' ? 'Checking the public address…' : 'Setting up the public address…') : null;
     if (method !== 'playitSetup') { address = ''; $('playit-address').textContent = ''; $('playit-status').textContent = 'Checking…'; }
     try {
       const r = await window.seedhost.call(method);
       if (r) display(r);
       else if (method !== 'playitSetup') display(await window.seedhost.call('playitStatus'));
     } catch { display({connected,detail:'Could not complete playit setup. Check the agent and try again.'}); }
-    finally { busy = false; controls(); }
+    finally { finishLoading?.(); busy = false; controls(); }
   }
   for (const [id,method] of [['playit-connect','playitImport'],['playit-check','playitCheck'],['playit-create','playitCreate'],['playit-disconnect','playitDisconnect'],['playit-setup','playitSetup']]) $(id).addEventListener('click',()=>action(method));
   $('playit-copy').addEventListener('click',async()=>{
@@ -31,7 +32,7 @@
     try { await navigator.clipboard.writeText(address); $('playit-status').textContent = 'Address copied. Share it with your Minecraft Java friends.'; }
     catch { $('playit-status').textContent = 'Select the address above and copy it manually.'; }
   });
-  void action('playitStatus');
+  void action('playitStatus', false);
   // Clear stale reachability on each check; do not connect externally until opted in.
-  setInterval(()=>{if(connected&&!busy)void action('playitCheck');},60000);
+  setInterval(()=>{if(connected&&!busy)void action('playitCheck', false);},60000);
 })();

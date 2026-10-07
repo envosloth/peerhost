@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, readdir, lstat, open, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { TLSSocket } from 'node:tls';
 import { defaultSettings, validateSettings, type Settings } from './settings.js';
 import { importServer, createSnapshot, materializeSnapshot, readSnapshot, pruneStore, syncDirectory, type SnapshotManifest } from './snapshots.js';
@@ -15,7 +15,7 @@ import { installMod, assertModInstallComplete, type InstallModInput } from './mo
 import { openRelayOperation, relayRequest, relayStatus, relayInvite, relayInviteFor, relayRemoveFriend, relayFriends, relayDisbandGroup, relayDisbandStatus, joinRelayInvite, type RelayStatus, relayPublic } from './relay-client.js';
 import { decodeInvite, type Invite } from './invites.js';
 import { friendName } from './relay-friends-store.js';
-import { readOnboarding, saveOnboarding, validateOnboarding, onboardingChecks, type SetupConfiguration } from './onboarding.js';
+import { initializeOnboardingScope, readOnboarding, saveOnboarding, validateOnboarding, onboardingChecks, type SetupConfiguration } from './onboarding.js';
 import { ServerSetupClient, probeJava, type CreateServerInput } from './server-setup.js';
 import { validateSimpleProfileInput, withCustomJavaArgs, withoutJvmHeapArgs, type SimpleProfileInput } from './java-arguments.js';
 import { findAlwaysOnPC, normalizePairingCode, pairingInvite, type FoundAlwaysOn } from './always-on.js';
@@ -75,6 +75,7 @@ export class SeedHostApplication {
   private modVerificationCache: ModVerificationCache = new Map();
   private busy: string | null = null;
   private operationToken?: symbol;
+  private legacyOnboardingScope: { id: string; ledgerKey: string } | null = null;
   private process?: ServerProcess;
   private controlledProcess?: ServerProcess;
   private unexpectedExit?: OwnershipLedger;
@@ -93,13 +94,22 @@ export class SeedHostApplication {
   async open(): Promise<void> {
     await mkdir(this.root, { recursive: true });
     let text: string | undefined;
+    let legacyState = false;
     try { text = await readFile(path.join(this.root, 'state.json'), 'utf8'); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     if (text !== undefined) {
       let value: unknown;
       try { value = JSON.parse(text); } catch { throw new Error('Invalid saved application state: state.json is not valid JSON. The file was left unchanged.'); }
       this.saved = parseSavedState(value);
+      legacyState = (value as { version: number }).version === 1;
     }
+    this.legacyOnboardingScope = null;
+    try {
+      const active = this.activeServer();
+      const scope = await initializeOnboardingScope(this.root, this.saved.activeServerId, legacyState && active ? this.onboardingLedgerKey(active) : undefined);
+      if (scope?.serverId && scope.ledgerKey) this.legacyOnboardingScope = { id: scope.serverId, ledgerKey: scope.ledgerKey };
+    }
+    catch { this.log('Saved setup progress is unreadable; existing server controls remain available. Original metadata was left unchanged.'); }
     if (this.activeServer()) {
       const ledger = this.ledger();
       if ((await ledger.status()).state === 'hosting') {
@@ -169,7 +179,8 @@ export class SeedHostApplication {
       logs: this.serverLogs(id),
       peerEndpoint: this.listener ? { host: this.listener.host, port: this.listener.port } : null,
       busy: this.busy,
-      onboarding: await readOnboarding(this.root, Boolean(this.activeServer())),
+      onboarding: await readOnboarding(this.root, Boolean(active), this.onboardingServerScope(active)),
+      newServerOnboarding: await readOnboarding(this.root, false, null),
       gateway: { ...gateway, ...this.gatewayState, ...(gateway.error ? {state: 'error', detail: gateway.error} : {}) },
       lanAddresses: privateLanAddresses(),
       // A friendly default name for this PC in pairings ("DESKTOP-VMCMIP5", "Angels-Laptop").
@@ -183,18 +194,38 @@ export class SeedHostApplication {
     }
   }
 
-  async saveOnboarding(input: unknown, alwaysOn?: SetupConfiguration['alwaysOn']): Promise<void> {
+  async saveOnboarding(input: unknown, alwaysOn?: SetupConfiguration['alwaysOn'], serverId?: string | null): Promise<void> {
     await this.operation('saveOnboarding', async () => {
       const progress = validateOnboarding(input);
-      const active = this.activeServer();
+      if (serverId !== undefined && serverId !== null) {
+        if (!isServerId(serverId)) throw new Error('Invalid server id');
+        if (!this.saved.servers.some(entry => entry.id === serverId)) throw new Error('That server is no longer in the library. Refresh and try again.');
+        if (this.saved.activeServerId !== serverId) throw new Error('The selected server changed. Refresh before continuing.');
+      }
+      const active = serverId === null ? null : this.activeServer();
       if (progress.completed && (!active || !active.profile.executable || !active.profile.args.length)) throw new Error('Configure a server and its launch profile before completing setup');
       if (progress.completed) {
         await assertModInstallComplete(active!.serverDir);
-        const checks = onboardingChecks(progress, { server: active!, relay: this.activeServer()?.group ?? null, gateway: await readGameGateway(this.root), alwaysOn });
+        const checks = onboardingChecks(progress, { server: active!, relay: active!.group, gateway: await readGameGateway(this.root), alwaysOn });
         if (checks.ready !== 'complete') throw new Error('Resolve Friends and Always-on PC, or explicitly skip those optional steps before completing setup');
       }
-      await saveOnboarding(this.root, progress);
+      await saveOnboarding(this.root, progress, this.onboardingServerScope(active));
     });
+  }
+
+  private onboardingLedgerKey(server: SavedServer): string {
+    return createHash('sha256').update(server.ledgerFile).digest('hex');
+  }
+
+  /** Pre-library v1 parsing assigns a fresh in-memory id on each open. Keep only its optional guide stable;
+   * never change library ids or persist authoritative state just to migrate progress. */
+  private onboardingServerScope(server: SavedServer | null): string | null {
+    if (!server) return null;
+    const legacy = this.legacyOnboardingScope;
+    if (legacy && this.onboardingLedgerKey(server) === legacy.ledgerKey &&
+        !this.saved.servers.some(entry => entry.id === legacy.id && this.onboardingLedgerKey(entry) !== legacy.ledgerKey) &&
+        this.saved.servers.filter(entry => this.onboardingLedgerKey(entry) === legacy.ledgerKey).length === 1) return legacy.id;
+    return server.id;
   }
 
   private ledger(): OwnershipLedger {

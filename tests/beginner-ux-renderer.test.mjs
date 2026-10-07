@@ -25,12 +25,32 @@ async function renderer(t, state = appState()) {
   t.after(() => assert.deepEqual(errors, [], 'no renderer exceptions'));
   await page.route('https://**/*', route => route.abort());
   await page.addInitScript(({ state, versions }) => {
-    window.fixture = { state, calls: [] };
+    window.fixture = { state, calls: [], guides: state.server ? {[state.server.id]:structuredClone(state.onboarding)} : {}, serverMap:state.server ? {[state.server.id]:state.server} : {} };
     window.seedhost = { call: async (method, payload) => {
       const f = window.fixture; f.calls.push({ method, payload });
       if (method === 'getState') return f.state;
-      if (method === 'saveOnboarding') f.state.onboarding = { ...payload, version: 1, error: null };
-      if (method === 'listServerVersions') return { latest: versions[0].id, versions };
+      if (method === 'saveOnboarding') {
+        const {serverId, ...input}=payload;const saved={...input,version:1,error:null};
+        if (serverId===null) {f.state.newServerOnboarding=saved;if(!f.state.server)f.state.onboarding=saved;}
+        else {f.state.onboarding=saved;if(f.state.server)f.guides[serverId??f.state.server.id]=saved;else f.state.newServerOnboarding=saved;}
+      }
+      if (method === 'createServer') {
+        if(f.cancelCreate)return null;
+        if(f.failCreate)throw new Error('TEST create failure');
+        if(f.createReadbackMismatch)return undefined;
+        const world={...structuredClone(f.state.server||{}),id:'new-world-fixture',name:payload.name,state:'offline',profile:{executable:'/fixture/java21',args:['-Xmx'+payload.memoryMiB+'M','-jar','server.jar','nogui']},ownership:{state:'owned',owner:f.state.deviceId},mods:{server:[],client:[]}};
+        f.state.servers.forEach(s=>s.active=false);f.state.servers.push({id:world.id,name:world.name,active:true,state:'offline',configured:true});
+        f.state.server=world;f.serverMap[world.id]=world;
+        f.state.onboarding={version:1,step:'runtime',dismissed:true,completed:false,skipped:[],draft:{name:payload.name,loader:payload.loader,gameVersion:payload.gameVersion,memoryMiB:payload.memoryMiB},error:null};
+        f.guides[world.id]=structuredClone(f.state.onboarding);return undefined;
+      }
+      if(method==='selectServer') {f.state.server=f.serverMap[payload.id];f.state.servers.forEach(s=>s.active=s.id===payload.id);f.state.onboarding=structuredClone(f.guides[payload.id]);return undefined;}
+      if (method === 'listServerVersions') {
+        if(f.holdCreatedMetadata&&f.state.server?.id==='new-world-fixture') {
+          f.createdMetadataPending=true;await new Promise(resolve=>f.releaseCreatedMetadata=()=>{f.createdMetadataPending=false;resolve();});
+        }
+        return { latest: versions[0].id, versions };
+      }
       if (method === 'discoverJava') return [{ executable: '/fixture/java17', major: 17, version: '17.0.2' }, { executable: '/fixture/java21', major: 21, version: '21.0.4' }];
       if (method === 'checkGameGateway') return f.gatewayCheck ?? { enabled: false, host: null, port: null, ready: false, detail: 'off' };
       if (method === 'listSnapshots') return [{ id: 's1'.padEnd(64, '0'), parentId: null, fileCount: 12, bytes: 5 * 1048576, current: true }];
@@ -55,6 +75,77 @@ test('Home hides all server sections, including a remembered selection, until it
     await page.locator('#home-tab').click();
     for (const name of names) assert.equal(await page.locator('#' + name + '-tab').isHidden(), true, name + ' hidden again on Home');
   }
+});
+
+test('New server opens a fresh guide instead of borrowing the selected world', async t => {
+  const existing=server(), finished={...progress('ready'),dismissed:true,completed:true,skipped:['friends','gateway'],draft:{...progress().draft,name:'Weekend world',gameVersion:'1.21.1',memoryMiB:4096}};
+  const page=await renderer(t, appState(existing,{onboarding:finished,newServerOnboarding:progress()}));
+  await page.locator('#add-server').click();
+  assert.equal(await page.locator('#setup-create-form').isVisible(),true,'an existing server does not hide New server creation');
+  assert.equal(await page.locator('#setup-existing').isHidden(),true,'does not say the selected world is already created');
+  assert.equal(await page.locator('#setup-name').inputValue(),'My Minecraft server');
+  assert.equal(await page.locator('#setup-runtime-memory').inputValue(),'2048');
+  assert.equal(await page.locator('[data-setup-step="server"]').getAttribute('data-done'),'false');
+  assert.equal(await page.locator('[data-setup-step="friends"]').getAttribute('data-done'),'false');
+  assert.deepEqual(await page.evaluate(()=>window.fixture.state.onboarding),finished);
+});
+
+test('saving a new-world draft preserves the selected world guide and resumes independently', async t => {
+  const existing=server(),finished={...progress('ready'),dismissed:true,completed:true,skipped:['friends','gateway']};
+  const page=await renderer(t,appState(existing,{onboarding:finished,newServerOnboarding:progress()}));
+  await page.locator('#add-server').click();await page.locator('#setup-name').fill('A second world');
+  await page.locator('#setup-save-close').click();await page.waitForFunction(()=>!document.querySelector('#setup-dialog').open);
+  assert.deepEqual(await page.evaluate(()=>window.fixture.state.onboarding),finished);
+  assert.equal(await page.evaluate(()=>window.fixture.calls.find(c=>c.method==='saveOnboarding').payload.serverId),null);
+  await page.locator('#nav-setup').click();assert.equal(await page.locator('#setup-ready').isVisible(),true);
+  await page.locator('#setup-save-close').click();await page.waitForFunction(()=>!document.querySelector('#setup-dialog').open);
+  await page.locator('#add-server').click();assert.equal(await page.locator('#setup-name').inputValue(),'A second world');
+  assert.equal(await page.locator('#setup-create-form').isVisible(),true);
+});
+
+test('new-server creation binds runtime progress to the created world and leaves the next guide fresh', async t => {
+  const existing=server(),finished={...progress('ready'),dismissed:true,completed:true,skipped:['friends','gateway']};
+  const page=await renderer(t,appState(existing,{onboarding:finished,newServerOnboarding:progress()}));
+  await page.locator('#add-server').click();await page.locator('#setup-name').fill('A second world');
+  await page.waitForFunction(()=>document.querySelector('#setup-version').value==='1.21.15');await page.locator('#setup-create').click();
+  await page.waitForFunction(()=>!document.querySelector('#setup-runtime').hidden&&document.querySelector('#setup-status').textContent==='Progress is saved automatically.');
+  assert.equal(await page.locator('#setup-profile-save').isEnabled(),true);
+  assert.equal(await page.evaluate(()=>window.fixture.state.onboarding.draft.name),'A second world');
+  assert.deepEqual(await page.evaluate(id=>window.fixture.guides[id],existing.id),finished);
+  assert.equal(await page.evaluate(()=>window.fixture.calls.find(c=>c.method==='saveOnboarding'&&c.payload.step==='runtime').payload.serverId),'new-world-fixture');
+  await page.locator('#setup-save-close').click();await page.waitForFunction(()=>!document.querySelector('#setup-dialog').open);
+  await page.locator('#add-server').click();assert.equal(await page.locator('#setup-name').inputValue(),'My Minecraft server');
+  assert.equal(await page.locator('[data-setup-step="server"]').getAttribute('data-done'),'false');
+});
+
+test('late post-create metadata cannot overwrite a reopened completed guide or newer pending draft',async t=>{
+ const existing=server(),finished={...progress('ready'),dismissed:true,completed:true,skipped:['friends','gateway']};
+ const page=await renderer(t,appState(existing,{onboarding:finished,newServerOnboarding:progress()}));
+ t.after(()=>page.isClosed()?undefined:page.evaluate(()=>window.fixture.releaseCreatedMetadata?.()));
+ await page.locator('#add-server').click();await page.waitForFunction(()=>document.querySelector('#setup-version').value==='1.21.15');
+ await page.evaluate(()=>window.fixture.holdCreatedMetadata=true);await page.locator('#setup-name').fill('Created X');await page.locator('#setup-create').click();
+ await page.waitForFunction(()=>window.fixture.createdMetadataPending);
+ try{
+  await page.locator('#setup-save-close').click();await page.waitForFunction(()=>!document.querySelector('#setup-dialog').open);
+  await page.locator('#add-server').click();await page.locator('#setup-name').fill('Newer pending draft');await page.locator('#setup-save-close').click();await page.waitForFunction(()=>!document.querySelector('#setup-dialog').open);
+  await page.locator(`#server-list button[data-action="open"][data-id="${existing.id}"]`).click();await settled(page);await page.locator('#nav-setup').click();
+  const pending=await page.evaluate(()=>structuredClone(window.fixture.state.newServerOnboarding));
+  await page.evaluate(()=>window.fixture.releaseCreatedMetadata());await page.waitForFunction(()=>document.querySelector('#action-loading').hidden);await settled(page);
+  assert.deepEqual(await page.evaluate(id=>window.fixture.guides[id],existing.id),finished,'a stale continuation must not un-complete another world');
+  assert.deepEqual(await page.evaluate(()=>window.fixture.state.newServerOnboarding),pending,'a stale continuation must not clear a newer draft');
+  assert.equal(await page.locator('[data-setup-step="ready"]').getAttribute('aria-current'),'step');
+ }finally{await page.evaluate(()=>window.fixture.releaseCreatedMetadata?.());}
+});
+
+test('cancelled creation never advances the new guide using an existing server', async t => {
+  const page=await renderer(t,appState(server(),{newServerOnboarding:progress()}));
+  await page.evaluate(()=>window.fixture.cancelCreate=true);await page.locator('#add-server').click();
+  await page.waitForFunction(()=>document.querySelector('#setup-version').value==='1.21.15');await page.locator('#setup-name').fill('Keep this draft');
+  await page.locator('#setup-create').click();await settled(page);
+  assert.equal(await page.locator('#setup-create-form').isVisible(),true);
+  assert.equal(await page.locator('#setup-name').inputValue(),'Keep this draft');
+  assert.equal(await page.evaluate(()=>window.fixture.calls.some(c=>c.method==='saveOnboarding'&&c.payload.step==='runtime')),false);
+  assert.equal(await page.evaluate(()=>window.fixture.state.servers.length),1);
 });
 
 test('first run starts with a plain choice, not a form', async t => {

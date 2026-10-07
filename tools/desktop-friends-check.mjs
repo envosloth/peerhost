@@ -67,7 +67,7 @@ async function shot(page, name) {
 async function launch(name, online = false) {
   if (online) {
     if (!accountService) {
-      accountService = new AccountService(path.join(root, 'account-directory'), await createIdentity());
+      accountService = new AccountService(await mkdtemp(path.join(root, 'account-directory-')), await createIdentity());
       await accountService.listen({ host: '127.0.0.1', port: 0 });
     }
     const profile = path.join(root, name); await mkdir(profile, { recursive: true });
@@ -373,6 +373,8 @@ try {
   for (const name of names) {
     await cases[name](); console.log('PASS case=' + name);
     for (const completed of apps.splice(0).reverse()) await completed.close();
+    // Each case owns a fresh directory and its normal rate limits; a faster UI must not exhaust another case's auth budget.
+    await accountService?.close(); accountService = undefined;
   }
   assert.deepEqual(pageErrors, [], 'renderer errors');
   console.log('PASS: visible Electron Friends regressions. Loopback only; no Minecraft/cross-network proof.');

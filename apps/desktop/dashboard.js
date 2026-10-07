@@ -145,6 +145,7 @@
   async function listFiles(path = filePath) {
     const id = selectedId(); if (!id || blocked) return false;
     const token = ++filesToken; filesBusy = true; renderFiles(); $('file-feedback').textContent = 'Loading folder…';
+    const finishLoading = window.seedLoading?.begin('Loading server files…');
     try {
       const listing = await window.seedhost.call('listServerFiles', { id, path });
       if (token !== filesToken || selectedId() !== id) return false;
@@ -161,12 +162,13 @@
     } catch (error) {
       if (token === filesToken) $('file-feedback').textContent = `Couldn’t list this folder: ${reason(error)}. Refresh to try again.`;
       return false;
-    } finally { if (token === filesToken) { filesBusy = false; filesAttempt = Date.now(); renderFiles(); } }
+    } finally { finishLoading?.(); if (token === filesToken) { filesBusy = false; filesAttempt = Date.now(); renderFiles(); } }
   }
   async function openFile(path) {
     const id = selectedId(); if (!id || blocked) return false;
     const editable = fileList?.find(entry => entry.path === path)?.editable ?? (fileOpen?.path === path ? fileOpen.editable : true);
     const token = ++filesToken; filesBusy = true; renderFiles(); $('file-feedback').textContent = 'Opening file…';
+    const finishLoading = window.seedLoading?.begin('Opening server file…');
     try {
       const file = await window.seedhost.call('readServerFile', { id, path });
       if (token !== filesToken || selectedId() !== id) return false;
@@ -177,7 +179,7 @@
     } catch (error) {
       if (token === filesToken) $('file-feedback').textContent = `Couldn’t open this file: ${reason(error)}.`;
       return false;
-    } finally { if (token === filesToken) { filesBusy = false; renderFiles(); } }
+    } finally { finishLoading?.(); if (token === filesToken) { filesBusy = false; renderFiles(); } }
   }
   async function saveFile() {
     if (!fileOpen || $('file-save').disabled) return;
@@ -185,6 +187,7 @@
     const token = ++filesToken, generation = selectionGeneration;
     const current = () => token === filesToken && generation === selectionGeneration && selectedId() === id;
     filesBusy = true; renderFiles(); $('file-feedback').textContent = 'Saving…';
+    const finishLoading = window.seedLoading?.begin('Saving and checking the server file…');
     try {
       const result = await window.seedhost.call('writeServerFile', { id, path: open.path, text, expectedHash: open.hash });
       if (!current()) return;
@@ -199,7 +202,7 @@
         fileOpen.hash = null; $('file-hash').textContent = 'Unconfirmed guard — reload required';
         $('file-feedback').textContent = `Couldn’t save this file: ${reason(error)}. Reload from disk and review before retrying.`;
       }
-    } finally { if (current()) { filesBusy = false; renderFiles(); } }
+    } finally { finishLoading?.(); if (current()) { filesBusy = false; renderFiles(); } }
   }
   $('file-list').addEventListener('click', event => { const item = event.target.closest('[data-path]'); if (!item || filesBusy) return; if (item.dataset.kind === 'directory') void listFiles(item.dataset.path); else void openFile(item.dataset.path); });
   $('file-list').addEventListener('keydown', event => { if (event.key === 'Enter' && event.target.closest?.('[data-path]')) event.target.click(); });
@@ -325,13 +328,15 @@
     renderConsole(); renderPlayers(); renderSchedules(); renderProperties();
     const p = dashboard?.performance;
     $('performance-cpu').textContent = sampled(p?.cpuPercent) ? `${Number(p.cpuPercent.toFixed(2))}%` : 'Unavailable';
-    $('performance-memory').textContent = sampled(p?.memoryMiB) ? `${Number(p.memoryMiB.toFixed(2))} MiB` : 'Unavailable';
+    // These samples are MiB, so retain honest binary units when scaling to GiB.
+    $('performance-memory').textContent = !sampled(p?.memoryMiB) ? 'Unavailable' : p.memoryMiB >= 1024 ? `${Number((p.memoryMiB / 1024).toFixed(1))} GiB` : `${Number(p.memoryMiB.toFixed(2))} MiB`;
     $('performance-uptime').textContent = sampled(p?.uptimeSeconds) ? `${Math.floor(p.uptimeSeconds)} s` : 'Unavailable';
     $('performance-pid').textContent = sampled(p?.pid) ? String(p.pid) : 'Unavailable';
     performanceNotice.textContent = p?.error || (p?.sampledAt ? `Sampled ${new Date(p.sampledAt).toLocaleString()}` : 'No process sample is available.');
   }
   async function refreshDashboard(force = false) {
     const id = selectedId(); if (!id || !hooks || blocked || (dashboardInFlight && !force)) return false;
+    const finishLoading = force ? window.seedLoading?.begin('Refreshing performance and server details…') : null;
     const token = ++dashboardRequest; dashboardInFlight = true; requestedAt = Date.now(); dashboardStatus.textContent = 'Loading server data…';
     const stateLogs = JSON.stringify(state?.logs || []);
     try {
@@ -342,7 +347,7 @@
     } catch (error) {
       if (token === dashboardRequest && selectedId() === id) { dashboard = null; renderDashboard(); dashboardStatus.textContent = `Couldn’t load server data: ${reason(error)}. Use Refresh data to retry.`; }
       return false;
-    } finally { if (token === dashboardRequest) dashboardInFlight = false; }
+    } finally { finishLoading?.(); if (token === dashboardRequest) dashboardInFlight = false; }
   }
   dashboardRefresh.addEventListener('click', () => void refreshDashboard(true));
   function syncRoute() {

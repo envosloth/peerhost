@@ -15,6 +15,12 @@ before(async () => {
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
   app = await electron.launch({ executablePath: createRequire(import.meta.url)('electron'), args: [path.resolve('tools/dashboard-fixture-main.cjs'), '--profile-root=' + root], env });
   page = await app.firstWindow(); page.setDefaultTimeout(7000);
+  // TEST-ONLY timer control. Only the manual-refresh regression stops polling; ordinary cases retain it.
+  await page.addInitScript(() => {
+    const intervals = [], startInterval = window.setInterval.bind(window);
+    window.setInterval = (...args) => { const id = startInterval(...args); intervals.push(id); return id; };
+    window.__stopTestPolling = () => intervals.forEach(id => clearInterval(id));
+  });
   page.on('pageerror', e => errors.push(e.message));
 });
 after(async () => { if (app) { app.process().kill(); await app.close().catch(() => {}); } });
@@ -91,6 +97,24 @@ test('Friends tab is ordinary social only: add by username, requests, friends li
   await click('#account-friends-list [data-friend-remove="alex"]');
   await page.waitForFunction(() => document.querySelector('#account-friends-feedback').textContent.includes('@alex was removed'));
   assert.equal((await fixture()).calls.some(c => c.method === 'accountFriendRemove' && c.payload.username === 'alex'), true);
+  assert.deepEqual(errors, []);
+});
+
+test('manual friend refresh immediately redraws incoming requests and accepted friends', async () => {
+  await reset();
+  await page.evaluate(() => window.__stopTestPolling());
+  await signIn('me');
+  await click('#friends-tab');
+  await page.waitForFunction(() => document.querySelector('#friend-request-list').textContent.includes('No friend requests waiting.'));
+  await page.evaluate(() => window.dashboardFixture.set({
+    accountFriendRequests: [{ id: 'req-refresh', from: 'sam', expiresAt: Date.now() + 3600000 }],
+    accountFriends: [{ username: 'alex', since: 1720000000000 }]
+  }));
+  await click('#friend-requests-refresh');
+  // Background polling is stopped above: only the explicit Refresh action can draw these new rows.
+  await page.waitForFunction(() => document.querySelector('#friend-request-list [data-friend-accept="req-refresh"]'), undefined, { timeout: 3000 });
+  assert.match(await page.locator('#account-friends-list').textContent(), /@alex/);
+  assert.equal(await page.locator('#friend-requests-count').textContent(), '1');
   assert.deepEqual(errors, []);
 });
 

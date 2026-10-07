@@ -108,16 +108,41 @@ function TestVanished([System.Exception]$exception) {
   }
   return $false
 }
-function CheckPath([string]$p, [bool]$recursive, [bool]$enumeratedChild) {
+function TestAccessDenied([System.Exception]$exception) {
+  $current = $exception
+  while ($null -ne $current) {
+    if ($current -is [System.UnauthorizedAccessException]) { return $true }
+    $current = $current.InnerException
+  }
+  return $false
+}
+function CheckPath([string]$p, [bool]$recursive, [bool]$enumeratedChild, [int]$retry = 0) {
   try { $attrs = [System.IO.File]::GetAttributes($p) }
-  catch { if (TestVanished $_.Exception) { return } else { throw } }
+  catch {
+    if (TestVanished $_.Exception) { return }
+    # A delete-pending child can transiently deny the attribute probe too; retry bounded, then fail closed.
+    if ($enumeratedChild -and $retry -lt 3 -and (TestAccessDenied $_.Exception)) {
+      Start-Sleep -Milliseconds 10
+      CheckPath $p $recursive $enumeratedChild ($retry + 1)
+      return
+    }
+    throw
+  }
   if (($attrs -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Reparse point forbidden: $p" }
   if ($recursive -and (($attrs -band [System.IO.FileAttributes]::Directory) -ne 0)) {
     try { $entries = [System.IO.Directory]::GetFileSystemEntries($p) }
     catch {
       # An enumerated child may legitimately vanish before enumeration (a concurrent transfer
       # removing its staging directory); the walk root must not be skipped this way.
-      if ($enumeratedChild -and (TestVanished $_.Exception)) { return } else { throw }
+      if ($enumeratedChild -and (TestVanished $_.Exception)) { return }
+      # A delete-pending directory can briefly deny enumeration on Windows. Recheck all
+      # attributes after a bounded wait; never treat persistent denial as disappearance.
+      if ($enumeratedChild -and $retry -lt 3 -and (TestAccessDenied $_.Exception)) {
+        Start-Sleep -Milliseconds 10
+        CheckPath $p $recursive $enumeratedChild ($retry + 1)
+        return
+      }
+      throw
     }
     foreach ($entry in $entries) { CheckPath $entry $true $true }
   }

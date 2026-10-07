@@ -13,11 +13,16 @@ reset();
 contextBridge.exposeInMainWorld('dashboardFixture', {
   reset, read: () => clone(fixture), set: value => { for (const [k, v] of Object.entries(value)) fixture[k] = v; },
   release: () => { fixture.heldGroup?.resolve(); fixture.heldGroup = null; fixture.groupHeld=false; fixture.held?.resolve(); fixture.held = null; fixture.heldFiles?.resolve(); fixture.heldFiles = null; fixture.heldFriend?.resolve(); fixture.heldFriend = null; },
+  releaseCall: method => {fixture.heldCalls?.[method]?.resolve(); if(fixture.heldCalls)delete fixture.heldCalls[method];},
   // TEST-ONLY: reads the real OS clipboard so tests verify copy completion independently of the page's own claim.
   clipboardText: () => ipcRenderer.invoke('fixture:clipboard', 'read')
 });
 contextBridge.exposeInMainWorld('seedhost', { call: async (method, payload) => {
   fixture.calls.push({ method, payload: payload ?? null });
+  // TEST-ONLY held IPC results, for deterministic overlapping-operation feedback tests.
+  if (fixture.holdCalls?.includes(method)) await new Promise(resolve => {
+    fixture.heldCalls ??= {}; fixture.heldCalls[method] = {resolve};
+  });
   // TEST-ONLY native consent seam: null means Cancel, undefined means a successful void result.
   if (fixture.cancelMethod === method) return null;
   if (fixture.fail === method) throw new Error('TEST failure for ' + method);

@@ -149,11 +149,12 @@
   async function withOp(feedbackId, work){
     if(working) return;
     working=true; render();
+    const finishLoading=window.seedLoading?.begin('Updating your account / friend connection…');
     const token=++opToken, generation=context;
     const current=()=>token===opToken&&generation===context;
     try{ await work(current); }
     catch(e){ if(current()) $(feedbackId).textContent=message(e); }
-    finally{ if(token===opToken){working=false;render();} }
+    finally{ finishLoading?.(); if(token===opToken){working=false;render();} }
   }
   async function readLists(current){
     const settled=await Promise.allSettled([window.seedhost.call('accountFriendRequests'),window.seedhost.call('accountFriends')]);
@@ -266,14 +267,16 @@
   async function refreshLists(){
     if(!status?.signedIn||working||checking)return;
     checking=true;
+    const finishLoading=window.seedLoading?.begin('Refreshing friends and requests…');
     const token=++opToken, generation=context;
     const current=()=>token===opToken&&generation===context;
     try{
       if(!await readLists(current))return;
+      if(current())renderFriendLists();
       if(status.online){ const requests=await window.seedhost.call('accountRequests'); if(current()&&Array.isArray(requests))hostingRequests=requests; }
       if(current())renderHostingLists();
     }catch(e){ if(current())$('account-friends-feedback').textContent=message(e); }
-    finally{ checking=false; }
+    finally{ finishLoading?.(); checking=false; }
   }
   async function update(){
     if(checking)return;checking=true;
@@ -308,6 +311,7 @@
     if(username===status.username&&!newPassword){$('account-profile-feedback').textContent='No profile changes to save.';clearProfilePasswords();return;}
     const input={username,currentPassword:$('profile-current-password').value,...(newPassword?{newPassword}:{})};
     clearProfilePasswords();working=true;$('account-profile-feedback').textContent='Saving profile…';render();
+    const finishLoading=window.seedLoading?.begin('Saving and checking your profile…');
     try{
       const result=await window.seedhost.call('accountUpdateProfile',input);
       const readBack=await window.seedhost.call('accountStatus');
@@ -315,7 +319,7 @@
       status=readBack;$('profile-username').value=status.username;
       $('account-profile-feedback').textContent='Saved profile and confirmed your username with the account directory.';changed();
     }catch(e){$('account-profile-feedback').textContent=message(e);}
-    finally{input.currentPassword='';if('newPassword' in input)input.newPassword='';working=false;render();}
+    finally{input.currentPassword='';if('newPassword' in input)input.newPassword='';working=false;finishLoading?.();render();}
   });
   $('profile-open').addEventListener('click',()=>{
     if(working)return;clearProfilePasswords();$('account-profile-feedback').textContent='';
@@ -336,6 +340,7 @@
   $('account-form').addEventListener('submit',async event=>{
     event.preventDefault();if(working||!$('account-form').reportValidity())return;
     working=true;$('account-error').hidden=true;render();
+    const finishLoading=window.seedLoading?.begin(mode==='register'?'Creating your account…':'Signing in…');
     const credentials={username:$('account-username').value,password:$('account-password').value};
     $('account-password').value='';
     try{
@@ -347,7 +352,7 @@
       await refreshLists();
     }
     catch(e){$('account-error').textContent=message(e);$('account-error').hidden=false;}
-    finally{credentials.password='';working=false;render();}
+    finally{credentials.password='';working=false;finishLoading?.();render();}
   });
   bindFriendAdd('friend-add-form','friend-add-username','friend-add-submit','account-friends-feedback');
   bindFriendAdd('setup-friend-add-form','setup-friend-username','setup-friend-send','setup-friend-feedback');

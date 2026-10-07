@@ -1,8 +1,9 @@
 import { constants } from 'node:fs';
-import { mkdir, open, rename, rm } from 'node:fs/promises';
+import { lstat, mkdir, open, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { syncDirectory } from './snapshots.js';
+import { isServerId } from './saved-state.js';
 
 export const SETUP_STEPS = ['server', 'runtime', 'friends', 'gateway', 'ready'] as const;
 export interface OnboardingProgress {
@@ -47,36 +48,88 @@ export function validateOnboarding(value: unknown): OnboardingInput {
       !Number.isInteger(d.memoryMiB) || d.memoryMiB < 512 || d.memoryMiB > 65536) throw new Error('Invalid non-secret setup draft');
   return { step: p.step, dismissed: p.dismissed, completed: p.completed, skipped: [...p.skipped], draft: { ...d } };
 }
-export async function readOnboarding(root: string, existingServer = false): Promise<OnboardingProgress & { error: string | null }> {
+function onboardingFile(root: string, serverId?: string | null): string {
+  if (serverId !== undefined && serverId !== null && !isServerId(serverId)) throw new Error('Invalid server id');
+  return path.join(root, serverId === undefined ? 'onboarding.json' : serverId === null ? 'onboarding-new.json' : `onboarding-server-${serverId}.json`);
+}
+async function readMetadata(file: string, limit = 16384): Promise<any> {
+  // Windows does not provide O_NOFOLLOW; reject links explicitly there too.
+  const entry = await lstat(file);
+  if (!entry.isFile() || entry.isSymbolicLink()) throw new Error('Setup metadata must be an ordinary file');
+  const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
-    // Official Node fs FileHandle reads are bounded; O_NOFOLLOW refuses a replaced metadata symlink.
-    // https://nodejs.org/api/fs.html#fspromisesopenpath-flags-mode
-    const handle = await open(path.join(root, 'onboarding.json'), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    let value: any;
-    try {
-      const stat = await handle.stat();
-      if (!stat.isFile() || stat.size > 16384) throw new Error('Setup metadata exceeds the allowed size');
-      const buffer = Buffer.alloc(16385); const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-      if (bytesRead > 16384) throw new Error('Setup metadata exceeds the allowed size');
-      value = JSON.parse(buffer.subarray(0, bytesRead).toString('utf8'));
-    } finally { await handle.close(); }
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > limit) throw new Error('Setup metadata exceeds the allowed size');
+    const buffer = Buffer.alloc(limit + 1); const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > limit) throw new Error('Setup metadata exceeds the allowed size');
+    return JSON.parse(buffer.subarray(0, bytesRead).toString('utf8'));
+  } finally { await handle.close(); }
+}
+interface LegacyOnboardingScope { version: 1; serverId: string | null; ledgerKey?: string }
+async function readLegacyScope(root: string): Promise<LegacyOnboardingScope> {
+  const value = await readMetadata(path.join(root, 'onboarding-legacy-scope.json'), 256);
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      !['serverId,version', 'ledgerKey,serverId,version'].includes(Object.keys(value).sort().join(',')) ||
+      value.version !== 1 || value.serverId !== null && !isServerId(value.serverId) ||
+      value.ledgerKey !== undefined && (value.serverId === null || typeof value.ledgerKey !== 'string' || !/^[a-f0-9]{64}$/.test(value.ledgerKey))) throw new Error('Invalid legacy setup scope');
+  return value;
+}
+/** Attribute the immutable legacy source once, before selection can change. Never alter application/world state.
+ * A partial/invalid marker fails closed for optional progress, not hosting; it is never repaired or reassigned. */
+export async function initializeOnboardingScope(root: string, serverId: string | null, ledgerKey?: string): Promise<LegacyOnboardingScope | null> {
+  onboardingFile(root, serverId);
+  if (ledgerKey !== undefined && (serverId === null || !/^[a-f0-9]{64}$/.test(ledgerKey))) throw new Error('Invalid legacy setup scope');
+  try { return await readLegacyScope(root); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  try { await lstat(onboardingFile(root)); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; if (!ledgerKey) return null; }
+  const scope: LegacyOnboardingScope = { version: 1, serverId, ...(ledgerKey ? { ledgerKey } : {}) };
+  const handle = await open(path.join(root, 'onboarding-legacy-scope.json'), 'wx', 0o600);
+  try { await handle.writeFile(JSON.stringify(scope)); await handle.sync(); }
+  finally { await handle.close(); }
+  await syncDirectory(root);
+  return scope;
+}
+async function readScopedMetadata(root: string, serverId: string | null): Promise<any> {
+  try { return await readMetadata(onboardingFile(root, serverId)); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  let legacyScope: LegacyOnboardingScope;
+  try { legacyScope = await readLegacyScope(root); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    try { await lstat(onboardingFile(root)); }
+    catch (missing) { if ((missing as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw missing; }
+    throw new Error('Legacy setup metadata has no safely saved scope');
+  }
+  if (legacyScope.serverId !== serverId) return undefined;
+  return readMetadata(onboardingFile(root));
+}
+export async function readOnboarding(root: string, existingServer = false, serverId?: string | null): Promise<OnboardingProgress & { error: string | null }> {
+  onboardingFile(root, serverId);
+  try {
+    const value = serverId === undefined ? await readMetadata(onboardingFile(root)) : await readScopedMetadata(root, serverId);
+    if (value === undefined) return { ...defaultOnboarding(existingServer), error: null };
     if (value?.version !== 1) throw new Error('Unsupported setup metadata version');
     const { version: _version, ...input } = value;
-    return { version: 1, ...validateOnboarding(input), error: null };
+    const progress = validateOnboarding(input);
+    // A pending new-world draft has no world to finish, including after deletion of an old legacy world.
+    if (serverId === null) progress.completed = false;
+    return { version: 1, ...progress, error: null };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { ...defaultOnboarding(existingServer), error: null };
     return { ...defaultOnboarding(true), error: 'Saved setup progress is unreadable; existing server controls remain available. Original metadata was left unchanged.' };
   }
 }
-export async function saveOnboarding(root: string, input: unknown): Promise<void> {
+export async function saveOnboarding(root: string, input: unknown, serverId?: string | null): Promise<void> {
+  const file = onboardingFile(root, serverId);
   const progress = { version: 1, ...validateOnboarding(input) };
-  const current = await readOnboarding(root);
+  const current = await readOnboarding(root, false, serverId);
   if (current.error) throw new Error(current.error);
   await mkdir(root, { recursive: true });
   const temporary = path.join(root, `onboarding-${randomUUID()}.tmp`);
   const handle = await open(temporary, 'wx', 0o600);
   try { await handle.writeFile(JSON.stringify(progress)); await handle.sync(); }
   finally { await handle.close(); }
-  try { await rename(temporary, path.join(root, 'onboarding.json')); await syncDirectory(root); }
+  try { await rename(temporary, file); await syncDirectory(root); }
   finally { await rm(temporary, { force: true }); }
 }

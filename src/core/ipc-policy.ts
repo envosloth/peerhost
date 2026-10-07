@@ -87,7 +87,13 @@ export function validateCall(method:unknown,payload:unknown,senderUrl:string,exp
     case 'selectServer':case 'deleteServer':
       if(Object.keys(p).join(',')!=='id'||!isServerId(p.id))throw new Error('Invalid server id');
       return {id:p.id};
-    case 'saveOnboarding':return validateOnboarding(p);
+    case 'saveOnboarding': {
+      const scoped = Object.hasOwn(p, 'serverId');
+      const {serverId, ...input} = p;
+      if(scoped && serverId !== null && !isServerId(serverId))throw new Error('Invalid setup server id');
+      const progress = validateOnboarding(input);
+      return scoped ? {...progress, serverId} : progress;
+    }
     case 'restoreSnapshot':
       if(Object.keys(p).join(',')!=='snapshotId'||!fingerprint(p.snapshotId))throw new Error('Invalid snapshot revision');
       return {snapshotId:p.snapshotId};

@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="playit.css">
   <link rel="stylesheet" href="dashboard.css">
+  <script src="loading.js" defer></script>
   <script src="dashboard.js" defer></script>
   <script src="renderer.js" defer></script>
   <script src="playit.js" defer></script>
@@ -121,6 +122,7 @@
       <!-- No title strip: a borderless drag row on the page carries the live status and the window buttons. -->
       <div class="topbar">
         <p id="activity-message" class="activity" role="status" aria-live="polite">Reading app state…</p>
+        <p id="action-loading" class="loading-feedback" role="status" aria-live="polite" aria-atomic="true" hidden><span class="loading-spinner" aria-hidden="true"></span><span class="loading-label"></span></p>
         <div class="window-controls" role="group" aria-label="Window controls">
           <button id="window-minimize" type="button" class="window-button" aria-label="Minimize" title="Minimize"><svg class="icon" aria-hidden="true"><use href="#i-min"/></svg></button>
           <button id="window-mode" type="button" class="window-button" data-mode="borderless" aria-label="Enter fullscreen" title="Enter fullscreen (F11)"><svg class="icon icon-to-fullscreen" aria-hidden="true"><use href="#i-fullscreen"/></svg><svg class="icon icon-to-borderless" aria-hidden="true"><use href="#i-borderless"/></svg></button>

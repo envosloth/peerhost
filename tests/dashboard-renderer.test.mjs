@@ -27,6 +27,87 @@ const fixture = () => page.evaluate(() => window.dashboardFixture.read());
 const settle = () => page.waitForFunction(() => document.querySelector('#activity-message').textContent === 'Ready');
 async function set(value) { await page.evaluate(v => window.dashboardFixture.set(v), value); await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange'))); await settle(); }
 
+test('slow actions display an animated loading status until verified completion', async () => {
+  await reset(); const f=await fixture();f.state.relay={name:'Group',fingerprint:'c'.repeat(64),parkOnStop:false};
+  await set({state:f.state,holdGroupOp:true}); await click('#server-list [data-action="open"][data-id="alpha"]');await click('#peers-tab');
+  try {
+    await click('#disband-group');await page.waitForFunction(()=>window.dashboardFixture.read().groupHeld);
+    assert.equal(await page.locator('#action-loading').isVisible(),true,'a held real renderer action has visible progress');
+    assert.match(await page.locator('#action-loading').textContent(), /disband|working/i);
+    assert.equal(await page.locator('#action-loading').getAttribute('role'),'status');
+    assert.notEqual(await page.locator('#action-loading .loading-spinner').evaluate(el=>getComputedStyle(el).animationName),'none');
+  } finally { await page.evaluate(()=>window.dashboardFixture.release()); }
+  await settle();await page.waitForFunction(()=>document.querySelector('#action-loading').hidden);
+  assert.match(await page.locator('#disband-feedback').textContent(),/Verified disband/);
+});
+
+test('account actions show progress inside the setup modal and clear it after a rejected request', async () => {
+  await reset(); const f=await fixture();f.state.onboarding.step='friends';
+  await set({state:f.state,accountStatus:{configured:true,signedIn:true,online:true,username:'alex',detail:'Signed in'},holdFriendOp:'accountFriendSend',failFriendOp:'accountFriendSend'});
+  await page.evaluate(()=>window.dispatchEvent(new Event('seedhost-account-changed')));await click('#nav-setup');
+  await page.locator('#setup-friend-username').fill('taylor');
+  try {
+    await click('#setup-friend-send');await page.waitForFunction(()=>window.dashboardFixture.read().heldFriend);
+    assert.equal(await page.locator('#setup-dialog [data-loading-context="dialog"]').isVisible(),true,'native modal progress cannot live behind the inert backdrop');
+    assert.equal(await page.locator('#setup-friend-send').isDisabled(),true);
+  } finally {await page.evaluate(()=>window.dashboardFixture.release());}
+  await page.waitForFunction(()=>document.querySelector('#setup-friend-feedback').textContent.includes('TEST failure'));
+  await page.waitForFunction(()=>document.querySelector('#action-loading').hidden);
+  assert.equal(await page.locator('#setup-dialog [data-loading-context="dialog"]').isHidden(),true);
+  assert.equal(await page.locator('#setup-friend-send').isEnabled(),true);
+});
+
+test('overlapping metadata loads keep progress visible until every load settles', async () => {
+  await reset();await page.evaluate(()=>window.dashboardFixture.set({holdCalls:['listServerVersions','discoverJava']}));
+  try {
+    await click('#nav-setup');await page.waitForFunction(()=>Object.keys(window.dashboardFixture.read().heldCalls||{}).length===2);
+    assert.equal(await page.locator('#setup-dialog [data-loading-context="dialog"]').isVisible(),true);
+    await page.evaluate(()=>window.dashboardFixture.releaseCall('listServerVersions'));
+    await page.waitForFunction(()=>!window.dashboardFixture.read().heldCalls?.listServerVersions);
+    assert.equal(await page.locator('#action-loading').isVisible(),true,'one completed request must not clear another pending request');
+    await page.emulateMedia({reducedMotion:'reduce'});
+    assert.equal(await page.locator('#action-loading .loading-spinner').evaluate(el=>getComputedStyle(el).animationName),'none');
+  } finally {
+    await page.evaluate(()=>{window.dashboardFixture.releaseCall('listServerVersions');window.dashboardFixture.releaseCall('discoverJava');});
+    await page.emulateMedia({reducedMotion:'no-preference'});
+  }
+  await page.waitForFunction(()=>document.querySelector('#action-loading').hidden);
+});
+
+test('manual performance refresh shows loading while automatic sampling stays quiet', async () => {
+  await reset();await click('#server-list [data-action="open"][data-id="alpha"]');await click('#operate-tab');
+  await page.waitForFunction(()=>document.querySelector('#dashboard-status').textContent==='Updated from this server');
+  await page.evaluate(()=>window.dashboardFixture.set({holdCalls:['getServerDashboard']}));
+  try {
+    await click('#dashboard-refresh');await page.waitForFunction(()=>window.dashboardFixture.read().heldCalls?.getServerDashboard);
+    assert.equal(await page.locator('#action-loading').isVisible(),true);
+  } finally {await page.evaluate(()=>window.dashboardFixture.releaseCall('getServerDashboard'));}
+  await page.waitForFunction(()=>document.querySelector('#action-loading').hidden);
+});
+
+test('public-address actions keep a loading animation while the backend is pending', async () => {
+  await reset();await click('#server-list [data-action="open"][data-id="alpha"]');await click('#tunnels-tab');
+  await page.evaluate(()=>window.dashboardFixture.set({holdCalls:['publicAddressEnable']}));
+  try {
+    await click('#public-go');await page.waitForFunction(()=>window.dashboardFixture.read().heldCalls?.publicAddressEnable);
+    assert.equal(await page.locator('#action-loading').isVisible(),true);
+    assert.match(await page.locator('#action-loading').textContent(),/public address/i);
+  } finally {await page.evaluate(()=>window.dashboardFixture.releaseCall('publicAddressEnable'));}
+  await page.waitForFunction(()=>document.querySelector('#action-loading').hidden);
+});
+
+test('manual friend-inbox refresh has progress without animating routine account polling', async () => {
+  await reset();await page.evaluate(()=>window.dashboardFixture.set({accountStatus:{configured:true,signedIn:true,online:true,username:'alex',detail:'Signed in'}}));
+  await page.evaluate(()=>window.dispatchEvent(new Event('seedhost-account-changed')));await click('#friends-tab');
+  await page.waitForFunction(()=>!document.querySelector('#friend-requests-refresh').disabled);
+  await page.evaluate(()=>window.dashboardFixture.set({holdCalls:['accountFriendRequests']}));
+  try {
+    await click('#friend-requests-refresh');await page.waitForFunction(()=>window.dashboardFixture.read().heldCalls?.accountFriendRequests);
+    assert.equal(await page.locator('#action-loading').isVisible(),true);
+  } finally {await page.evaluate(()=>window.dashboardFixture.releaseCall('accountFriendRequests'));}
+  await page.waitForFunction(()=>document.querySelector('#action-loading').hidden);
+});
+
 test('disband refuses a forged success with unchanged group readback', async () => {
   await reset();const f=await fixture();f.state.relay={name:'Group',fingerprint:'c'.repeat(64),parkOnStop:false};await set({state:f.state,disbandReadbackMismatch:true});await click('#server-list [data-action="open"][data-id="alpha"]');await click('#peers-tab');await click('#disband-group');
   await page.waitForFunction(()=>document.querySelector('#disband-feedback').textContent.includes('could not be confirmed'));
@@ -101,6 +182,16 @@ test('performance rounds measured floats to at most two decimals and rejects non
   f.dashboard.alpha.performance={pid:null,cpuPercent:null,memoryMiB:null,uptimeSeconds:null}; await set({dashboard:f.dashboard});await click('#dashboard-refresh');
   await page.waitForFunction(()=>document.querySelector('#performance-cpu').textContent==='Unavailable');
   assert.equal(await page.locator('#performance-memory').textContent(),'Unavailable');
+});
+
+test('performance scales large measured memory to GiB without changing unavailable samples', async () => {
+  await reset(); await click('#server-list [data-action="open"][data-id="alpha"]'); await click('#operate-tab');
+  for (const [memoryMiB, expected] of [[1200, '1.2 GiB'], [1024, '1 GiB'], [16384, '16 GiB'], [1023, '1023 MiB'], [0, '0 MiB'], [null, 'Unavailable'], [-1, 'Unavailable']]) {
+    const f=await fixture(); f.dashboard.alpha.performance={pid:123,cpuPercent:0,memoryMiB,uptimeSeconds:10};
+    await set({dashboard:f.dashboard}); await click('#dashboard-refresh');
+    await page.waitForFunction(expected=>document.querySelector('#performance-memory').textContent===expected, expected);
+    assert.equal(await page.locator('#performance-memory').textContent(), expected);
+  }
 });
 
 test('Friends and Multi-host keep one account card in the Friends page without moving it between contexts', async () => {
@@ -544,6 +635,28 @@ test('Server settings handles actual properties text values and preserves unsave
   await page.waitForFunction(() => document.querySelector('#properties-feedback').textContent.includes('Verified'));
   const save = (await fixture()).calls.find(c => c.method === 'saveServerSettings');
   assert.deepEqual(save.payload, { id: 'alpha', settings: { 'max-players': 12, pvp: false } }, 'only edited keys are submitted');
+});
+
+test('server file operations keep animated progress through folder, read, write and verified readback', async () => {
+  await reset();await click('#server-list [data-action="open"][data-id="alpha"]');await click('#server-files-tab');
+  await page.waitForFunction(()=>document.querySelector('#file-list').textContent.includes('server.properties'));
+  const hold=method=>page.evaluate(method=>window.dashboardFixture.set({holdCalls:[method]}),method);
+  const pending=method=>page.waitForFunction(method=>window.dashboardFixture.read().heldCalls?.[method],method);
+  const release=method=>page.evaluate(method=>{window.dashboardFixture.set({holdCalls:[]});window.dashboardFixture.releaseCall(method);},method);
+  try {
+    await hold('listServerFiles');await click('#file-refresh');await pending('listServerFiles');
+    assert.equal(await page.locator('#action-loading').isVisible(),true,'folder work is animated');
+    await release('listServerFiles');await page.waitForFunction(()=>!document.querySelector('#file-refresh').disabled);
+    await hold('readServerFile');await click('#file-list [data-path="server.properties"]');await pending('readServerFile');
+    assert.equal(await page.locator('#action-loading').isVisible(),true,'file read is animated');
+    await release('readServerFile');await page.waitForFunction(()=>document.querySelector('#file-editor').value.includes('motd=fixture'));
+    await hold('writeServerFile');await page.locator('#file-editor').fill('motd=loading proof\n');await click('#file-save');await pending('writeServerFile');
+    assert.equal(await page.locator('#action-loading').isVisible(),true,'file write is animated');
+    await page.evaluate(()=>{window.dashboardFixture.set({holdCalls:['readServerFile']});window.dashboardFixture.releaseCall('writeServerFile');});
+    await pending('readServerFile');assert.equal(await page.locator('#action-loading').isVisible(),true,'animation lasts until disk readback, not only write acknowledgment');
+    await release('readServerFile');await page.waitForFunction(()=>document.querySelector('#file-feedback').textContent.includes('Verified'));
+    await page.waitForFunction(()=>document.querySelector('#action-loading').hidden);
+  } finally {await page.evaluate(()=>{window.dashboardFixture.set({holdCalls:[]});for(const method of ['listServerFiles','readServerFile','writeServerFile'])window.dashboardFixture.releaseCall(method);});}
 });
 
 test('saving unchanged file content verifies the same hash without reporting a false failure', async () => {

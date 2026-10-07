@@ -195,6 +195,16 @@ h4 { font-size: 12.5px; font-weight: 650; }
 .activity.is-busy { color: var(--accent-text); font-weight: 600; }
 .activity.is-busy::before { background: var(--a1); animation: blink 1s ease-in-out infinite; }
 .activity.is-offline::before { background: var(--danger); }
+.loading-feedback { display: flex; align-items: center; gap: 9px; color: var(--accent-text); font-size: 12px; font-weight: 600; }
+.loading-feedback[hidden] { display: none; }
+#action-loading { flex: 1; min-width: 0; margin: 0; }
+#action-loading .loading-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.topbar:has(#action-loading:not([hidden])) .activity { display: none; }
+dialog > .loading-feedback { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--raised); }
+.loading-spinner { display: inline-block; width: 16px; height: 16px; flex: 0 0 16px; border: 2px solid var(--line-strong); border-top-color: var(--a1); border-right-color: var(--a1); border-radius: 50%; animation: seed-loading-spin .8s linear infinite; }
+@keyframes seed-loading-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .loading-spinner { animation: none; } }
+html[data-motion="reduced"] .loading-spinner, html[data-motion="none"] .loading-spinner { animation: none; }
 .window-controls { display: flex; align-items: center; gap: 2px; flex-shrink: 0; -webkit-app-region: no-drag; }
 .window-button { display: grid; place-items: center; width: 40px; height: 32px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--dim); transition: background .12s ease, color .12s ease; }
 .window-button .icon { width: 15px; height: 15px; stroke-width: 1.7; }
