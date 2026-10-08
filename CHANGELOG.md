@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.1-alpha
+
+Unsigned portable Windows alpha. Preserve independent world backups.
+
+- Setup-guide progress is isolated per server, with a separate new-server draft and guarded legacy migration.
+- Slow foreground actions show accessible loading feedback; background polling stays quiet.
+- Cancelling Create, Import, or Java-profile confirmation is quiet rather than reporting a false failure.
+- Windows snapshot safety walks retry transient delete-pending children within a bounded budget while persistent denial and unsafe links still fail closed.
+- Performance memory displays GiB correctly; friend lists refresh correctly with isolated account fixtures.
+
+Verification of the preceding feature commit: canonical build/test gate 869 passed, 0 failed, 1 skipped; packaged usability check passed. Release-version gate and published-asset validation are recorded with the release notes.
+
 ## 0.5.0-alpha — 2026-10-05
 
 **Unsigned portable alpha. Keep your own world backups.** Windows packaging is verified; this release is not Windows runtime or remote-friend gameplay certification.
