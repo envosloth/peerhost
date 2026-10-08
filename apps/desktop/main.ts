@@ -189,7 +189,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
             return !collision&&pub.address&&['reachable','reserved','pending'].includes(pub.state)
               ?{address:pub.address,reachability:(pub.state==='reachable'?'verified':'unverified') as 'verified'|'unverified',source:'playit' as const,targetServerId:entry.id}:null;
           };
-          return {...state,servers:state.servers.map(entry=>({...entry,publicJoinAddress:publicJoin(entry)})),
+          return {...state,version:app.getVersion(),servers:state.servers.map(entry=>({...entry,publicJoinAddress:publicJoin(entry)})),
             onboarding:{...state.onboarding,checks,completed:checks.ready==='complete'}};
         }
         case 'alwaysOnStatus':return alwaysOn.status();
