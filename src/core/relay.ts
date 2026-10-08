@@ -163,13 +163,29 @@ export class RelayNode {
 
   async untrust(fingerprint: string): Promise<void> {
     if (!fingerprintOK(fingerprint)) throw new Error('Invalid fingerprint');
-    await this.mutate(async (config) => {
+    // Serialize with in-process park/claim work, then hold the cross-process configuration lock for the whole
+    // check + removal (a serving relay in another process — app vs CLI — has its own queue): a relay must never
+    // commit a park or claim decision between the check and the removal. A handoff to this device that is still
+    // pending refuses to be cut mid-flight; revoking a settled holder proceeds and disconnects their access.
+    const run = this.queue.then(() => withRelayLock(this.root, async () => {
+      const config = await readRelayConfig(this.root, this.defaultName);
       if (!config.trusted.some((host) => host.fingerprint === fingerprint)) throw new Error('Not a trusted relay friend');
+      const name = config.trusted.find((host) => host.fingerprint === fingerprint)?.name ?? 'a friend';
+      const custody = await this.custody();
+      if (custody?.pendingTarget === fingerprint) {
+        throw new Error('This friend has a handoff pending; finish or decline that handoff before removing them');
+      }
       config.trusted = config.trusted.filter((host) => host.fingerprint !== fingerprint);
       if (config.owner === fingerprint) delete config.owner;
       // Keep used-token tombstones: removing a friend must not revive a consumed token after a crash.
       await this.removeInvites((record) => record.issuer === fingerprint || record.recipient === fingerprint);
-    });
+      config.redeemed = Object.fromEntries(Object.entries(config.redeemed ?? {}).filter(([, receipt]) => receipt.expiresAt > Date.now()));
+      await durableJSON(path.join(this.root, 'relay.json'), config);
+      this.config = config;
+      this.log('Locally removed ' + name + ' from this group.');
+    }));
+    this.queue = run.catch(() => {});
+    await run;
     await this.game?.validate();
   }
 
@@ -448,14 +464,32 @@ export class RelayNode {
     await receiveSnapshot(socket, source, this.store, async (snapshot, authenticated, offer) => {
       if (!offer) return false;
       if (await ledger.hasAccepted(offer.id)) return true; // retried park: re-acknowledge, never re-apply
-      let current;
-      try { current = await ledger.status(); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-      if (!canAcceptOffer(current, offer, authenticated, this.identity.fingerprint)) {
-        this.log(`Declined park from ${who}: relay holds generation ${current?.generation} (${current?.state}); offer was generation ${offer.generation}.`);
-        return false;
-      }
-      await ledger.acceptTransfer(offer, authenticated, snapshot.id);
-      await this.game?.validate();
+      // The membership, lineage and custody decision commits under the cross-process lock shared with revocation
+      // (`untrust`, CLI included) and with claim preparation: a device revoked while its park streamed, or a
+      // member answering before the owner, can never still receive the group's authority.
+      const accepted = await withRelayLock(this.root, async () => {
+        await this.reload();
+        if (this.config.disbandedBy || !this.config.trusted.some((member) => member.fingerprint === authenticated)) {
+          this.log(`Declined park from ${who}: the device is not a trusted member of this group.`);
+          return false;
+        }
+        let current;
+        try { current = await ledger.status(); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+        // The first world lineage is established by the group owner, never by whichever member answers first;
+        // groups created without a configured owner (older installs) keep accepting the first trusted park.
+        if (!current && this.config.owner && authenticated !== this.config.owner) {
+          this.log(`Declined first park from ${who}: only the group owner establishes the world lineage.`);
+          return false;
+        }
+        if (!canAcceptOffer(current, offer, authenticated, this.identity.fingerprint)) {
+          this.log(`Declined park from ${who}: relay holds generation ${current?.generation} (${current?.state}); offer was generation ${offer.generation}.`);
+          return false;
+        }
+        await ledger.acceptTransfer(offer, authenticated, snapshot.id);
+        await this.game?.validate();
+        return true;
+      });
+      if (!accepted) return false;
       // Bookkeeping happens before the acknowledgment, so the host's next request never races it.
       // It is best-effort: authority has already committed and must not be reported as failed.
       try {
@@ -475,24 +509,29 @@ export class RelayNode {
   /** The relay hands the server to a trusted host, or resends a pending claim to the host it is pending for. */
   private async serveClaim(socket: TLSSocket, target: string, who: string): Promise<void> {
     const ledger = this.ledger();
-    const custody = await this.custody();
-    if (!custody) throw new Error('The relay holds no server yet. Park one on it first.');
-    let offer;
-    if (custody.state === 'owned') {
-      offer = await ledger.prepareTransfer(target, custody.snapshotId);
-      await this.game?.validate();
-    } else if (custody.state === 'offered') {
-      if (custody.pendingTarget !== target) {
-        const name = this.nameOf(custody.pendingTarget);
-        throw new Error(`The server is pending checkout to ${name}; ${name} must retry its claim to finish it.`);
+    // The handoff decision commits under the cross-process lock shared with revocation: a claim can never be
+    // prepared for a just-revoked member, and no removal can slip between the membership check and the preparation.
+    const offer = await withRelayLock(this.root, async () => {
+      await this.reload();
+      this.requireMember(target);
+      const custody = await this.custody();
+      if (!custody) throw new Error('The relay holds no server yet. Park one on it first.');
+      if (custody.state === 'owned') {
+        const prepared = await ledger.prepareTransfer(target, custody.snapshotId);
+        await this.game?.validate();
+        return prepared;
       }
-      offer = (await ledger.status()).offer!;
-    } else if (custody.owner === target) {
-      throw new Error('Your device already holds the server; there is nothing to claim.');
-    } else {
+      if (custody.state === 'offered') {
+        if (custody.pendingTarget !== target) {
+          const name = this.nameOf(custody.pendingTarget);
+          throw new Error(`The server is pending checkout to ${name}; ${name} must retry its claim to finish it.`);
+        }
+        return (await ledger.status()).offer!;
+      }
+      if (custody.owner === target) throw new Error('Your device already holds the server; there is nothing to claim.');
       const name = this.nameOf(custody.owner);
       throw new Error(`The server is checked out by ${name} (generation ${custody.generation}). Ask ${name} to park it on the relay.`);
-    }
+    });
     let result;
     try { result = await sendSnapshot(socket, this.store, offer.snapshotId, offer); }
     catch (error) {

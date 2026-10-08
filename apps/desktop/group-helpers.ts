@@ -112,7 +112,7 @@ export class GroupHelpers {
    * most once per process run.
    */
   async create(): Promise<GroupHelper> {
-    if (!this.primaryTaken && await this.primaryIsFree()) {
+    if (!this.primaryTaken && await this.primaryIsFree() && !this.primaryTaken) {
       this.primaryTaken = true;
       for (const entry of this.list()) if (entry.root === this.baseRoot) return entry;
       const primary = await this.load(this.baseRoot, false);

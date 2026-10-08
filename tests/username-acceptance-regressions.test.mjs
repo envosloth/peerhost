@@ -185,14 +185,17 @@ test('an unreadable ownership record for a journaled claim never aborts startup 
  const ledgerFile=path.join(root,'ownership-unreadable.sqlite');await writeFile(ledgerFile,'{"legacy":true}');
  const candidate={...structuredClone(healthyEntry),id:'d'.repeat(32),serverDir:path.join(root,'managed','servers','claimed'),ledgerFile,group:{fingerprint:pending.fingerprint,parkOnStop:false}};
  app.saved.peers=[...app.saved.peers,{name:'Invited group',fingerprint:pending.fingerprint,host:'127.0.0.1',port:47627}];
- app.saved.servers.push(candidate);app.saved.activeServerId=healthyId;
+ app.saved.servers.push(candidate);app.saved.activeServerId=candidate.id;
  app.saved.activation={serverId:candidate.id,pending,previousActiveServerId:healthyId};
  await app.persist();await app.close();
  const reopened=new SeedHostApplication(path.join(root,'profile'),identity);t.after(()=>reopened.close());
  await reopened.open();
  assert.ok(reopened.saved.activation,'the journal is kept for a later attempt instead of being discarded');
  assert.equal(reopened.saved.servers.some(entry=>entry.id===candidate.id),true,'nothing is invented and nothing is destroyed while the record is unreadable');
- assert.equal((await reopened.getState()).server.id,healthyId,'the selected healthy world is untouched');
+ assert.equal((await reopened.getState()).server.ownership.state,'unknown','corrupt active authority stays fenced');
+ await assert.rejects(reopened.startServer(true));
+ await reopened.selectServer(healthyId);
+ assert.equal((await reopened.getState()).server.id,healthyId,'healthy worlds remain accessible');
 });
 test('recovery never lists the same pending group twice when the state file already carried it',async t=>{
  const root=await mkdtemp(path.join(process.env.TMPDIR,'activation-duplicate-pending-'));

@@ -215,10 +215,19 @@ export class AccountService {
       if(!db.prepare('SELECT 1 FROM sessions WHERE username=? AND fingerprint=? AND expires>?').get(recipient,p.fingerprint,Date.now()))throw new Error('Friend must sign in on that PC first');
       const invite=decodeInvite(p.code), expires=invite.expiresAt*1000;
       if(expires<=Date.now() || expires>Date.now()+31*DAY)throw new Error('Invalid invitation expiry');
-      if(Number(db.prepare('SELECT COUNT(*) AS n FROM requests WHERE sender=?').get(username)!.n)>=30 || Number(db.prepare('SELECT COUNT(*) AS n FROM requests WHERE recipient=?').get(recipient)!.n)>=100)throw new Error('Too many pending invitations');
-      if(db.prepare('SELECT 1 FROM requests WHERE sender=? AND recipient=? AND fingerprint=?').get(username,recipient,p.fingerprint))throw new Error('An invitation is already waiting for this friend');
+      // Scope replacement to this sender, recipient device AND hosting group.
+      // Fresh IDs fence stale inbox views; exact delivery retries preserve the ID.
+      const pending=db.prepare('SELECT id,code FROM requests WHERE sender=? AND recipient=? AND fingerprint=?').all(username,recipient,p.fingerprint);
+      const sameGroup=pending.find(row=>{try{return decodeInvite(row.code as string).relayFingerprint===invite.relayFingerprint}catch{return false}});
+      if(sameGroup?.code===p.code)return {id:sameGroup.id};
+      if(!sameGroup&&(Number(db.prepare('SELECT COUNT(*) AS n FROM requests WHERE sender=?').get(username)!.n)>=30 || Number(db.prepare('SELECT COUNT(*) AS n FROM requests WHERE recipient=?').get(recipient)!.n)>=100))throw new Error('Too many pending invitations');
       const id=randomUUID();
-      db.prepare('INSERT INTO requests VALUES(?,?,?,?,?,?)').run(id,username,recipient,p.fingerprint,p.code,expires);
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        if(sameGroup)db.prepare('DELETE FROM requests WHERE id=?').run(sameGroup.id as string);
+        db.prepare('INSERT INTO requests VALUES(?,?,?,?,?,?)').run(id,username,recipient,p.fingerprint,p.code,expires);
+        db.exec('COMMIT');
+      }catch(error){db.exec('ROLLBACK');throw error;}
       return {id};
     }
     if(op==='sent') {

@@ -119,7 +119,11 @@ export class SeedHostApplication {
     catch { this.log('Saved setup progress is unreadable; existing server controls remain available. Original metadata was left unchanged.'); }
     if (this.activeServer()) {
       const ledger = this.ledger();
-      const ownership = await ledger.statusOrNull();
+      // A damaged ledger must never abort startup either: stay readable, keep every journal, and assume nothing.
+      const ownership = await ledger.statusOrNull().catch(error => {
+        this.log('Ownership record is unreadable; this server stays fenced and nothing is assumed. ' + String(error));
+        return undefined;
+      });
       if (ownership === undefined) {
         // A pre-journal interrupted claim (state written by an older build) or an externally missing record:
         // keep state readable and leave the ordinary claim retry as the recovery path. Ownership is never assumed.
@@ -144,7 +148,11 @@ export class SeedHostApplication {
     if (active) {
       // A damaged or not-yet-initialized ownership record must never block the whole state read: report it as
       // unknown, which every guarded action already treats as "no local authority on this PC".
-      const ownership = await this.ledger().statusOrNull()
+      let ownershipError: string | null = null;
+      const ownership = await this.ledger().statusOrNull().catch(error => {
+        ownershipError = 'Ownership record is unreadable; hosting and transfers stay blocked until it is repaired. ' + String((error as Error).message).slice(0, 240);
+        return undefined;
+      })
         ?? { version: 1 as const, owner: '', generation: 0, snapshotId: '', state: 'unknown' as const };
       const serverDir = active.serverDir;
       // Optional catalogue state must never block lifecycle/ownership state or graceful shutdown.
@@ -165,7 +173,7 @@ export class SeedHostApplication {
         modsError = `Mod information unavailable; repair the managed mod index/folders before changing mods. ${String((error as Error).message).slice(0, 240)}`;
       }
       server = { ...active, profile: { ...active.profile, args: [...active.profile.args] },
-        state: this.process?.state ?? 'offline', ownership, ownerName: this.nameOf(ownership.owner), mods, modsError, modInstallError, modTarget: target,
+        state: this.process?.state ?? 'offline', ownership, ownershipError, ownerName: this.nameOf(ownership.owner), mods, modsError, modInstallError, modTarget: target,
         playerPort: await readServerPort(serverDir) };
     }
     const relay = this.relayReadback();
@@ -355,8 +363,11 @@ export class SeedHostApplication {
       if (this.saved.activeServerId === id) return;
       const current = this.activeServer();
       if (current) {
-        const state = await this.ledger().status();
-        if (state.state === 'offered') throw new Error('A handoff of this server is pending. Finish or cancel it before switching servers.');
+        // An unreadable record must not lock the library: the handoff guard applies only to a readable state,
+        // and switching changes nothing about any ledger.
+        const state = await this.ledger().status().catch(() => null);
+        if (state === null) this.log('The current server’s ownership record is unreadable; switching anyway. Its record is kept for repair and nothing about ownership is assumed.');
+        else if (state.state === 'offered') throw new Error('A handoff of this server is pending. Finish or cancel it before switching servers.');
       }
       this.saved.activeServerId = id;
       await this.persist();

@@ -77,7 +77,9 @@ test('concurrent junction replacements cannot redirect working writes or mutate 
         successes++;
         assert.deepEqual(await fs.readFile(result.backupFile), original);
       } catch (error) {
-        assert.match(error.message, /junction|links|ordinary|changed|refresh|refused|ENOENT/i); refusals++;
+        // A concurrent junction swap can also surface a transient 'EBADF: bad file descriptor' from realpath while the
+        // attacker renames the directory between the walk and the handle check; it is the same benign family as ENOENT.
+        assert.match(error.message, /junction|links|ordinary|changed|refresh|refused|ENOENT|EBADF|bad file descriptor/i); refusals++;
       }
     }
   } finally { done = true; await attacker; }

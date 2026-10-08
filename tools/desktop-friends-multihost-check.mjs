@@ -5,6 +5,7 @@ import {mkdtemp,mkdir,writeFile,readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {randomBytes} from 'node:crypto';
+import {createServer} from 'node:net';
 import {_electron} from 'playwright';
 import {desktopArtifactLaunch} from './desktop-artifact-launch.mjs';
 import {dismissInitialSetup} from './desktop-test-setup.mjs';
@@ -63,6 +64,35 @@ try{
  const first=await importWorld(alice,'alpha-world');await click(alice.page,'#hosting-start-group');
  await alice.page.waitForFunction(()=>document.querySelector('#hosting-friend-feedback').textContent.includes('group is ready'));
  const groupA=(await call(alice.page,'getState')).relay;assert.ok(groupA);
+ if(process.argv.includes('--unreachable')){
+  step('An unreachable invitation must report its failure beside the clicked Accept button, within view.');
+  await bob.app.evaluate(({BrowserWindow})=>{const win=BrowserWindow.getAllWindows()[0];win.setFullScreen(false);win.setSize(1000,700);});
+  await bob.page.waitForFunction(()=>innerHeight<=700);
+  const sockets=new Set();const blackhole=createServer(socket=>{sockets.add(socket);socket.once('close',()=>sockets.delete(socket));});
+  await new Promise(resolve=>blackhole.listen(0,'127.0.0.1',resolve));
+  try{
+   await call(alice.page,'setHostingControlRoute',{fingerprint:groupA.fingerprint,host:'127.0.0.1',port:blackhole.address().port});
+   await invite(alice,'audit_bob');await refresh(bob.page);
+   const request=await call(bob.page,'accountRequests');assert.equal(request.length,1);
+   const before=await call(bob.page,'getState');
+   await click(bob.page,'#hosting-request-list [data-account-accept]');
+   await bob.page.waitForFunction(()=>document.querySelector('#hosting-request-feedback').textContent.includes('Could not complete invitation acceptance'),undefined,{timeout:20000});
+   const feedback=await bob.page.locator('#hosting-request-feedback').innerText();console.log('OBSERVED FAILURE: '+feedback);
+   const bounds=await bob.page.locator('#hosting-request-feedback').boundingBox();const height=await bob.page.evaluate(()=>innerHeight);
+   console.log('FEEDBACK GEOMETRY '+JSON.stringify({bounds,height}));
+   await shot(bob.page,'unreachable-feedback');
+   assert.ok(bounds&&bounds.y>=0&&bounds.y+bounds.height<=height,'Acceptance error must be visible without scrolling after clicking Accept');
+   assert.deepEqual((await call(bob.page,'getState')).pendingGroups,before.pendingGroups);
+   assert.equal((await call(bob.page,'accountRequests'))[0].id,request[0].id,'failed acceptance retains the invitation');
+   assert.equal(await bob.page.locator('#hosting-request-list [data-account-accept]').isEnabled(),true,'timeout must release the busy state');
+   console.log('PASS: unreachable invitation fails visibly, releases controls and retains request without membership.');
+  }finally{for(const socket of sockets)socket.destroy();await new Promise(resolve=>blackhole.close(resolve));}
+  // Continue the real successful acceptance using a replacement, not the immutable broken route.
+  await click(bob.page,'#hosting-request-list [data-account-decline]');
+  await bob.page.waitForFunction(()=>document.querySelector('#hosting-request-feedback').textContent==='Invitation declined.');
+  const local=await call(alice.page,'getHostingControlRoute',{fingerprint:groupA.fingerprint});
+  await call(alice.page,'setHostingControlRoute',{fingerprint:groupA.fingerprint,host:'127.0.0.1',port:local.listener.port});
+ }
  await invite(alice,'audit_bob');await friends(bob.page);
  assert.equal(await bob.page.locator('#friends-panel #hosting-request-list').count(),1,'serverless hosting invitation inbox must live in Friends');
  await refresh(bob.page);

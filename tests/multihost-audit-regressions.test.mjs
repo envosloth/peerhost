@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { createIdentity } from '../dist/src/core/peer-transport.js';
 import { SeedHostApplication } from '../dist/src/core/application.js';
 import { OwnershipLedger } from '../dist/src/core/ownership.js';
@@ -283,4 +284,106 @@ test('a pre-journal interrupted claim from an older build stays readable and is 
   assert.equal(state.server.ownership.generation, 2);
   assert.equal(await readFile(path.join(state.server.serverDir, 'world.bin'), 'utf8'), 'alpha v1');
   assert.equal((await relay.custody()).state, 'transferred');
+});
+
+const waitFor = (promise, label) => Promise.race([promise, delay(5000).then(() => { throw new Error(label); })]);
+
+test('revoking a member who holds the world cuts their access instead of being blocked by custody', async (t) => {
+  const root = await workspace(t, 'revoke-holder-');
+  const { relay, bob } = await parkedGroup(t, root, 'revoke');
+  const bobFp = bob.identity.fingerprint;
+
+  // The member claims the parked world and holds it.
+  await bob.claimPendingGroup(relay.identity.fingerprint);
+  await relay.settled();
+  assert.equal((await relay.custody()).owner, bobFp);
+
+  // Revocation is the blunt instrument: cutting a holder off must succeed (the gateway suites pin tunnel
+  // disconnection), and the custody ledger is retained for an explicit re-trust or handback — never rewritten.
+  await relay.untrust(bobFp);
+  assert.equal(relay.trusted.some((member) => member.fingerprint === bobFp), false, 'the member is removed even while holding');
+  assert.equal((await relay.custody()).owner, bobFp, 'the custody ledger is left untouched');
+
+  // The removed device loses access immediately.
+  await assert.rejects(bob.claimFromRelay(), /untrusted|refused/i);
+});
+
+test('a second-instance (CLI-style) removal serializes with an in-flight claim instead of removing the claimant mid-handoff', async (t) => {
+  const root = await workspace(t, 'revoke-race-');
+  const { relay, bob } = await parkedGroup(t, root, 'race');
+  const bobFp = bob.identity.fingerprint;
+  const cli = new RelayNode(relay.root, relay.identity, { log() {}, name: 'CLI' });
+  await cli.open();
+  t.after(() => cli.close().catch(() => undefined));
+
+  // Pause the relay's claim preparation after admission. A separate RelayNode instance (its own queue, like the
+  // real CLI process) then attempts the removal while the handoff decision is in flight.
+  let entered; const reached = new Promise((resolve) => { entered = resolve; });
+  let release; const gate = new Promise((resolve) => { release = resolve; });
+  let commitEntered; const confirmReached = new Promise((resolve) => { commitEntered = resolve; });
+  let releaseConfirm; const confirmGate = new Promise((resolve) => { releaseConfirm = resolve; });
+  const originalPrepare = OwnershipLedger.prototype.prepareTransfer;
+  OwnershipLedger.prototype.prepareTransfer = async function (...args) {
+    if (this.deviceId === relay.identity.fingerprint) { entered(); await gate; }
+    return originalPrepare.apply(this, args);
+  };
+  const originalConfirm = OwnershipLedger.prototype.confirmTransfer;
+  OwnershipLedger.prototype.confirmTransfer = async function (...args) {
+    if (this.deviceId === relay.identity.fingerprint) { commitEntered(); await confirmGate; }
+    return originalConfirm.apply(this, args);
+  };
+  t.after(() => { OwnershipLedger.prototype.prepareTransfer = originalPrepare; OwnershipLedger.prototype.confirmTransfer = originalConfirm; });
+  const claiming = bob.claimPendingGroup(relay.identity.fingerprint);
+  await waitFor(reached, 'the claim never reached preparation');
+  const removal = cli.untrust(bobFp).then(() => ({ removed: true, message: '' }), (error) => ({ removed: false, message: String(error.message) }));
+  try {
+    assert.equal(await Promise.race([removal.then((outcome) => outcome.removed), delay(400).then(() => 'waiting')]), 'waiting',
+      'the racing removal must not complete while the handoff decision is in flight');
+  } finally { release(); }
+  const outcome = await removal;
+  assert.equal(outcome.removed, false, 'the removal refuses instead of deleting a member who is mid-handoff');
+  assert.match(outcome.message, /handoff pending|locked/i);
+  // Only now let the claim's commit run: the removal above was evaluated while the handoff was still pending.
+  await waitFor(confirmReached, 'the claim never reached its commit');
+  releaseConfirm();
+  await claiming;
+  await relay.settled();
+  assert.equal((await relay.custody()).owner, bobFp, 'the claim itself completed cleanly');
+  assert.equal(relay.trusted.some((member) => member.fingerprint === bobFp), true, 'the claimant was never removed mid-handoff');
+
+  // Once the world is handed back, the same second-instance removal succeeds.
+  await bob.parkAtRelay();
+  await relay.settled();
+  await cli.untrust(bobFp);
+  await relay.reload();
+  assert.equal(relay.trusted.some((member) => member.fingerprint === bobFp), false);
+});
+
+test('only the group owner establishes the first world lineage; a member park cannot claim it', async (t) => {
+  const root = await workspace(t, 'first-lineage-');
+  const relay = await relayIn(t, path.join(root, 'group'), 'Shared Group');
+  const angel = await appIn(t, root, 'angel');
+  const bob = await appIn(t, root, 'bob');
+  await relay.trust('Angel', angel.identity.fingerprint);
+  await relay.trust('Bob', bob.identity.fingerprint);
+  await relay.setOwner(angel.identity.fingerprint);
+  await angel.addPeer(peerOf(relay));
+  await bob.addPeer(peerOf(relay));
+
+  // A member's world arriving before any lineage exists must never become the group's world.
+  await bob.importExisting(await world(root, 'bob-source', 'bob world'), true);
+  await bob.saveRelay({ fingerprint: relay.identity.fingerprint, parkOnStop: false });
+  await assert.rejects(bob.parkAtRelay(), /relay declined/i);
+  assert.equal(await relay.custody(), null, 'nothing was accepted');
+  assert.equal((await bob.getState()).server.ownership.state, 'owned', 'the member keeps their world, unfenced');
+
+  // The owner establishes the lineage with the ordinary park flow.
+  await angel.importExisting(await world(root, 'angel-source', 'angel world'), true);
+  await angel.saveRelay({ fingerprint: relay.identity.fingerprint, parkOnStop: false });
+  await angel.parkAtRelay();
+  await relay.settled();
+  const custody = await relay.custody();
+  assert.equal(custody.state, 'owned');
+  assert.equal(custody.owner, relay.identity.fingerprint);
+  assert.equal(custody.generation, 1);
 });
