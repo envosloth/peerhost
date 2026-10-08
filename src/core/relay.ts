@@ -187,6 +187,13 @@ export class RelayNode {
     await this.mutate(async (config) => { config.name = relayName; });
   }
 
+  /** Local operator configuration only; this is not exposed through the relay protocol. */
+  async setAdvertisedControlRoute(endpoint: { host: string; port: number }): Promise<void> {
+    if (!validAdvertise(endpoint)) throw new Error('Invalid advertised control route');
+    await this.mutate(async config => { config.advertise = { ...endpoint }; config.advertiseSource = 'explicit'; });
+    await this.reload();
+  }
+
   /** `token` lets a short pairing code stand in for the long invitation: both sides derive the same 16 bytes.
    * `minutes` gives a short-lived code (5–1440); otherwise `hours` (1–720) applies. */
   async createInvite({ hours = 24, minutes, advertise, token, recipient, persistAdvertise = true }: { hours?: number; minutes?: number; advertise?: { host: string; port: number }; token?: Buffer; recipient?: string; persistAdvertise?: boolean } = {}): Promise<CreatedInvite> {

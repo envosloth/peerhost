@@ -8,12 +8,12 @@ test('desktop setup handler strips routing metadata and forwards null, explicit 
  const main=await readFile(new URL('../dist/apps/desktop/main.js',import.meta.url),'utf8');
  const body=main.match(/case 'saveOnboarding':([\s\S]*?)case 'listSnapshots':/)?.[1];
  assert.ok(body,'compiled setup handler must be present');
- const invoke=new (Object.getPrototypeOf(async function(){}).constructor)('p','backend','alwaysOn',body);
+ const invoke=new (Object.getPrototypeOf(async function(){}).constructor)('p','backend','helperForSelected',body);
  const input={step:'server',dismissed:false,completed:false,skipped:[],draft:{name:'Pending world',loader:'vanilla',gameVersion:'',memoryMiB:2048}};
  const calls=[]; const helper={enabled:false,error:null};
  const backend={saveOnboarding:async(progress,alwaysOn,serverId)=>{validateOnboarding(progress);calls.push({progress,alwaysOn,serverId});}};
  for(const serverId of [null,'a'.repeat(32),undefined]){
-  await invoke(serverId===undefined?input:{...input,serverId},backend,{status:async()=>helper});
+  await invoke(serverId===undefined?input:{...input,serverId},backend,async()=>({status:async()=>helper}));
   assert.deepEqual(calls.at(-1),{progress:input,alwaysOn:helper,serverId});
  }
 });

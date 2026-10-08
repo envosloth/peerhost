@@ -8,6 +8,7 @@ import { RelayNode, DEFAULT_RELAY_PORT } from './relay.js';
 import { encodeInvite } from './invites.js';
 import { privateLanAddresses, tailnetAddresses } from './network-info.js';
 import type { PeerIdentity } from './peer-transport.js';
+import { isPrivateEndpointHost } from './endpoints.js';
 import { readRelayConfig, validAdvertise } from './relay-friends-store.js';
 
 /*
@@ -139,6 +140,35 @@ export class AlwaysOnHost {
       throw new Error('reservedGamePorts must be an array of integer ports between 1 and 65535');
     }
     this.options = { ...options, reservedGamePorts: reserved && [...reserved], gamePorts: options.gamePorts && [...options.gamePorts] };
+  }
+
+  /** Actual locally loaded helper identities, including retained roles; no custody inference. */
+  localGroupFingerprints(): string[] {
+    return [...new Set([this.identity.fingerprint, ...(this.groupHost?.localGroupFingerprints() ?? []),
+      ...(this.retainedRole?.localGroupFingerprints() ?? [])])];
+  }
+
+  /** Resolve an exact locally held group identity, not whichever optional player role status reports. */
+  forGroupFingerprint(fingerprint: string): AlwaysOnHost | undefined {
+    if (fingerprint === this.identity.fingerprint) return this;
+    return this.groupHost?.forGroupFingerprint(fingerprint) ?? this.retainedRole?.forGroupFingerprint(fingerprint);
+  }
+
+  async controlRoute() {
+    const config = await readRelayConfig(this.root, 'Always-on PC');
+    const advertised = config.advertise ? { ...config.advertise } : null;
+    return { fingerprint: this.identity.fingerprint, listener: this.relay?.endpoint ? { ...this.relay.endpoint } : null,
+      advertised, privateRoute: advertised ? isPrivateEndpointHost(advertised.host) : true, reachability: 'unverified' as const,
+      detail: 'Friends connect to this TLS control route, not the account directory or Minecraft player address. Loopback works only on this PC; LAN addresses require the same network; VPN routes require both PCs on that VPN. Public ingress must already forward raw TLS to this helper. Saving does not create or test a route. Send a new invitation after changing it.' };
+  }
+
+  async setControlRoute(endpoint: { host: string; port: number }) {
+    if (!validAdvertise(endpoint)) throw new Error('Invalid advertised control route');
+    if (!this.relay) throw new Error('Open this group helper before configuring its control route');
+    await this.relay.setAdvertisedControlRoute(endpoint);
+    const readback = await this.controlRoute();
+    if (readback.advertised?.host !== endpoint.host || readback.advertised.port !== endpoint.port) throw new Error('Control route saving could not be verified');
+    return readback;
   }
 
   private get settingsFile(): string { return path.join(this.root, 'always-on.json'); }

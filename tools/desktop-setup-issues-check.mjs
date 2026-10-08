@@ -330,7 +330,9 @@ try {
   await click('#hosting-friend-list [data-host-invite="guide_sam"]');
   await page.waitForFunction(() => document.getElementById('hosting-friend-feedback').textContent.includes('Hosting invitation sent to @guide_sam'));
   ({ app, page } = joiner);
-  await click('#hosting-requests-refresh');
+    await click('#home-tab'); await click('#friends-tab');
+    assert.equal(await page.locator('#friends-panel #hosting-request-list').count(), 1);
+    await click('#hosting-requests-refresh');
   await page.locator('#hosting-request-list [data-account-accept]').waitFor({ state: 'visible' });
   await click('#hosting-request-list [data-account-accept]');
   await page.waitForFunction(() => document.getElementById('hosting-request-feedback').textContent.includes('Joined'));

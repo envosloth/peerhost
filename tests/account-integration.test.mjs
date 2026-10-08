@@ -34,7 +34,7 @@ test('the app signs up once, adds by username, accepts a group, and removes a me
  assert.equal(typeof host.ownerInvite,'function','one-click groups must appoint their creator, not an invite redeemer');
  const ownerInvitation=await host.ownerInvite('alice',ai.fingerprint);assert.ok(ownerInvitation.code);
  await assert.rejects(host.ownerInvite('bob',bi.fingerprint),/owner/);
- await restored.send('bob');const requests=await bob.requests();assert.equal(requests[0].from,'alice');assert.equal('code' in requests[0],false);
+ await restored.send('bob',{fingerprint:relay.identity.fingerprint,serverId:null});const requests=await bob.requests();assert.equal(requests[0].from,'alice');assert.equal('code' in requests[0],false);
  await bob.accept(requests[0].id);assert.equal((await b.listFriends()).members.length,2);
  await a.removeFriend(bi.fingerprint);assert.equal((await a.listFriends()).members.length,1);
  assert.ok(!(await readFile(path.join(root,'a','account.enc'))).includes(Buffer.from('alice')));

@@ -116,13 +116,13 @@ async function directoryRequest(t) {
   const endpoint = { ...directory.endpoint, fingerprint: di.fingerprint };
   // Only decline is exercised here: the local issuer adapter creates a real recipient-bound token.
   // Membership acceptance is covered with real applications in invitation-network.test.mjs.
-  const issuer = { createInviteFor: fingerprint => relay.createInvite({ recipient: fingerprint }) };
+  const issuer = { createInviteFor: fingerprint => relay.createInvite({ recipient: fingerprint }), createInviteForGroup: (_group, fingerprint) => relay.createInvite({ recipient: fingerprint }) };
   const vault = { encrypt: value => Buffer.from(value), decrypt: value => value.toString('utf8') };
   const alice = new AccountIntegration(path.join(root, 'alice'), ai, vault, issuer, endpoint);
   const bob = new AccountIntegration(path.join(root, 'bob'), bi, vault, {}, endpoint);
   await alice.authenticate('register', { username: 'alice', password: 'abcd' });
   await bob.authenticate('register', { username: 'bob', password: 'efgh' });
-  await alice.send('bob');
+  await alice.send('bob', { fingerprint: ri.fingerprint, serverId: null });
   const [request] = await bob.requests();
   return { directory, bob, request };
 }

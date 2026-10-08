@@ -1291,6 +1291,32 @@
     }
     for (const button of $('friend-list').querySelectorAll('[data-remove-friend]')) button.disabled = !bridgeReady || isBusy();
   }
+  window.addEventListener('seedhost-notification-open', async event => {
+    if (event.detail?.destination !== 'server') {
+      window.seedDashboard.selectPage('home');
+      window.seedDashboard.selectPage('friends', true);
+      (event.detail?.destination === 'hosting' ? $('hosting-inbox-heading') : $('friend-request-list')).scrollIntoView({ block: 'center' });
+      return;
+    }
+    const id = event.detail.serverId;
+    if (!state?.servers?.some(s => s.id === id) || !await runAction('selectServer', { id })) return;
+    window.seedDashboard.selectPage('operate', true);
+  });
+  window.addEventListener('seedhost-group-action', async event => {
+    const group = event.detail;
+    if (!group || !/^[a-f0-9]{64}$/.test(group.fingerprint) || isBusy()) return;
+    if (group.pending) {
+      $('hosting-group-feedback').textContent = 'Downloading as a new server… Nothing will start automatically.';
+      const ok = await runAction('claimPendingGroup', { fingerprint: group.fingerprint }, () => {
+        if (!state?.servers?.some(s => s.group?.fingerprint === group.fingerprint) || state?.pendingGroups?.some(g => g.fingerprint === group.fingerprint)) throw new Error('The downloaded group was not confirmed in the server library.');
+      });
+      $('hosting-group-feedback').textContent = ok ? 'Downloaded as a new server. Review its launch settings before starting.' : 'Download was not confirmed. Check the group’s custody and retry the same group; your unrelated servers are unchanged.';
+      window.dispatchEvent(new Event('seedhost-account-changed'));
+    } else if (typeof group.serverId === 'string') {
+      if (!await runAction('selectServer', { id: group.serverId })) return;
+      window.seedDashboard.selectPage('peers', true);
+    }
+  });
   window.addEventListener('seedhost-account-changed', () => { void refresh(); void refreshFriends(); });
   async function refreshFriends(foreground = false) {
     if (!bridgeReady || !friendContext || friendsLoading) return;
@@ -1404,6 +1430,8 @@
 
   async function runAction(method, payload, onVerified) {
     if (!bridgeReady || isBusy()) return false;
+    const actionServerId = state?.server?.id;
+    const notifyFailure = window.seedNotifications?.captureFailure();
     pendingMethod = method;
     const finishLoading = window.seedLoading?.begin(busyLabels[method] || 'Working…');
     $('error-banner').hidden = true;
@@ -1424,6 +1452,7 @@
       if (refreshInFlight) await refreshInFlight;
       await refresh(); // Failed operations can still alter process / ownership state.
       showError(message);
+      notifyFailure?.(method, actionServerId);
       return false;
     } finally {
       pendingMethod = null;
@@ -1750,6 +1779,8 @@
         const next = await window.seedhost.call('getState');
         if (!next || typeof next !== 'object' || !next.settings || !Array.isArray(next.peers) || !Array.isArray(next.logs)) throw new Error('The app returned an invalid state.');
         state = next;
+        window.seedNotifications?.servers(state);
+        window.dispatchEvent(new CustomEvent('seedhost-state-read', { detail: state }));
         syncPublicContext();
         bridgeReady = true;
         if (!publicStatus) void refreshPublicAddress();

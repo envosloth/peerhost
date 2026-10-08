@@ -13,6 +13,7 @@
   <script src="renderer.js" defer></script>
   <script src="playit.js" defer></script>
   <link rel="stylesheet" href="accounts.css">
+  <script src="notifications.js" defer></script>
   <script src="accounts.js" defer></script>
 </head>
 <body class="is-splashing">
@@ -114,6 +115,7 @@
           <p class="device-note">✕ keeps Seed Hosting running in the tray. Stop your server before quitting.</p>
           <span id="app-version" class="version">Connecting to app…</span>
         </div>
+        <button id="notifications-open" type="button" class="button button-small" aria-haspopup="dialog" aria-controls="notifications-dialog"><span aria-hidden="true">🔔</span> Notifications <span id="notifications-count" aria-live="polite">0</span></button>
         <button id="quit-app" type="button" class="button button-small button-quiet quit-button"><svg class="icon" aria-hidden="true"><use href="#i-power"/></svg>Quit safely</button>
       </div>
     </aside>
@@ -313,6 +315,18 @@
             <ul id="account-friends-list" class="friend-list" aria-label="Your friends"></ul>
             <p id="account-friends-feedback" class="field-help" role="status" aria-live="polite"></p>
           </section>
+          <section class="card" aria-labelledby="hosting-groups-heading">
+            <h2 id="hosting-groups-heading">Your hosting groups</h2>
+            <p class="field-help">Created and joined groups across your servers. Joining does not download or start a server. Create groups and send invitations from a server’s Multi-host page.</p>
+            <ul id="hosting-group-list" class="friend-list" aria-label="Your hosting groups"></ul>
+            <p id="hosting-group-feedback" class="field-help" role="status" aria-live="polite"></p>
+          </section>
+          <section class="card" aria-labelledby="hosting-inbox-heading">
+            <div class="compact-heading"><h2 id="hosting-inbox-heading">Hosting invitations</h2><button id="hosting-requests-refresh" type="button" class="text-button" hidden>Refresh</button></div>
+            <p class="field-help">Accepting shares hosting control and world-file access with the inviter’s group — only accept people you trust. A Minecraft player address is never proof that a hosting invitation can connect. Acceptance never replaces your unrelated local servers.</p>
+            <ul id="hosting-request-list" class="friend-list" aria-label="Hosting invitations"></ul>
+            <p id="hosting-request-feedback" class="field-help" role="status" aria-live="polite"></p>
+          </section>
           <p class="alpha-note">Seed Hosting never changes your router or firewall.</p>
         </div>
       </section>
@@ -327,7 +341,7 @@
             <div class="compact-heading"><h2 id="hosting-heading">Hosting with friends</h2><button id="hosting-open-account" type="button" class="button button-small">Sign in</button></div>
             <p id="hosting-status" class="field-help" role="status">Checking account…</p>
             <p class="field-help">Hosting invitations share hosting control and world-file access through your account directory group. Adding someone as a friend does not share a world: invite each friend explicitly below.</p>
-            <div id="hosting-create-group" hidden><p class="field-help">No hosting group yet. Create one on this PC, or accept a friend’s hosting invitation below. Keep this PC on with Seed Hosting open to store the shared world.</p><button id="hosting-start-group" type="button" class="button">Create my group on this PC</button></div>
+            <div id="hosting-create-group" hidden><p class="field-help">No hosting group yet. Create one on this PC, or open Friends to view a friend’s hosting invitation. Keep this PC on with Seed Hosting open to store the shared world.</p><button id="hosting-start-group" type="button" class="button">Create my group on this PC</button></div>
             <section id="friends-controls" class="friends-section" aria-label="Group membership">
 
             <div class="card card-tight members-card">
@@ -345,10 +359,7 @@
               <p class="field-help">This sends an ordinary friend request. Hosting access needs an explicit invitation.</p>
             </form>
             <p id="hosting-friend-feedback" class="field-help" role="status" aria-live="polite"></p>
-            <div class="compact-heading"><h3>Hosting requests for you</h3><button id="hosting-requests-refresh" type="button" class="text-button" hidden>Refresh</button></div>
-            <p class="field-help">Accepting shares hosting control and world-file access with the inviter’s group — only accept people you trust. A Minecraft player address is never proof that a hosting invitation can connect.</p>
-            <ul id="hosting-request-list" class="friend-list" aria-label="Hosting invitations"></ul>
-            <p id="hosting-request-feedback" class="field-help" role="status" aria-live="polite"></p>
+
           </section>
           <details id="advanced-peers" class="advanced-peers card"><summary><svg class="icon summary-chevron" aria-hidden="true"><use href="#i-chevron"/></svg><span class="summary-title">Advanced: direct PC-to-PC transfers</span><span class="summary-meta">Fingerprints</span></summary>
             <div class="advanced-body">
@@ -587,6 +598,24 @@
   <dialog id="send-dialog" class="send-dialog" aria-labelledby="send-dialog-title" aria-describedby="send-dialog-warning">
     <div class="dialog-head"><p class="eyebrow">PEER SNAPSHOT</p><button id="close-send" type="button" class="dialog-close icon-button" aria-label="Cancel snapshot send" title="Close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
     <h2 id="send-dialog-title">Send this snapshot?</h2><p id="send-dialog-recipient"></p><code id="send-dialog-fingerprint" class="mono dialog-fingerprint well"></code><p id="send-dialog-snapshot" class="field-help mono"></p><p id="send-dialog-warning" class="warning-copy">This shares server files, which may contain private configuration or player data. Verify the recipient’s fingerprint. Sending is not proof of a completed hosting handoff.</p><div class="dialog-actions"><button id="cancel-send" type="button" class="button">Cancel</button><button id="confirm-send" type="button" class="button button-primary" disabled>Send snapshot</button></div>
+  </dialog>
+  <dialog id="hosting-route-dialog" class="account-dialog" aria-labelledby="hosting-route-title">
+    <div class="compact-heading"><h2 id="hosting-route-title">Hosting control connection</h2><button id="hosting-route-close" type="button" class="text-button">Close</button></div>
+    <p id="hosting-route-listener" class="field-help"></p>
+    <p class="warning-copy">Saving an address does not create a tunnel, VPN or router forwarding. Use an existing raw TCP/TLS route that forwards to this group's listener. A Minecraft player address and the account directory do not provide that connection. For different internet connections without a shared VPN, a reachable public control route is required.</p>
+    <form id="hosting-route-form">
+      <label for="hosting-route-host">Reachable hosting control host</label><input id="hosting-route-host" type="text" required maxlength="253" placeholder="Your existing control-route hostname" autocomplete="off">
+      <label for="hosting-route-port">Control port</label><input id="hosting-route-port" type="number" required min="1" max="65535" step="1">
+      <button id="hosting-route-save" type="submit" class="button button-primary">Save future invitation route</button>
+    </form>
+    <p id="hosting-route-feedback" class="field-help" role="status" aria-live="polite"></p>
+  </dialog>
+  <dialog id="notifications-dialog" class="account-dialog" aria-labelledby="notifications-heading">
+    <div class="compact-heading"><h2 id="notifications-heading">Notifications</h2><button id="notifications-close" type="button" class="text-button">Close</button></div>
+    <p class="field-help">Updates for your signed-in account on this PC. Opening this center does not mark them read.</p>
+    <div class="account-input-row"><button id="notifications-mark-read" type="button" class="button button-small">Mark all read</button><button id="notifications-clear" type="button" class="text-button">Clear history</button></div>
+    <ul id="notifications-list" class="friend-list" aria-label="Notification history"></ul>
+    <p id="notifications-feedback" class="field-help" role="status" aria-live="polite"></p>
   </dialog>
 </body>
 </html>

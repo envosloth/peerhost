@@ -2,10 +2,74 @@
   'use strict';
   const $=id=>document.getElementById(id);
   let status=null, working=false, checking=false, mode='register', prompted=false;
-  let hasGroup=false, serverName='';
+  let hasGroup=false, serverName='', hostingGroups=[], selectedServerId=null, selectedGroupPin=null;
+  const validGroup=g=>g&&validPin(g.fingerprint)&&validText(g.name)&&typeof g.pending==='boolean'&&typeof g.localAuthority==='boolean'&&(g.pending?g.serverId===null&&g.serverName===null:validText(g.serverId)&&validText(g.serverName));
+  async function readGroups(current){
+    const groups=await window.seedhost.call('listHostingGroups');
+    if(!current())return;
+    hostingGroups=Array.isArray(groups)?groups.filter(validGroup):[];
+    renderGroups();
+  }
+  function renderGroups(){
+    const nodes=status?.signedIn?hostingGroups.map(g=>{
+      const li=element('li','account-request');li.dataset.hostingGroup=g.fingerprint;
+      li.append(element('p','friend-name',g.name),element('p','field-help',g.pending?'World not on this PC yet. Download only when the owner has handed it to the group.':`${g.serverName} · ${g.localAuthority?'Created on this PC':'Joined group'} · open Multi-host to check members and custody.`));
+      const button=element('button','button button-small',g.pending?'Download as a new server':'Open server Multi-host');button.type='button';button.disabled=working;
+      button.addEventListener('click',()=>{if(!button.disabled)window.dispatchEvent(new CustomEvent('seedhost-group-action',{detail:{fingerprint:g.fingerprint,serverId:g.serverId,pending:g.pending}}));});
+      li.append(button);
+      if(g.localAuthority){const routeButton=element('button','text-button','Configure hosting connection');routeButton.type='button';routeButton.dataset.controlRoute=g.fingerprint;routeButton.disabled=working;routeButton.addEventListener('click',()=>{if(!routeButton.disabled)void openControlRoute(g.fingerprint);});li.append(routeButton);}
+      return li;
+    }):[];
+    $('hosting-group-list').replaceChildren(...(nodes.length?nodes:[friendEmpty(status?.signedIn?'No hosting groups yet. Open a server’s Multi-host page to create one, or accept an invitation here.':'Sign in to see your hosting groups.')]));
+  }
   // context bumps whenever the signed-in identity/context changes; opToken makes the newest async operation win.
-  let context=0, opToken=0;
+  let context=0, opToken=0, worldContext=0, worldKey=null;
+  let routePin=null,routeGeneration=0,routeLoading=false;
+  function routeControls(){for(const id of ['hosting-route-host','hosting-route-port','hosting-route-save','hosting-route-close'])$(id).disabled=working||routeLoading;}
+  function clearControlRoute(){routeGeneration++;routePin=null;routeLoading=false;$('hosting-route-host').value='';$('hosting-route-port').value='';$('hosting-route-feedback').textContent='';routeControls();}
+  const validControlRoute=(reply,pin)=>reply&&reply.fingerprint===pin&&reply.reachability==='unverified'&&validText(reply.advertised?.host)&&validPort(reply.advertised?.port);
+  async function openControlRoute(pin){
+    if(working||!validPin(pin))return;
+    clearControlRoute();routePin=pin;routeLoading=true;routeControls();
+    const generation=routeGeneration,account=context,current=()=>generation===routeGeneration&&account===context&&$('hosting-route-dialog').open;
+    $('hosting-route-listener').textContent='Reading this group’s local control listener…';$('hosting-route-dialog').showModal();
+    try{const reply=await window.seedhost.call('getHostingControlRoute',{fingerprint:pin});if(!current())return;if(!validControlRoute(reply,pin))throw new Error('This group’s control route could not be confirmed.');
+      $('hosting-route-host').value=reply.advertised.host;$('hosting-route-port').value=String(reply.advertised.port);
+      $('hosting-route-listener').textContent=reply.listener&&validText(reply.listener.host)&&validPort(reply.listener.port)?`Local listener: ${reply.listener.host}:${reply.listener.port}. Reachability from your friend’s PC is unverified.`:'This group has no running local listener. Reachability is unverified.';
+    }catch(error){if(current())$('hosting-route-feedback').textContent=message(error);}finally{if(current()){routeLoading=false;routeControls();}}
+  }
+  $('hosting-route-close').addEventListener('click',()=>{if(!working&&!routeLoading)$('hosting-route-dialog').close();});
+  $('hosting-route-dialog').addEventListener('cancel',event=>{if(working||routeLoading)event.preventDefault();});
+  $('hosting-route-dialog').addEventListener('close',clearControlRoute);
+  $('hosting-route-form').addEventListener('submit',event=>{
+    event.preventDefault();if(working||routeLoading||!$('hosting-route-form').reportValidity()||!validPin(routePin))return;
+    const fingerprint=routePin,host=$('hosting-route-host').value.trim(),port=Number($('hosting-route-port').value),generation=routeGeneration;
+    if(!validText(host)||!validPort(port)){$('hosting-route-feedback').textContent='Enter a host and an integer control port from 1 to 65535.';return;}
+    void withOp('hosting-route-feedback',async current=>{
+      const result=await window.seedhost.call('setHostingControlRoute',{fingerprint,host,port});if(!current()||generation!==routeGeneration)return;
+      if(result===null){$('hosting-route-feedback').textContent='Cancelled. The existing route is unchanged.';return;}
+      const readback=await window.seedhost.call('getHostingControlRoute',{fingerprint});if(!current()||generation!==routeGeneration)return;
+      if(!validControlRoute(readback,fingerprint)||readback.advertised.host!==host||readback.advertised.port!==port)throw new Error('The new route could not be confirmed. Refresh before retrying.');
+      $('hosting-route-feedback').textContent='Saved the future invitation route. Reachability is still unverified; send a new invitation after your existing connection forwards to this helper.';
+    });
+  });
+  function syncWorld(state){
+    const key=JSON.stringify([state?.server?.id??null,state?.relay??null,state?.peers??[],state?.deviceId??null]);
+    if(key!==worldKey){worldKey=key;worldContext++;$('hosting-friend-feedback').textContent='';}
+    selectedServerId=state?.server?.id??null;selectedGroupPin=state?.relay?.fingerprint??null;
+    hasGroup=Boolean(selectedServerId&&validPin(selectedGroupPin));serverName=validText(state?.server?.name)?state.server.name:'';
+  }
+  window.addEventListener('seedhost-state-read',event=>{syncWorld(event.detail);renderHostingLists();render();});
   let friendRequests=[], friends=[], hostingRequests=[], friendSeamAvailable=true;
+  function applyStatus(next){
+    const identity=s=>JSON.stringify([Boolean(s?.signedIn),s?.username??null,s?.directoryFingerprint??null]);
+    if(!status||identity(status)!==identity(next)){
+      context++;friendRequests=[];friends=[];hostingRequests=[];hostingGroups=[];
+      if($('hosting-route-dialog').open)$('hosting-route-dialog').close();clearControlRoute();
+      for(const id of ['account-friends-feedback','hosting-request-feedback','hosting-group-feedback','hosting-friend-feedback','setup-friend-feedback'])$(id).textContent='';
+    }
+    status=next;window.seedNotifications?.setAccount(status);
+  }
   const friendSeamNotice='Friend features need the account-service update; this build does not include them yet.';
   const changed=()=>window.dispatchEvent(new Event('seedhost-account-changed'));
   const message=e=>String(e?.message||e).replace(/^Error invoking remote method '[^']+': Error: /,'');
@@ -34,7 +98,7 @@
     $('profile-close').disabled=working;
   }
   function render(){
-    renderProfile();
+    renderProfile(); renderGroups(); routeControls();
     if(!status)return;
     const signedIn=Boolean(status.signedIn), online=Boolean(status.online)&&!working, interactive=online&&!working;
     $('account-heading').textContent=status.signedIn?`@${status.username}`:'Your Seed Hosting account';
@@ -52,7 +116,7 @@
     // Hosting lives only in the selected server's Multi-host page.
     $('hosting-open-account').hidden=!status.configured||signedIn;
     $('hosting-open-account').disabled=working;
-    $('hosting-status').textContent=!signedIn?'Sign in to invite friends to host with you.':!status.online?'Your account is offline; hosting actions are paused.':hasGroup?'Your hosting group is ready. Invite a friend to host this server.':'No hosting group yet. Create one on this PC, or accept a hosting invitation below.';
+    $('hosting-status').textContent=!signedIn?'Sign in to invite friends to host with you.':!status.online?'Your account is offline; hosting actions are paused.':hasGroup?'Your hosting group is ready. Invite a friend to host this server.':'No hosting group yet. Create one on this PC, or open Friends to view incoming hosting invitations.';
     $('hosting-create-group').hidden=!signedIn||hasGroup;
     $('hosting-server-name').textContent=serverName||'this server';
     $('hosting-add-form').hidden=!signedIn;
@@ -114,6 +178,7 @@
   }
   function renderHostingLists(){
     const signedIn=Boolean(status?.signedIn);
+    window.seedNotifications?.requests(signedIn?friendRequests:[],signedIn?hostingRequests:[]);
     $('hosting-requests-refresh').hidden=!signedIn;
     // Invite buttons only appear for accepted friends and only once a hosting group exists.
     const inviteNodes=friends.map(f=>{
@@ -135,6 +200,8 @@
       const endpoint=r.controlEndpoint;
       route.textContent=endpoint?`Hosting control endpoint: ${endpoint.host}:${endpoint.port}. Reachability is unverified. ${endpoint.privateRoute?'This is a private route: use the same network or a VPN that can reach this address. ':''}This is not the Minecraft player address; a Minecraft tunnel does not make hosting invitations reachable.`:'Hosting control route is unverified. A Minecraft player address is not proof that hosting invitations can connect.';
       li.append(route);
+      if(endpoint&&/^(localhost|127(?:\.[0-9]{1,3}){3}|\[?::1\]?)$/i.test(endpoint.host))li.append(element('p','warning-copy','Same-PC only: this loopback route cannot connect a friend on another PC. The online account directory does not provide hosting transport. Ask the owner for a new invitation using a reachable LAN/VPN hosting control endpoint. Only proceed here for a deliberate same-PC test.'));
+      if(endpoint?.privateRoute)li.append(element('p','field-help','On different internet connections without a shared VPN, a private control route is not reachable. The owner needs a separately reachable hosting control endpoint; the account directory and Minecraft player tunnel do not provide one. WAN hosting control has not been verified.'));
       li.append(element('p','field-help','If acceptance times out, retry only after the owner restores access to this same endpoint. If the endpoint must change, the owner must correct the advertised control route and restart Seed Hosting; decline the old request, then ask for a new invitation.'));
       const actions=element('div','account-input-row');
       const accept=element('button','button button-primary','Accept'); accept.type='button'; accept.dataset.accountAccept=r.id;
@@ -148,13 +215,14 @@
   // Every mutation runs with a context + token guard: a sign-out, newer operation, or stale reply never renders.
   async function withOp(feedbackId, work){
     if(working) return;
+    const worldGeneration=worldContext,worldScoped=feedbackId==='hosting-friend-feedback';
     working=true; render();
     const finishLoading=window.seedLoading?.begin('Updating your account / friend connection…');
     const token=++opToken, generation=context;
-    const current=()=>token===opToken&&generation===context;
+    const current=()=>token===opToken&&generation===context&&(!worldScoped||worldGeneration===worldContext);
     try{ await work(current); }
     catch(e){ if(current()) $(feedbackId).textContent=message(e); }
-    finally{ finishLoading?.(); if(token===opToken){working=false;render();} }
+    finally{ finishLoading?.(); if(token===opToken){working=false;render();if(updateAgain)void update();} }
   }
   async function readLists(current){
     const settled=await Promise.allSettled([window.seedhost.call('accountFriendRequests'),window.seedhost.call('accountFriends')]);
@@ -220,14 +288,16 @@
     });
   }
   async function inviteToHost(username){
+    const fingerprint=selectedGroupPin,serverId=selectedServerId,targetName=serverName;
     await withOp('hosting-friend-feedback', async current=>{
-      const result=await window.seedhost.call('accountSend',{username});
+      if(!validPin(fingerprint)||!validText(serverId))throw new Error('Open the server’s Multi-host page and create its hosting group first.');
+      const result=await window.seedhost.call('accountSend',{username,fingerprint,serverId});
       if(!current())return;
-      if(!result||typeof result.username!=='string'||result.username!==username)throw new Error('The hosting invitation was not confirmed. Refresh and check before retrying.');
+      if(!result||result.username!==username||result.group!==fingerprint)throw new Error('The hosting invitation was not confirmed for this server’s group. Refresh and check before retrying.');
       const friendsList=await window.seedhost.call('accountFriends');
       if(!current())return;
       if(!Array.isArray(friendsList)||!friendsList.some(f=>f?.username===username))throw new Error('The account directory did not confirm this friend before inviting.');
-      $('hosting-friend-feedback').textContent=`Hosting invitation sent to @${username} for “${serverName||'this server'}”. They accept it in their app; accepting shares hosting and world-file access with your group.`;
+      $('hosting-friend-feedback').textContent=`Hosting invitation sent to @${username} for “${targetName||'this server'}”. They accept it in their app; accepting shares hosting and world-file access with your group.`;
     });
   }
   async function acceptHostingRequest(r){
@@ -239,13 +309,19 @@
       const endpoint=r.controlEndpoint;
       // Two truthful enrollment shapes: bound to this world's group, or recorded as a joined group without a local
       // world yet (pendingGroups). Both are durable readback; neither downloads, starts or replaces any world.
-      const pending=Array.isArray(saved?.pendingGroups)?saved.pendingGroups.find(p=>validText(p?.name)&&p.name===r.group&&validPin(p?.fingerprint)):null;
-      const bound=validText(saved?.relay?.name)&&saved.relay.name===r.group&&saved.relay.parkOnStop===true&&validPin(saved.relay.fingerprint);
-      const pin=pending?pending.fingerprint:bound?saved.relay.fingerprint:'';
-      const peer=saved?.peers?.find(p=>validPin(p.fingerprint)&&p.fingerprint===pin);
-      if(result?.joined!==true||!validText(r.group)||!validText(result.group)||result.group!==r.group||(!bound&&!pending)||!peer||!endpoint||!validText(endpoint.host)||!validText(peer.host)||!validPort(endpoint.port)||!validPort(peer.port)||peer.host!==endpoint.host||peer.port!==endpoint.port)throw new Error('Group enrollment could not be confirmed. This PC may already be enrolled; refresh members and check the group before retrying.');
-      $('hosting-request-feedback').textContent=bound?(saved.server?`Joined ${result.group}. Your existing world stays on this PC; nothing was downloaded or started.`:`Joined ${result.group}. Your world has not been downloaded or started.`):`Joined ${result.group}. The shared world is not on this PC yet; nothing was downloaded, started or changed. Use Settings → group to attach this to a world, or take over hosting when the owner hands it over.`;
-      hasGroup=true; render(); changed();
+      const trustedPin=result?.fingerprint;
+      const matches=g=>validText(g?.name)&&g.name===r.group&&validPin(g.fingerprint)&&(!trustedPin||g.fingerprint===trustedPin);
+      const pending=Array.isArray(saved?.pendingGroups)?saved.pendingGroups.find(matches):null;
+      const savedServer=validPin(trustedPin)&&validText(result?.serverId)?saved?.servers?.find(s=>s.id===result.serverId&&s.group?.fingerprint===trustedPin):null;
+      const bound=matches(saved?.relay)?saved.relay:savedServer?{fingerprint:trustedPin,name:result.group}:null;
+      const binding=pending||bound;
+      const peer=binding?.endpoint||saved?.peers?.find(p=>validPin(p.fingerprint)&&p.fingerprint===binding?.fingerprint);
+      const scopeMatches=Boolean(result)&&(!('serverId' in result)||(result.serverId===null?Boolean(pending):validText(result.serverId)&&saved?.servers?.some(s=>s.id===result.serverId&&s.group?.fingerprint===trustedPin)));
+      if(result?.joined!==true||!scopeMatches||!validText(r.group)||result.group!==r.group||!binding||!peer||!endpoint||!validText(endpoint.host)||!validText(peer.host)||!validPort(endpoint.port)||!validPort(peer.port)||peer.host!==endpoint.host||peer.port!==endpoint.port||('fingerprint' in result&&!validPin(trustedPin))||('requestId' in result&&result.requestId!==r.id))throw new Error('Group enrollment could not be confirmed. This PC may already be enrolled; refresh members and check the group before retrying.');
+      $('hosting-request-feedback').textContent=bound?(saved.server?`Joined ${result.group}. Your existing world stays on this PC; nothing was downloaded or started.`:`Joined ${result.group}. Your world has not been downloaded or started.`):`Joined ${result.group}. The shared world is not on this PC yet; nothing was downloaded, started or changed. Use Friends → Your hosting groups → Download as a new server when the owner has handed it over.`;
+      await readGroups(current);
+      if(!current())return;
+      render(); changed();
       const requests=await window.seedhost.call('accountRequests');
       if(!current())return;
       hostingRequests=Array.isArray(requests)?requests:hostingRequests.filter(q=>q.id!==r.id);
@@ -274,35 +350,39 @@
       if(!await readLists(current))return;
       if(current())renderFriendLists();
       if(status.online){ const requests=await window.seedhost.call('accountRequests'); if(current()&&Array.isArray(requests))hostingRequests=requests; }
+      if(current())await readGroups(current);
       if(current())renderHostingLists();
     }catch(e){ if(current())$('account-friends-feedback').textContent=message(e); }
-    finally{ finishLoading?.(); checking=false; }
+    finally{ finishLoading?.(); checking=false; if(updateAgain&&!working){updateAgain=false;void update();} }
   }
+  let updateAgain=false;
   async function update(){
-    if(checking)return;checking=true;
+    if(checking){updateAgain=true;return;}checking=true;
+    const token=opToken, before=context;
+    let generation=before;
+    const current=()=>token===opToken&&generation===context;
     try{
       const next=(await window.seedhost.call('accountStatus'))??{configured:false,signedIn:false,online:false,username:null,detail:'Account directory is not configured.'};
-      // Identity changes must be visible even while an operation is pending so its stale reply never renders.
-      if(!status||status.signedIn!==next.signedIn||status.username!==next.username)context++;
-      status=next;
+      if(!current())return;
+      // Polling may observe a remote rename, but must not overwrite a newer local login/logout.
+      applyStatus(next);generation=context;renderFriendLists();render();
+      const worldGeneration=worldContext;
       const state=await window.seedhost.call('getState');
-      hasGroup=Boolean(state?.relay);
-      serverName=validText(state?.server?.name)?state.server.name:'';
+      if(!current())return;
+      if(worldGeneration===worldContext)syncWorld(state);
       if(!working){
         if(status.signedIn){
-          const settled=await Promise.allSettled([window.seedhost.call('accountFriendRequests'),window.seedhost.call('accountFriends')]);
-          friendSeamAvailable=settled.every(r=>r.status==='fulfilled'&&Array.isArray(r.value));
-          friendRequests=friendSeamAvailable?settled[0].value.filter(validFriendRequest):[];
-          friends=friendSeamAvailable?settled[1].value.filter(validFriend):[];
-          if(status.online){ const hosting=await window.seedhost.call('accountRequests'); if(Array.isArray(hosting))hostingRequests=hosting; }
+          if(!await readLists(current))return;
+          if(status.online){const hosting=await window.seedhost.call('accountRequests');if(!current())return;if(Array.isArray(hosting))hostingRequests=hosting;}
           else hostingRequests=[];
-        }else{ friendRequests=[];friends=[];hostingRequests=[]; }
+          await readGroups(current);if(!current())return;
+        }else{friendRequests=[];friends=[];hostingRequests=[];hostingGroups=[];}
         renderFriendLists();
-      }
+      }else updateAgain=true;
       render();
       if(status.configured&&!status.signedIn&&!prompted&&!document.body.classList.contains('is-splashing')){prompted=true;$('account-dialog').showModal();}
-    }catch(e){$('account-status').textContent=message(e);}
-    finally{checking=false;render();}
+    }catch(e){if(current())$('account-status').textContent=message(e);}
+    finally{checking=false;render();if(updateAgain&&!working){updateAgain=false;void update();}}
   }
   $('account-profile-form').addEventListener('submit',async event=>{
     event.preventDefault();if(working||!status?.signedIn||!status.online||!$('account-profile-form').reportValidity())return;
@@ -316,10 +396,10 @@
       const result=await window.seedhost.call('accountUpdateProfile',input);
       const readBack=await window.seedhost.call('accountStatus');
       if(!result?.signedIn||result.username!==username||!readBack?.signedIn||!readBack.online||readBack.username!==username)throw new Error('The account directory did not confirm this change. Sign in again and check before retrying.');
-      status=readBack;$('profile-username').value=status.username;
+      applyStatus(readBack);$('profile-username').value=status.username;
       $('account-profile-feedback').textContent='Saved profile and confirmed your username with the account directory.';changed();
     }catch(e){$('account-profile-feedback').textContent=message(e);}
-    finally{input.currentPassword='';if('newPassword' in input)input.newPassword='';working=false;finishLoading?.();render();}
+    finally{input.currentPassword='';if('newPassword' in input)input.newPassword='';working=false;finishLoading?.();render();if(updateAgain)void update();}
   });
   $('profile-open').addEventListener('click',()=>{
     if(working)return;clearProfilePasswords();$('account-profile-feedback').textContent='';
@@ -344,15 +424,14 @@
     const credentials={username:$('account-username').value,password:$('account-password').value};
     $('account-password').value='';
     try{
-      status=await window.seedhost.call(mode==='register'?'accountRegister':'accountLogin',credentials);
-      context++;
+      applyStatus(await window.seedhost.call(mode==='register'?'accountRegister':'accountLogin',credentials));
       const state=await window.seedhost.call('getState');
       hasGroup=Boolean(state?.relay); serverName=validText(state?.server?.name)?state.server.name:'';
       $('account-dialog').close();changed();
       await refreshLists();
     }
     catch(e){$('account-error').textContent=message(e);$('account-error').hidden=false;}
-    finally{credentials.password='';working=false;finishLoading?.();render();}
+    finally{credentials.password='';working=false;finishLoading?.();render();void update();}
   });
   bindFriendAdd('friend-add-form','friend-add-username','friend-add-submit','account-friends-feedback');
   bindFriendAdd('setup-friend-add-form','setup-friend-username','setup-friend-send','setup-friend-feedback');
@@ -366,13 +445,13 @@
     const state=await window.seedhost.call('getState');
     if(!current())return;
     if(!state?.relay)throw new Error('The hosting group was not confirmed by this PC. Refresh and check before retrying.');
-    hasGroup=true; renderHostingLists(); render(); changed();
+    syncWorld(state); renderHostingLists(); render(); changed();
     $('hosting-friend-feedback').textContent='Your hosting group is ready. Invite a friend to host this server.';
   });});
   $('account-signout').addEventListener('click',()=>{if(working)return;void withOp('account-friends-feedback',async current=>{
     const next=await window.seedhost.call('accountLogout');
     if(!current())return;
-    status=next; context++;
+    applyStatus(next);
     friendRequests=[];friends=[];hostingRequests=[];
     const state=await window.seedhost.call('getState');
     hasGroup=Boolean(state?.relay); serverName=validText(state?.server?.name)?state.server.name:'';

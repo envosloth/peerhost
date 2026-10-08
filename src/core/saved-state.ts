@@ -32,8 +32,20 @@ export interface SavedPeer { name: string; fingerprint: string; host: string; po
 /** An always-on trusted peer that stores ONE world between hosts. Its endpoint lives in the matching peer entry. */
 export interface RelayConfig { fingerprint: string; parkOnStop: boolean }
 /** A hosting group this PC joined without any local copy of its world. Identified by the pinned relay fingerprint;
- *  an explicit download/claim creates the new library server and consumes this entry. */
-export interface SavedPendingGroup { fingerprint: string; parkOnStop: boolean; relayName: string; since: number }
+ *  an explicit download/claim creates the new library server and consumes this entry.
+ *  `adoptable` marks the explicit LEGACY single-world continuity: only entries created by the old invite-code join,
+ *  an explicit local group choice, or the pre-fix migration may continue onto the first world added afterwards.
+ *  Modern enrollment (account invitations, joinHostingGroup) stays pending until an explicit download. */
+export interface SavedPendingGroup { fingerprint: string; parkOnStop: boolean; relayName: string; since: number; adoptable: boolean }
+/** A claim activation that was recorded before its ownership authority was initialized. On restart this is the
+ *  durable evidence needed to finish or safely roll back an interrupted append; it is cleared once the ledger
+ *  durably records the acceptance. */
+export interface SavedActivation {
+  serverId: string;
+  pending: SavedPendingGroup | null;
+  /** The world that was selected before the claim replaced it, so a rollback restores the user's selection. */
+  previousActiveServerId: string | null;
+}
 export interface SavedState {
   version: 2;
   settings: Settings;
@@ -41,6 +53,8 @@ export interface SavedState {
   activeServerId: string | null;
   peers: SavedPeer[];
   pendingGroups: SavedPendingGroup[];
+  /** Present only while a claim's new server entry is published but its ownership authority is not yet proven. */
+  activation?: SavedActivation | null;
 }
 
 export type LaunchProfileInput = { executable: string; args: string[]; startTimeoutSeconds?: number; stopTimeoutSeconds?: number };
@@ -124,7 +138,11 @@ function validatePendingGroup(value: unknown, index: number): SavedPendingGroup 
   if (!isFingerprint(value.fingerprint) || typeof value.parkOnStop !== 'boolean' ||
       typeof value.relayName !== 'string' || !value.relayName.trim() || value.relayName.length > 100 || /\p{Cc}/u.test(value.relayName) ||
       !Number.isSafeInteger(value.since) || (value.since as number) <= 0) invalid(`pending hosting group ${index + 1}`);
-  return { fingerprint: value.fingerprint, parkOnStop: value.parkOnStop, relayName: value.relayName, since: value.since as number };
+  // Pre-fix modern pending groups have no provenance: preserve membership without granting implicit
+  // attachment. Explicit old global-relay migration and new legacy joins set true themselves.
+  if (value.adoptable !== undefined && typeof value.adoptable !== 'boolean') invalid(`pending hosting group ${index + 1}`);
+  return { fingerprint: value.fingerprint, parkOnStop: value.parkOnStop, relayName: value.relayName, since: value.since as number,
+    adoptable: value.adoptable === true };
 }
 
 /**
@@ -168,6 +186,7 @@ export function parseSavedState(value: unknown): SavedState {
       const carriesGroups = rawServers.some((entry) => isObject(entry) && entry.group !== undefined && entry.group !== null);
       const rawPending = value.pendingGroups;
       if (carriesGroups || (rawPending !== undefined && (!Array.isArray(rawPending) || rawPending.length > 0))) invalid('relay cannot be combined with per-server hosting groups');
+      if (value.activation !== undefined && value.activation !== null) invalid('relay cannot be combined with a claim activation journal');
     }
     let relay: RelayConfig | null = null;
     try { relay = validateRelayConfig(value.relay ?? null); } catch { invalid('relay'); }
@@ -177,7 +196,7 @@ export function parseSavedState(value: unknown): SavedState {
       const target = activeServerId === null ? undefined : servers.find((entry) => entry.id === activeServerId);
       if (target) target.group = { ...relay };
       else pendingGroups = [{ fingerprint: relay.fingerprint, parkOnStop: relay.parkOnStop,
-        relayName: peers.find((peer) => peer.fingerprint === relay.fingerprint)?.name ?? 'Relay', since: Date.now() }];
+        relayName: peers.find((peer) => peer.fingerprint === relay.fingerprint)?.name ?? 'Relay', since: Date.now(), adoptable: true }];
     }
   } else {
     if (value.pendingGroups !== undefined && !Array.isArray(value.pendingGroups)) invalid('pending hosting groups must be a list');
@@ -191,5 +210,17 @@ export function parseSavedState(value: unknown): SavedState {
       if (!peers.some((peer) => peer.fingerprint === entry.fingerprint)) invalid('a pending hosting group is not a trusted peer');
     }
   }
-  return { version: 2, settings, servers, activeServerId, peers, pendingGroups };
+  let activation: SavedActivation | null = null;
+  if (value.activation !== undefined && value.activation !== null) {
+    const raw = value.activation;
+    if (!isObject(raw) || !isServerId(raw.serverId)) invalid('claim activation journal');
+    let pending: SavedPendingGroup | null = null;
+    if (raw.pending !== undefined && raw.pending !== null) {
+      try { pending = validatePendingGroup(raw.pending, 0); } catch { invalid('claim activation journal'); }
+    }
+    if (raw.previousActiveServerId !== undefined && raw.previousActiveServerId !== null && !isServerId(raw.previousActiveServerId)) invalid('claim activation journal');
+    activation = { serverId: raw.serverId, pending, previousActiveServerId: (raw.previousActiveServerId as string | undefined) ?? null };
+    if (!servers.some((entry) => entry.id === activation!.serverId)) invalid('a claim activation journal references a missing server');
+  }
+  return { version: 2, settings, servers, activeServerId, peers, pendingGroups, activation };
 }

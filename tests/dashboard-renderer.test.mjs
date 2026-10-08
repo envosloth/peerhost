@@ -367,7 +367,8 @@ test('hosting invitations explain private control routes and stale-endpoint reco
   await reset();
   await page.evaluate(() => { window.dashboardFixture.set({accountStatus:{configured:true,signedIn:true,online:true,username:'fixture_user',detail:'Signed in'},accountRequests:[{id:'test-request',from:'owner',group:'Test group',controlEndpoint:{host:'192.168.1.50',port:8443,privateRoute:true,reachability:'unverified'}}]}); window.dispatchEvent(new Event('seedhost-account-changed')); });
   await click('#server-list [data-action="open"][data-id="alpha"]');
-  await click('#peers-tab');
+  await click('#home-tab');
+  await click('#friends-tab');
   await page.waitForFunction(() => document.querySelector('#hosting-request-list').textContent.includes('Test group'));
   const text=await page.locator('#hosting-request-list').textContent();
   assert.match(text,/192\.168\.1\.50:8443/);

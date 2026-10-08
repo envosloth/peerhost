@@ -51,7 +51,7 @@ test('Home removes recap and join widgets completely while retaining library, he
   assert.deepEqual(errors, []);
 });
 
-test('Friends tab is ordinary social only: add by username, requests, friends list; no hosting group controls', async () => {
+test('Friends keeps ordinary friendship controls separate from the global hosting inbox and overview', async () => {
   await reset();
   await signIn('me');
   await page.evaluate(() => window.dashboardFixture.set({ accountFriendRequests: [{ id: 'req-1', from: 'sam', expiresAt: Date.now() + 3600000 }], accountFriends: [{ username: 'alex', since: 1720000000000 }] }));
@@ -127,7 +127,7 @@ test('signed-out Friends tab hides add/list controls and keeps sign-in reachable
   assert.deepEqual(errors, []);
 });
 
-test('Multi-host is the only hosting flow: create group, invite accepted friends to host, ordinary add stays social', async () => {
+test('Multi-host retains creation and outgoing hosting invitations while ordinary add stays social', async () => {
   await reset();
   await signIn('me');
   await openAlpha();
@@ -148,7 +148,7 @@ test('Multi-host is the only hosting flow: create group, invite accepted friends
   await page.waitForFunction(() => document.querySelector('#hosting-friend-feedback').textContent.includes('@sam'));
   assert.match(await page.locator('#hosting-friend-feedback').textContent(), /Mossy Hollow/);
   const calls = (await fixture()).calls;
-  assert.deepEqual(calls.filter(c => c.method === 'accountSend').map(c => c.payload), [{ username: 'sam' }]);
+  assert.deepEqual(calls.filter(c => c.method === 'accountSend').map(c => c.payload), [{ username: 'sam', fingerprint: 'c'.repeat(64), serverId: 'alpha' }]);
   // Add-by-username here is still an ordinary social request.
   await page.locator('#hosting-add-username').fill('Pat');
   await click('#hosting-add-submit');
@@ -157,13 +157,14 @@ test('Multi-host is the only hosting flow: create group, invite accepted friends
   assert.deepEqual(errors, []);
 });
 
-test('Multi-host hosting inbox explains the route and consent, keeps the endpoint guard, and never fakes a join', async () => {
+test('Friends hosting inbox explains the route and consent, keeps the endpoint guard, and never fakes a join', async () => {
   await reset();
   await signIn('me');
   await openAlpha();
   const request = { id: 'req-hosting', from: 'owner', group: 'Test group', controlEndpoint: { host: '192.168.1.50', port: 8443, privateRoute: true, reachability: 'unverified' } };
   await page.evaluate(r => { window.dashboardFixture.set({ accountRequests: [r] }); window.dispatchEvent(new Event('seedhost-account-changed')); }, request);
-  await click('#peers-tab');
+  await click('#home-tab');
+  await click('#friends-tab');
   await page.waitForFunction(() => document.querySelector('#hosting-request-list').textContent.includes('Test group'));
   const text = await page.locator('#hosting-request-list').textContent();
   assert.match(text, /192\.168\.1\.50:8443/);

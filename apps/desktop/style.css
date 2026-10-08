@@ -265,6 +265,12 @@ body.is-splashing .activity { visibility: hidden; }
 .guide-button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--a1) 55%, transparent); }
 .guide-button:disabled { opacity: .5; }
 .sidebar-footer { display: flex; flex-direction: column; gap: 12px; margin-top: auto; padding-top: 22px; }
+#notifications-open { justify-content: space-between; }
+#notifications-count { min-width: 22px; padding: 2px 7px; border-radius: 12px; background: var(--well); color: var(--accent-text); font-weight: 700; }
+#notifications-dialog { width: min(560px, calc(100vw - 40px)); max-height: min(720px, calc(100vh - 60px)); overflow-y: auto; }
+#notifications-list .notification-unread { border-left: 3px solid var(--accent-text); padding-left: 12px; }
+#notifications-list button { text-align: left; overflow-wrap: anywhere; }
+#hosting-group-list .friend-name { overflow-wrap: anywhere; }
 .device-card { padding: 12px; border-radius: 13px; background: var(--well); box-shadow: var(--sh-well); }
 .device-label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: 1.2px; }
 .device-note { margin: 8px 0 10px; color: var(--dim); font-size: 10.5px; line-height: 1.6; }

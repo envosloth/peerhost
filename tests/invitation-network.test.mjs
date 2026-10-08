@@ -207,10 +207,10 @@ test('accepting a username invitation retries one transient peer handshake timeo
   const bob = new AccountIntegration(path.join(root, 'bob'), bi, vault(), b, endpoint);
   await alice.authenticate('register', { username: 'alice', password: 'abcd' });
   await bob.authenticate('register', { username: 'bob', password: 'efgh' });
-  await alice.send('bob');
+  await alice.send('bob', { fingerprint: relay.identity.fingerprint, serverId: null });
   const [request] = await bob.requests();
   assert.equal(request.from, 'alice', 'delivery via account directory works before relay acceptance');
-  assert.deepEqual(await bob.accept(request.id), { joined: true, group: relay.name });
+  assert.deepEqual(await bob.accept(request.id), { joined: true, group: relay.name, fingerprint: relay.identity.fingerprint, serverId: null, requestId: request.id });
   assert.equal(ingress.attempts(), 3, 'one failed handshake, one join retry, one independent membership readback');
   assert.deepEqual(await bob.requests(), []);
   assert.equal((await b.getState()).server, null, 'enrollment must not download or start a world');
@@ -335,8 +335,8 @@ test('accept verifies the exact inbox after a committed dismissal response is lo
   const bob = new AccountIntegration(path.join(root, 'bob'), bi, vault(), b, endpoint);
   await alice.authenticate('register', { username: 'alice', password: 'abcd' });
   await bob.authenticate('register', { username: 'bob', password: 'efgh' });
-  await alice.send('bob'); const [request] = await bob.requests();
-  assert.deepEqual(await bob.accept(request.id), { joined: true, group: relay.name });
+  await alice.send('bob', { fingerprint: relay.identity.fingerprint, serverId: null }); const [request] = await bob.requests();
+  assert.deepEqual(await bob.accept(request.id), { joined: true, group: relay.name, fingerprint: relay.identity.fingerprint, serverId: null, requestId: request.id });
   assert.equal(dismissRepliesDropped, 1);
   assert.deepEqual(await bob.requests(), []);
   assert.equal((await b.listFriends()).members.filter(m => m.you).length, 1);
@@ -372,8 +372,8 @@ test('accept reconciles a committed directory dismissal after a truncated pinned
   const bob = new AccountIntegration(path.join(root, 'bob'), bi, vault(), b, endpoint);
   await alice.authenticate('register', { username: 'alice', password: 'abcd' });
   await bob.authenticate('register', { username: 'bob', password: 'efgh' });
-  await alice.send('bob'); const [request] = await bob.requests();
-  assert.deepEqual(await bob.accept(request.id), { joined: true, group: relay.name });
+  await alice.send('bob', { fingerprint: relay.identity.fingerprint, serverId: null }); const [request] = await bob.requests();
+  assert.deepEqual(await bob.accept(request.id), { joined: true, group: relay.name, fingerprint: relay.identity.fingerprint, serverId: null, requestId: request.id });
   assert.equal(truncated, 1);
   assert.deepEqual(await bob.requests(), [], 'success requires authoritative absent-inbox readback');
   assert.equal((await b.listFriends()).members.filter(m => m.you).length, 1);

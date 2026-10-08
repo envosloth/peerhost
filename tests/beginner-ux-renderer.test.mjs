@@ -324,7 +324,7 @@ test('hosting acceptance rejects a truthy but non-boolean enrollment result', as
       return call(method,payload);
     };window.dispatchEvent(new Event('seedhost-account-changed'));
   });
-  await openSelectedServer(page);await page.locator('#peers-tab').click();
+  await page.locator('#friends-tab').click();
   await page.locator('#hosting-request-list [data-account-accept]').click();
   await page.waitForFunction(()=>document.querySelector('#hosting-request-feedback').textContent.includes('could not be confirmed'));
   assert.doesNotMatch(await page.locator('#hosting-request-feedback').textContent(),/^Joined/);
@@ -351,7 +351,7 @@ for (const [label, pin, port] of [
       return call(method,payload);
     };window.dispatchEvent(new Event('seedhost-account-changed'));
   },{pin,port});
-  await openSelectedServer(page);await page.locator('#peers-tab').click();
+  await page.locator('#friends-tab').click();
   await page.locator('#hosting-request-list [data-account-accept]').click();
   await page.waitForFunction(()=>document.querySelector('#hosting-request-feedback').textContent.includes('could not be confirmed'));
   assert.doesNotMatch(await page.locator('#hosting-request-feedback').textContent(),/^Joined/);
@@ -377,7 +377,7 @@ for (const [label,host,group] of [
       return call(method,payload);
     };window.dispatchEvent(new Event('seedhost-account-changed'));
   },{host,group});
-  await openSelectedServer(page);await page.locator('#peers-tab').click();
+  await page.locator('#friends-tab').click();
   await page.locator('#hosting-request-list [data-account-accept]').click();
   await page.waitForFunction(()=>document.querySelector('#hosting-request-feedback').textContent.includes('could not be confirmed'));
 });
@@ -400,7 +400,7 @@ test('hosting acceptance keeps an existing local world and never suggests receiv
       return call(method,payload);
     };window.dispatchEvent(new Event('seedhost-account-changed'));
   },relay);
-  await openSelectedServer(page);await page.locator('#peers-tab').click();
+  await page.locator('#friends-tab').click();
   await page.locator('#hosting-request-list [data-account-accept]').waitFor({state:'visible'});
   assert.match(await page.locator('#hosting-request-list').textContent(),/@friend/);
   await page.locator('#hosting-request-list [data-account-accept]').click();

@@ -17,6 +17,7 @@ import type { ModSort } from '../../src/core/modrinth.js';
 import { onboardingChecks } from '../../src/core/onboarding.js';
 import { AlwaysOnHost } from '../../src/core/always-on.js';
 import { Updater } from '../../src/core/updater.js';
+import { GroupHelpers } from './group-helpers.js';
 import { PerServerPublicAddresses, playitClaim } from '../../src/core/public-address.js';
 const setupLinks: Record<string,string> = Object.freeze({
   eula:'https://www.minecraft.net/en-us/eula',
@@ -24,7 +25,7 @@ const setupLinks: Record<string,string> = Object.freeze({
   fabric:'https://fabricmc.net/use/server/',
   relay:'https://github.com/envosloth/seedhost/blob/main/docs/relay.md',
 });
-let window:BrowserWindow;let tray:Tray;let backend:SeedHostApplication;let alwaysOn:AlwaysOnHost;let publicAddress:PerServerPublicAddresses;let quitAllowed=false;let quitting=false;
+let window:BrowserWindow;let tray:Tray;let backend:SeedHostApplication;let helpers:GroupHelpers;let publicAddress:PerServerPublicAddresses;let quitAllowed=false;let quitting=false;
 // Display name; the profile folder below is SeedHost (or --profile-root).
 app.setName('Seed Hosting');
 const profileArgument=process.argv.find(a=>a.startsWith('--profile-root='));
@@ -44,7 +45,7 @@ async function quit(){
     if(state.server?.state==='running'||state.server?.state==='starting'){
       show();if(!await confirm('Stop hosting and quit?','Players will disconnect. Seed Hosting will request a clean stop and save a final local snapshot. This does not guarantee another device has received it.'))return;
     }
-    await backend.close();await publicAddress?.close();await alwaysOn?.close();quitAllowed=true;app.quit();
+    await backend.close();await publicAddress?.close();await helpers?.closeAll();quitAllowed=true;app.quit();
   }catch(e){show();await dialog.showMessageBox(window,{type:'error',message:'Seed Hosting could not quit safely.',detail:String(e),buttons:['Keep app open']});}
   finally{quitting=false;}
 }
@@ -64,17 +65,30 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
       bundledDirectory:fileURLToPath(new URL('../../../apps/desktop/',import.meta.url)),
       isolated:!!profileArgument,override:process.env.SEEDHOST_ACCOUNT_SERVICE});
     const accounts=new AccountIntegration(root,identity,{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)},backend,accountConfig);
-    // The always-on PC role runs inside this app: no Node.js install, terminal or commands. Its relay data and
-    // OS-encrypted-at-rest identity live under the profile; it restarts with the app when it was turned on.
-    const reservedGamePorts=(await backend.getState()).servers.map(server=>server.playerPort);
-    const roleOptions=profileArgument && process.env.SEEDHOST_TEST_LOOPBACK==='1' ? {host:'127.0.0.1',port:0,gamePorts:[0],discoveryPort:0,reservedGamePorts} : {reservedGamePorts};
-    alwaysOn=new AlwaysOnHost(path.join(root,'always-on'),await loadIdentity(path.join(root,'always-on'),{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)}),{...roleOptions,loadGroupIdentity:groupRoot=>loadIdentity(groupRoot,{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)})});
-    await alwaysOn.restore();
-    // Independent local-server addresses use one approved agent, not the singleton shared-hosting gateway.
-    publicAddress=new PerServerPublicAddresses(root,{vault:{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)},
+    // The always-on PC role runs inside this app: no Node.js install, terminal or commands. Each hosting group
+    // gets its own helper (relay store + OS-encrypted identity) under the profile, so two worlds never alias
+    // onto one group identity; the primary helper keeps the historic app-wide role and pairing codes.
+    const vault={encrypt:(v:string)=>safeStorage.encryptString(v),decrypt:(v:Buffer)=>safeStorage.decryptString(v)};
+    helpers=new GroupHelpers(path.join(root,'always-on'),{
+      loadIdentity:helperRoot=>loadIdentity(helperRoot,vault),
+      role:async extra=>{
+        const reservedGamePorts=(await backend.getState()).servers.map(server=>server.playerPort);
+        if(profileArgument&&process.env.SEEDHOST_TEST_LOOPBACK==='1')return {host:'127.0.0.1',port:0,gamePorts:[0],discoveryPort:0,reservedGamePorts};
+        return {reservedGamePorts,...(extra?{discoveryPort:0}:{})};
+      }});
+    { const state=await backend.getState();
+      await helpers.restoreAll(fingerprint=>state.servers.some(entry=>entry.group?.fingerprint===fingerprint)||state.pendingGroups.some(entry=>entry.fingerprint===fingerprint)); }
+    async function helperForSelected():Promise<AlwaysOnHost>{
+      const state=await backend.getState();
+      const entry=helpers.forFingerprint(state.server?.group?.fingerprint??null)??helpers.primary();
+      if(!entry)throw new Error('The always-on helper is not ready yet; reopen the app and try again');
+      return entry.host;
+    }
+    // Independent local-server addresses use one approved agent, not the shared-hosting helper gateway.
+    publicAddress=new PerServerPublicAddresses(root,{vault,
       api:playitApi,claim:playitClaim,probe:probeMinecraft,openBrowser:url=>shell.openExternal(url),
       servers:async()=>(await backend.getState()).servers,
-      reservedPorts:async()=>{const helper=await alwaysOn.status();return helper.running&&helper.gamePort!==null?[helper.gamePort]:[];}});
+      reservedPorts:async()=>helpers.runningGamePorts()});
     await publicAddress.restore((await backend.getState()).servers);
     // In-app updates: checks the official GitHub releases, downloads and verifies the Windows package,
     // and stages the swap that runs after this app exits. SEEDHOST_UPDATE_ORIGIN redirects it for tests.
@@ -99,19 +113,29 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
           const state=await backend.getState();
           if(state.relay)throw new Error('This PC already belongs to a group');
           if(!await confirm('Create a hosting group for '+(state.server?.name??'your next server')+'?','Only group control runs while this app is open. The optional always-on PC/player gateway stays off unless you explicitly enable it in Multi-host. Worlds, friendships and public addresses are unchanged.'))return null;
-          const role=await alwaysOn.startGroup(a.username+'’s group',true);
-          const invite=await alwaysOn.ownerInvite(a.username,identity.fingerprint);
+          const helper=await helpers.create();
+          const role=await helper.host.startGroup(a.username+'’s group',true);
+          const invite=await helper.host.ownerInvite(a.username,identity.fingerprint);
           // Bind the group to the selected world when there is one; otherwise it is stored as this PC's group to use.
-          await backend.joinHostingGroup({code:invite.code,name:a.username,serverId:state.server?.id??null,parkOnStop:role.enabled});
+          await backend.joinHostingGroup({code:invite.code,name:a.username,serverId:state.server?.id??null,parkOnStop:role.enabled,adoptable:true});
           return {created:true};
         }
+        case 'getHostingControlRoute':case 'setHostingControlRoute':{
+          const host=helpers.list().map(entry=>entry.host.forGroupFingerprint(p.fingerprint)).find(Boolean);
+          if(!host)throw new Error('This group authority is not hosted on this PC. Ask the group owner to configure its control route.');
+          if(method==='getHostingControlRoute')return host.controlRoute();
+          if(!await confirm('Change this group’s invitation control route?', 'Future invitations will name '+p.host+':'+p.port+'. This does not create NAT forwarding, a tunnel or a VPN, and does not verify reachability. Existing invitations keep their old endpoint; send replacements. Minecraft player addresses and all worlds are unchanged.'))return null;
+          return host.setControlRoute({host:p.host,port:p.port});
+        }
+        case 'listHostingGroups':return backend.listHostingGroups(helpers.list().flatMap(entry=>entry.host.localGroupFingerprints()));
+        case 'claimPendingGroup':return backend.claimPendingGroup(p.fingerprint);
         case 'accountStatus':return accounts.status();
         case 'accountRequests':return accounts.requests();
         case 'accountUpdateProfile':return accounts.updateProfile(p as {username:string;currentPassword:string;newPassword?:string});
         case 'accountRegister':return accounts.authenticate('register',p as any);
         case 'accountLogin':return accounts.authenticate('login',p as any);
         case 'accountLogout':return accounts.logout();
-        case 'accountSend':return accounts.send(p.username);
+        case 'accountSend':return accounts.send(p.username,{fingerprint:p.fingerprint,serverId:p.serverId});
         case 'accountAccept':return accounts.accept(p.id);
         case 'accountDecline':return accounts.decline(p.id);
         case 'accountFriends':return accounts.socialFriends();
@@ -181,36 +205,38 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         }
         case 'getState':{
           const state=await backend.getState();
-          const alwaysStatus=await alwaysOn.status();
+          const alwaysStatus=await (await helperForSelected()).status();
+          const helperPorts=await helpers.runningGamePorts();
           const checks=onboardingChecks(state.onboarding,{...state,alwaysOn:alwaysStatus});
           const publicJoin=(entry:typeof state.servers[number])=>{
             const pub=publicAddress.status(entry);
-            const collision=state.servers.some(other=>other.id!==entry.id&&other.playerPort===entry.playerPort)||alwaysStatus.running&&alwaysStatus.gamePort===entry.playerPort;
+            const collision=state.servers.some(other=>other.id!==entry.id&&other.playerPort===entry.playerPort)||helperPorts.includes(entry.playerPort);
             return !collision&&pub.address&&['reachable','reserved','pending'].includes(pub.state)
               ?{address:pub.address,reachability:(pub.state==='reachable'?'verified':'unverified') as 'verified'|'unverified',source:'playit' as const,targetServerId:entry.id}:null;
           };
           return {...state,version:app.getVersion(),servers:state.servers.map(entry=>({...entry,publicJoinAddress:publicJoin(entry)})),
             onboarding:{...state.onboarding,checks,completed:checks.ready==='complete'}};
         }
-        case 'alwaysOnStatus':return alwaysOn.status();
+        case 'alwaysOnStatus':return (await helperForSelected()).status();
         case 'alwaysOnEnable':{
-          const status=await alwaysOn.status();
+          const host=await helperForSelected();
+          const status=await host.status();
           if(!status.running&&!await confirm('Make this PC the always-on PC?','Seed Hosting will keep your friends’ world here between play sessions and give players one address to join. It listens on this network (control port 47625 and a separate player gateway port, normally 25566) while the app is open; managed Minecraft server ports are kept separate. Only PCs you approve for the group can store or take the world. Keep this PC on and Seed Hosting open (it can sit in the tray). Nothing else on this PC is changed.'))return status;
-          return alwaysOn.enable(p.name,(await backend.getState()).servers.map(server=>server.playerPort));
+          return host.enable(p.name,(await backend.getState()).servers.map(server=>server.playerPort));
         }
         case 'alwaysOnDisable':
-          if(!await confirm('Stop being the always-on PC?','Paired PCs can’t store or take the world here until you turn it back on, and the shared player gateway goes offline. Local per-server public addresses are separate. The stored world and pairings are kept.'))return alwaysOn.status();
-          return alwaysOn.disable();
-        case 'alwaysOnNewCode':return alwaysOn.newCode();
+          if(!await confirm('Stop being the always-on PC?','Paired PCs can’t store or take the world here until you turn it back on, and the shared player gateway goes offline. Local per-server public addresses are separate. The stored world and pairings are kept.'))return (await helperForSelected()).status();
+          return (await helperForSelected()).disable();
+        case 'alwaysOnNewCode':return (await helperForSelected()).newCode();
         case 'publicAddressStatus':case 'publicAddressEnable':case 'publicAddressDisable':case 'publicAddressOpenApproval':{
           const selectionEpoch=publicSelectionEpoch;
           const state=await backend.getState();
           const selected=state.servers.find(server=>server.id===p.id);
           if(!selected||state.server?.id!==p.id)throw new Error('The selected server changed. Refresh before continuing.');
-          const helper=await alwaysOn.status();
+          const helperPorts=await helpers.runningGamePorts();
           const latest=await backend.getState();
           if(selectionEpoch!==publicSelectionEpoch||latest.server?.id!==p.id||latest.server?.playerPort!==selected.playerPort)throw new Error('The selected server changed. Refresh before continuing.');
-          const collision=latest.servers.some(other=>other.id!==selected.id&&other.playerPort===selected.playerPort)||helper.running&&helper.gamePort===selected.playerPort;
+          const collision=latest.servers.some(other=>other.id!==selected.id&&other.playerPort===selected.playerPort)||helperPorts.includes(selected.playerPort);
           if(collision&&method!=='publicAddressDisable'){
             const detail='This Minecraft port conflicts with another server or the helper gateway. Set a distinct server-port in Server settings first.';
             if(method==='publicAddressEnable')throw new Error(detail);
@@ -254,7 +280,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         }
         case 'saveOnboarding':{
           const {serverId,...progress}=p;
-          return backend.saveOnboarding(progress,await alwaysOn.status(),serverId as string|null|undefined);
+          return backend.saveOnboarding(progress,await (await helperForSelected()).status(),serverId as string|null|undefined);
         }
         case 'listSnapshots':return backend.listSnapshots();
         case 'restoreSnapshot':
@@ -269,8 +295,8 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         case 'saveProfile':return backend.saveProfile(p as {executable:string;args:string[]});
         case 'startServer':return backend.startServerWithApproval(async approval=>{
           // Check the captured server under the backend approval lock, before any hosting ledger mutation.
-          const gateway=await alwaysOn.status(),minecraftPort=await readServerPort(approval.serverDir);
-          if(gateway.running&&gateway.gamePort===minecraftPort)throw new Error('Minecraft port '+minecraftPort+' is used by Seed Hosting’s player gateway. Choose a different Minecraft port in Server settings before starting. No server process was launched and ownership was not changed.');
+          const helperPorts=await helpers.runningGamePorts(),minecraftPort=await readServerPort(approval.serverDir);
+          if(helperPorts.includes(minecraftPort))throw new Error('Minecraft port '+minecraftPort+' is used by Seed Hosting’s player gateway. Choose a different Minecraft port in Server settings before starting. No server process was launched and ownership was not changed.');
           // The explicit Start server action approves the captured local launch profile.
           // Receiving a world never calls this handler or starts code automatically.
           // Backend still revalidates the captured profile, snapshots and ownership before spawn.

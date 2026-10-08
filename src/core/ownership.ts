@@ -64,6 +64,17 @@ export class OwnershipLedger {
     }finally{db.close();}
   }
   /**
+   * Tolerant read for recovery paths: a missing file or an empty database means "no authority was ever durably
+   * recorded here", which is a legitimate pre-activation state, not corruption. Real errors (damaged database,
+   * durability unavailable) still throw so the caller fails closed instead of inventing ownership.
+   */
+  async statusOrNull():Promise<OwnershipState|undefined>{
+    try{await access(this.file);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return undefined;throw error;}
+    const db=this.openDatabase();
+    try{return this.readState(db);}
+    finally{db.close();}
+  }
+  /**
    * Whether this device ever durably accepted the offer. Recorded in the same transaction as the acceptance, so it
    * survives later handoffs: a retried offer is re-acknowledged, never declined into a second owner.
    */

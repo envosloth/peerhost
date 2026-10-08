@@ -6,7 +6,9 @@ test('desktop state reports Electron package version, overriding stale core meta
  const start=source.indexOf("case 'getState':");const end=source.indexOf("case 'alwaysOnStatus':",start);
  assert.ok(start>=0&&end>start);
  const block=source.slice(start,end);const body=block.slice(block.indexOf('{')+1,block.lastIndexOf('}'));
- const run=new (Object.getPrototypeOf(async function(){}).constructor)('backend','alwaysOn','onboardingChecks','publicAddress','app',body);
- const value=await run({getState:async()=>({version:'0.5.0',servers:[],onboarding:{}})},{status:async()=>({running:false})},()=>({ready:'pending'}),{}, {getVersion:()=> '0.6.1-alpha'});
+ // The compiled case reads the per-group helper registry instead of one app-wide always-on host; the slice
+ // scope must list exactly the identifiers it uses or it dies with a ReferenceError instead of testing behavior.
+ const run=new (Object.getPrototypeOf(async function(){}).constructor)('backend','helperForSelected','helpers','onboardingChecks','publicAddress','app',body);
+ const value=await run({getState:async()=>({version:'0.5.0',servers:[],onboarding:{}})},async()=>({status:async()=>({running:false})}),{runningGamePorts:async()=>[]},()=>({ready:'pending'}),{}, {getVersion:()=> '0.6.1-alpha'});
  assert.equal(value.version,'0.6.1-alpha');
 });

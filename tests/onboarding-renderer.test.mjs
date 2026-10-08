@@ -172,7 +172,7 @@ test('signed-out guide friends stage opens the Friends page and surfaces the sig
   assert.equal(await page.evaluate(() => document.activeElement.id), 'account-open', 'focus returns to the sign-in call to action');
 });
 
-test('signed-in guide friends stage offers inline usernames; hosting invitations stay in Multi-host', async t => {
+test('signed-in guide friends stage offers inline usernames; hosting invitations are global in Friends', async t => {
   const state = { ...appState(), relay: { fingerprint: 'c'.repeat(64), name: 'Home group', parkOnStop: true },
     account: { status: { configured: true, signedIn: true, online: true, username: 'alex', detail: 'Signed in · relay.example' },
       requests: [{ id: 'a'.repeat(36), from: 'sam', group: 'Sam’s group', expiresAt: Date.now() + 3600000 }] } };
@@ -183,8 +183,8 @@ test('signed-in guide friends stage offers inline usernames; hosting invitations
   assert.equal(await page.locator('#setup-open-friends').isVisible(), false, 'signed-in users never need to leave the guide to add a friend');
   assert.equal(await page.locator('#setup-dialog').isVisible(), true);
   assert.equal(await page.locator('#friends-panel #account-card').count(), 1, 'the ordinary account card stays in Friends');
-  assert.equal(await page.locator('#friends-panel #hosting-request-list').count(), 0, 'hosting invitations stay out of the ordinary Friends context');
-  assert.equal(await page.locator('#peers-panel #hosting-request-list').count(), 1, 'hosting invitations live in Multi-host');
+  assert.equal(await page.locator('#friends-panel #hosting-request-list').count(), 1, 'hosting invitations are reachable without a selected server');
+  assert.equal(await page.locator('#peers-panel #hosting-request-list').count(), 0, 'Multi-host retains outgoing invitations, not the global inbox');
   assert.equal(await page.locator('#setup-friends #friends-controls').count(), 0, 'code controls are never moved into the guide');
 });
 

@@ -329,9 +329,13 @@ const cases = {
     // Invite an accepted friend to host THIS server.
     await click(owner.page, '#hosting-friend-list [data-host-invite="hosting_recipient"]');
     await wait(owner.page, () => document.querySelector('#hosting-friend-feedback').textContent.includes('Hosting invitation sent to @hosting_recipient'));
-    // The recipient accepts in their own Multi-host page; their world must stay unchanged.
-    const recipientBefore = await state(recipient.page);
-    await click(recipient.page, '#hosting-requests-refresh');
+    // Incoming invitations are global Friends actions, not actions on the recipient's unrelated world.
+        const recipientBefore = await state(recipient.page);
+        await click(recipient.page, '#home-tab');
+        await click(recipient.page, '#friends-tab');
+        assert.equal(await recipient.page.locator('#friends-panel #hosting-request-list').count(), 1);
+        assert.equal(await recipient.page.locator('#peers-panel #hosting-request-list').count(), 0);
+        await click(recipient.page, '#hosting-requests-refresh');
     await recipient.page.locator('#hosting-request-list [data-account-accept]').waitFor({ state: 'visible' });
     const route = await recipient.page.locator('#hosting-request-list').textContent();
     assert.match(route, /unverified/i, 'hosting route is labelled unverified');

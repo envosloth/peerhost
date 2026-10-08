@@ -14,7 +14,7 @@ import { indexedMods, modTarget, readModIndex, writeModIndex, type ModVerificati
 import { installMod, assertModInstallComplete, type InstallModInput } from './mod-install.js';
 import { openRelayOperation, relayRequest, relayStatus, relayInvite, relayInviteFor, relayRemoveFriend, relayFriends, relayDisbandGroup, relayDisbandStatus, joinRelayInvite, type RelayStatus, relayPublic } from './relay-client.js';
 import { decodeInvite, type Invite } from './invites.js';
-import { friendName } from './relay-friends-store.js';
+import { friendName, fingerprintOK } from './relay-friends-store.js';
 import { initializeOnboardingScope, readOnboarding, saveOnboarding, validateOnboarding, onboardingChecks, type SetupConfiguration } from './onboarding.js';
 import { ServerSetupClient, probeJava, type CreateServerInput } from './server-setup.js';
 import { validateSimpleProfileInput, withCustomJavaArgs, withoutJvmHeapArgs, type SimpleProfileInput } from './java-arguments.js';
@@ -67,7 +67,7 @@ const CLEANUP_ANCESTORS = 2;
 const isStoppedState = (state: string | undefined) => state === undefined || state === 'offline' || state === 'failed';
 
 export class SeedHostApplication {
-  private saved: SavedState = { version: 2, settings: defaultSettings(), servers: [], activeServerId: null, peers: [], pendingGroups: [] };
+  private saved: SavedState = { version: 2, settings: defaultSettings(), servers: [], activeServerId: null, peers: [], pendingGroups: [], activation: null };
   private gatewayTunnel?: { close: () => Promise<void> };
   private gatewayEpoch = 0;
   private gatewayState: {state: 'off' | 'connecting' | 'ready' | 'error'; detail: string} = { state: 'off', detail: 'No local host tunnel is active' };
@@ -103,6 +103,13 @@ export class SeedHostApplication {
       this.saved = parseSavedState(value);
       legacyState = (value as { version: number }).version === 1;
     }
+    // Recovery must never abort startup: reconciling is idempotent and the journal is durable, so a ledger that
+    // cannot be read right now keeps the journal for a later attempt instead of taking the whole app down.
+    // Nothing about ownership is assumed either way.
+    if (this.saved.activation) {
+      try { await this.reconcileActivation(); }
+      catch (error) { this.log('An interrupted claim could not be reconciled yet; the journal is kept for a later attempt. ' + String(error)); }
+    }
     this.legacyOnboardingScope = null;
     try {
       const active = this.activeServer();
@@ -112,7 +119,12 @@ export class SeedHostApplication {
     catch { this.log('Saved setup progress is unreadable; existing server controls remain available. Original metadata was left unchanged.'); }
     if (this.activeServer()) {
       const ledger = this.ledger();
-      if ((await ledger.status()).state === 'hosting') {
+      const ownership = await ledger.statusOrNull();
+      if (ownership === undefined) {
+        // A pre-journal interrupted claim (state written by an older build) or an externally missing record:
+        // keep state readable and leave the ordinary claim retry as the recovery path. Ownership is never assumed.
+        this.log('A server entry has no ownership record yet. State stays readable; an ordinary claim retry completes it, and nothing is assumed about ownership.');
+      } else if (ownership.state === 'hosting') {
         await ledger.markUncertain();
         this.log('Previous hosting session is uncertain. Confirm that its process stopped before recovery.');
       }
@@ -130,7 +142,10 @@ export class SeedHostApplication {
     let server = null;
     const active = this.activeServer();
     if (active) {
-      const ownership = await this.ledger().status();
+      // A damaged or not-yet-initialized ownership record must never block the whole state read: report it as
+      // unknown, which every guarded action already treats as "no local authority on this PC".
+      const ownership = await this.ledger().statusOrNull()
+        ?? { version: 1 as const, owner: '', generation: 0, snapshotId: '', state: 'unknown' as const };
       const serverDir = active.serverDir;
       // Optional catalogue state must never block lifecycle/ownership state or graceful shutdown.
       let mods: { server: Awaited<ReturnType<typeof indexedMods>>; client: Awaited<ReturnType<typeof indexedMods>> } = { server: [], client: [] };
@@ -186,6 +201,41 @@ export class SeedHostApplication {
       // A friendly default name for this PC in pairings ("DESKTOP-VMCMIP5", "Angels-Laptop").
       deviceName: (hostname().replace(/\.local$/i, '').replace(/[^\w .'-]/g, '').trim() || 'This PC').slice(0, 60),
     };
+  }
+
+  /**
+   * Finish the recovery of a claim whose new server entry was published before its ownership authority was
+   * initialized (the journalled append in `materializeGroupIncoming` / the fresh direct receive). Durable
+   * evidence decides the outcome, never a guess: a missing/empty ownership database means no acceptance ever
+   * committed, so the append is rolled back exactly like the in-process pre-authority rollback; a recorded
+   * acceptance means the claim is durable and only the journal needs clearing.
+   */
+  private async reconcileActivation(): Promise<void> {
+    const activation = this.saved.activation ?? null;
+    if (!activation) return;
+    const entry = this.saved.servers.find((server) => server.id === activation.serverId) ?? null;
+    const row = entry ? await new OwnershipLedger(entry.ledgerFile, this.identity.fingerprint).statusOrNull() : undefined;
+    if (entry && row === undefined) {
+      this.saved.servers = this.saved.servers.filter((server) => server !== entry);
+      if (this.saved.activeServerId === entry.id) {
+        // Restore the world the user actually had selected, not merely the first library entry: a crash-recovery
+        // rollback must never silently switch which world the library treats as active.
+        const previous = activation.previousActiveServerId;
+        this.saved.activeServerId = previous && this.saved.servers.some((server) => server.id === previous) ? previous : this.saved.servers[0]?.id ?? null;
+      }
+      // Defensive only: the normal path removed this group before persisting, so a duplicate can only come from
+      // a hand-edited or partially written state file. Never list the same pending group twice.
+      if (activation.pending && !this.saved.pendingGroups.some((group) => group.fingerprint === activation.pending!.fingerprint)) {
+        this.saved.pendingGroups = [...this.saved.pendingGroups, activation.pending];
+      }
+      this.saved.activation = null;
+      await this.persist();
+      this.log('An interrupted claim was rolled back: no ownership was accepted and the shared world was not downloaded. The copied files were kept on disk, and the pending group can be downloaded again.');
+      return;
+    }
+    // The acceptance is durably recorded (or the entry vanished): the journal is spent either way.
+    this.saved.activation = null;
+    await this.persist();
   }
 
   private assertStopped(): void {
@@ -252,13 +302,18 @@ export class SeedHostApplication {
   }
 
   /**
-   * A group joined (or chosen) while this PC still had no world belongs to the first world added afterwards — the
-   * legacy single-world continuity. It never attaches to a world that already existed when the group was joined,
-   * so an unrelated local world can never be handed to someone else's group.
+   * A group joined (or chosen) while this PC still had no world belongs to the first world added afterwards —
+   * ONLY for the explicit legacy single-world continuity (`adoptable`). Modern enrollment (account invitations and
+   * joinHostingGroup) stays pending until an explicit download, so an unrelated local world can never be handed
+   * to someone else's group implicitly. A world that already existed when the group was joined is never attached.
    */
   private adoptPendingGroup(entry: SavedServer): void {
     if (entry.group || this.saved.pendingGroups.length !== 1) return;
     const pending = this.saved.pendingGroups[0]!;
+    if (!pending.adoptable) {
+      this.log('A joined hosting group stays pending: it is not attached to ' + entry.name + ' automatically. Download the shared world as a new server when you want a copy here.');
+      return;
+    }
     entry.group = { fingerprint: pending.fingerprint, parkOnStop: pending.parkOnStop };
     this.saved.pendingGroups = [];
     this.log('The joined hosting group now belongs to ' + entry.name + '. Nothing was downloaded or started.');
@@ -1168,6 +1223,27 @@ export class SeedHostApplication {
     });
   }
 
+  /** Global, local-only membership overview. Never selects or opens a world, nor contacts a helper. */
+  async listHostingGroups(localHelperFingerprints: readonly string[] = []) {
+    if (!Array.isArray(localHelperFingerprints) || !localHelperFingerprints.every(fingerprintOK)) throw new Error('Invalid local helper fingerprint');
+    const local = new Set(localHelperFingerprints);
+    const groups = new Map<string, { fingerprint: string; name: string; serverId: string | null; serverName: string | null; pending: boolean; localAuthority: boolean }>();
+    for (const server of this.saved.servers) {
+      if (!server.group) continue;
+      const fingerprint = server.group.fingerprint;
+      if (!fingerprintOK(fingerprint)) throw new Error('Invalid hosting group fingerprint');
+      if (!groups.has(fingerprint)) groups.set(fingerprint, { fingerprint, name: this.groupReadback(server.group).name,
+        serverId: server.id, serverName: server.name, pending: false, localAuthority: local.has(fingerprint) });
+    }
+    for (const group of this.saved.pendingGroups) {
+      const fingerprint = group.fingerprint;
+      if (!fingerprintOK(fingerprint)) throw new Error('Invalid hosting group fingerprint');
+      if (!groups.has(fingerprint)) groups.set(fingerprint, { fingerprint, name: this.groupReadback(group, group.relayName).name,
+        serverId: null, serverName: null, pending: true, localAuthority: local.has(fingerprint) });
+    }
+    return [...groups.values()];
+  }
+
   // ---------------------------------------------------------------- friends
 
   async createInvite() {
@@ -1190,7 +1266,7 @@ export class SeedHostApplication {
       if (known.length > 0 && !known.includes(invite.relayFingerprint)) {
         throw new Error('This PC already uses another relay. Clear it explicitly in Settings before joining a different relay.');
       }
-      const result = await this.enrollGroup({ code, invite, memberName, target: null });
+      const result = await this.enrollGroup({ code, invite, memberName, target: null, adoptable: true });
       return { relayName: result.relayName };
     });
   }
@@ -1205,10 +1281,11 @@ export class SeedHostApplication {
    * A definitive refusal from the pinned relay surfaces unchanged (`code = 'PEER_AUTHORIZATION_DENIED'`, not retryable),
    * so AccountIntegration can mark the request declined instead of retrying it.
    */
-  async joinHostingGroup(input: { code: string; name: string; serverId?: string | null; parkOnStop?: boolean }): Promise<HostingGroupJoinResult> {
+  async joinHostingGroup(input: { code: string; name: string; serverId?: string | null; parkOnStop?: boolean; adoptable?: boolean }): Promise<HostingGroupJoinResult> {
     this.assertStopped();
     if (!input || typeof input !== 'object' || Array.isArray(input) || typeof input.code !== 'string' || typeof input.name !== 'string' ||
-        (input.parkOnStop !== undefined && typeof input.parkOnStop !== 'boolean') || (input.serverId !== undefined && input.serverId !== null && typeof input.serverId !== 'string')) {
+        (input.parkOnStop !== undefined && typeof input.parkOnStop !== 'boolean') || (input.adoptable !== undefined && typeof input.adoptable !== 'boolean') ||
+        (input.serverId !== undefined && input.serverId !== null && typeof input.serverId !== 'string')) {
       throw new Error('Invalid invite code or friend name');
     }
     const invite = decodeInvite(input.code);
@@ -1222,11 +1299,11 @@ export class SeedHostApplication {
         throw new Error('This server already belongs to another hosting group. Clear it explicitly before joining a different group.');
       }
     }
-    return this.operation('joinHostingGroup', () => this.enrollGroup({ code: input.code, invite, memberName, target, parkOnStop: input.parkOnStop }));
+    return this.operation('joinHostingGroup', () => this.enrollGroup({ code: input.code, invite, memberName, target, parkOnStop: input.parkOnStop, adoptable: input.adoptable === true }));
   }
 
   /** Redeem the pinned invitation, then persist the group's local association atomically (peers + binding or pending). */
-  private async enrollGroup(input: { code: string; invite: Invite; memberName: string; target: SavedServer | null; parkOnStop?: boolean }): Promise<HostingGroupJoinResult> {
+  private async enrollGroup(input: { code: string; invite: Invite; memberName: string; target: SavedServer | null; parkOnStop?: boolean; adoptable: boolean }): Promise<HostingGroupJoinResult> {
     const previousPeers = this.saved.peers;
     const previousPending = this.saved.pendingGroups;
     const targetGroup = input.target ? input.target.group : undefined;
@@ -1247,7 +1324,8 @@ export class SeedHostApplication {
       else {
         const existing = this.saved.pendingGroups.find((entry) => entry.fingerprint === peer.fingerprint);
         this.saved.pendingGroups = [...this.saved.pendingGroups.filter((entry) => entry.fingerprint !== peer.fingerprint),
-          { fingerprint: peer.fingerprint, parkOnStop: existing?.parkOnStop ?? input.parkOnStop ?? true, relayName: joined.relayName, since: existing?.since ?? Date.now() }];
+          { fingerprint: peer.fingerprint, parkOnStop: existing?.parkOnStop ?? input.parkOnStop ?? true, relayName: joined.relayName,
+            since: existing?.since ?? Date.now(), adoptable: existing?.adoptable ?? input.adoptable }];
       }
     }
     try { await this.persist(); }
@@ -1270,7 +1348,7 @@ export class SeedHostApplication {
     if (found.fingerprint === this.identity.fingerprint) throw new Error('That code belongs to this PC. Type it on your gaming PC instead.');
     const invitation = await pairingInvite(code, found);
     // The selected world, when there is one, is the world this user is pairing; otherwise the group stays pending.
-    const joined = await this.joinHostingGroup({ code: invitation, name, serverId: this.activeServer()?.id ?? null });
+    const joined = await this.joinHostingGroup({ code: invitation, name, serverId: this.activeServer()?.id ?? null, adoptable: true });
     let gatewayOn = false;
     if (found.gamePort !== null) {
       try {
@@ -1333,6 +1411,29 @@ export class SeedHostApplication {
     });
   }
 
+  /**
+   * Create an invitation for the group the user APPROVED — a pinned relay fingerprint captured before any
+   * awaited directory lookup — instead of whatever happens to be selected when the lookup completes. Refuses
+   * stale context: the group must still be one of this PC's groups and, when a server was part of the approval,
+   * that server must still carry this exact group.
+   */
+  async createInviteForGroup(groupFingerprint: string, fingerprint: string, serverId: string | null = null) {
+    if (typeof groupFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(groupFingerprint)) throw new Error('Invalid hosting group');
+    if (typeof fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error('Invalid peer fingerprint');
+    if (serverId !== null && !isServerId(serverId)) throw new Error('Invalid server id');
+    return this.operation('createInviteForGroup', async () => {
+      const peer = this.saved.peers.find((entry) => entry.fingerprint === groupFingerprint);
+      if (!peer) throw new Error('The hosting group changed. Refresh before inviting again.');
+      const stillRecorded = this.saved.servers.some((entry) => entry.group?.fingerprint === groupFingerprint) ||
+        this.saved.pendingGroups.some((entry) => entry.fingerprint === groupFingerprint);
+      if (!stillRecorded) throw new Error('The hosting group changed. Refresh before inviting again.');
+      if (serverId !== null && !this.saved.servers.some((entry) => entry.id === serverId && entry.group?.fingerprint === groupFingerprint)) {
+        throw new Error('The selected server’s hosting group changed. Refresh before inviting again.');
+      }
+      return relayInviteFor(this.identity, peer, fingerprint);
+    });
+  }
+
   async removeFriend(fingerprint: string) {
     return this.operation('removeFriend', () => relayRemoveFriend(this.identity, this.requireRelay(), fingerprint));
   }
@@ -1385,7 +1486,7 @@ export class SeedHostApplication {
       const previous = active ? active.group : this.saved.pendingGroups;
       if (active) active.group = relay ? { ...relay } : null;
       else this.saved.pendingGroups = relay ? [{ fingerprint: relay.fingerprint, parkOnStop: relay.parkOnStop,
-        relayName: this.saved.peers.find((peer) => peer.fingerprint === relay.fingerprint)?.name ?? 'Relay', since: Date.now() }] : [];
+        relayName: this.saved.peers.find((peer) => peer.fingerprint === relay.fingerprint)?.name ?? 'Relay', since: Date.now(), adoptable: true }] : [];
       try { await this.persist(); }
       catch (error) {
         if (active) active.group = previous as RelayConfig | null;
@@ -1656,9 +1757,21 @@ export class SeedHostApplication {
         this.log('Re-acknowledged handoff ' + offer.id + ', which this PC already accepted.');
         return true;
       }
-      const state = await ledger.status();
+      const state = await ledger.statusOrNull();
       this.assertStopped();
       originalAuthority = JSON.stringify(state);
+      // The tolerant read exists so state retrieval and claim recovery survive a damaged or absent ledger
+      // (see reconcileActivation) - never so an incoming offer can manufacture authority over a world whose
+      // local authority is unknown. A missing record is refused explicitly instead of reaching the
+      // "no state means accept" branch of canAcceptOffer.
+      if (state === undefined) {
+        // A missing record is not permission to accept an offer nobody asked for: an unsolicited handoff over a
+        // world whose local authority is unknown is still refused. A claim this PC itself started (the user
+        // pressed Claim) is the documented recovery path for an interrupted pre-authority append, so it may
+        // complete - the relay only offers it to a device it authorises, and the local world is retained.
+        if (!approved) throw new Error('This PC has no ownership record for the selected server, so this handoff cannot be verified. Verified replica retained without activation; recover or re-import this server first.');
+        this.log('This PC had no ownership record for the selected server; the claim you started applies the offered revision.');
+      }
       if (!canAcceptOffer(state, offer, authenticatedSource, this.identity.fingerprint)) {
         throw new Error('Incoming ownership conflicts with this server. Verified replica retained without activation.');
       }
@@ -1677,7 +1790,7 @@ export class SeedHostApplication {
     if (!approved && (!this.options.confirmIncomingHandoff || !await this.options.confirmIncomingHandoff(authenticatedSource, snapshot, offer))) return false;
     revalidate();
     if (previous) {
-      const current = await this.ledger().status();
+      const current = await this.ledger().statusOrNull();
       revalidate();
       if (JSON.stringify(current) !== originalAuthority) throw new Error('Incoming ownership changed during approval');
     }
@@ -1691,23 +1804,32 @@ export class SeedHostApplication {
     const activation = (async () => {
       let authorityAttempted = false;
       this.replaceActive(candidate);
+      // A fresh direct receive journals its append too, so an interruption between the state write and the
+      // ownership transaction is distinguishably pre-authority on restart.
+      if (!previous) this.saved.activation = { serverId: candidate.id, pending: null, previousActiveServerId: null };
       const candidateMetadata = JSON.stringify(candidate);
       try {
-        // Record the candidate before authority. Missing/mismatched ledgers fail closed on restart.
+        // Record the candidate (and any activation journal) before authority. Missing/mismatched ledgers fail closed on restart.
         await this.persist();
         revalidate(candidate, candidateMetadata);
         if (previous) {
-          const current = await new OwnershipLedger(ledgerFile, this.identity.fingerprint).status();
+          const current = await new OwnershipLedger(ledgerFile, this.identity.fingerprint).statusOrNull();
           revalidate(candidate, candidateMetadata);
           if (JSON.stringify(current) !== originalAuthority) throw new Error('Incoming ownership changed before activation');
         }
         authorityAttempted = true;
         await new OwnershipLedger(ledgerFile, this.identity.fingerprint).acceptTransfer(offer, authenticatedSource, snapshot.id);
+        if (!previous) { this.saved.activation = null; await this.persist(); }
+        else if (this.saved.activation?.serverId === candidate.id) {
+          // A retried claim that started as a journalled fresh append just committed; the journal is spent.
+          this.saved.activation = null;
+          await this.persist();
+        }
         // Once authority may have committed, a lost acknowledgment must never roll it back.
         this.log('Accepted ownership of ' + snapshot.id + '. Previous server files retained. Configure a local launch profile and approve executable/mod trust before starting.');
         return true;
       } catch (error) {
-        if (!authorityAttempted) { this.replaceActive(previous); await this.persist(); }
+        if (!authorityAttempted) { if (!previous) this.saved.activation = null; this.replaceActive(previous); await this.persist(); }
         else this.log('Ownership acceptance may have committed; candidate retained for explicit reconciliation.');
         throw error;
       }
@@ -1747,12 +1869,18 @@ export class SeedHostApplication {
       this.saved.servers.push(candidate);
       this.saved.activeServerId = candidate.id;
       this.saved.pendingGroups = this.saved.pendingGroups.filter((entry) => entry.fingerprint !== group.fingerprint);
+      // Journal the append so a crash between this write and the ownership transaction has durable, unambiguous
+      // recovery evidence: journal + no ledger row = nothing was accepted and the append rolls back on restart.
+      this.saved.activation = { serverId: candidate.id, pending: group, previousActiveServerId: previousActive };
       try {
-        // Record the new server before authority. Missing/mismatched ledgers fail closed on restart.
+        // Record the new server and its journal before authority. Missing/mismatched ledgers fail closed on restart.
         await this.persist();
         revalidate();
         authorityAttempted = true;
         await new OwnershipLedger(candidate.ledgerFile, this.identity.fingerprint).acceptTransfer(offer, authenticatedSource, snapshot.id);
+        // The acceptance is durable; the journal is spent.
+        this.saved.activation = null;
+        await this.persist();
         this.log('Accepted ownership of ' + snapshot.id + ' as a new library server. Existing worlds were not changed. Configure a local launch profile and approve executable/mod trust before starting.');
         return true;
       } catch (error) {
@@ -1760,6 +1888,7 @@ export class SeedHostApplication {
           this.saved.servers = this.saved.servers.filter((entry) => entry !== candidate);
           this.saved.activeServerId = previousActive;
           this.saved.pendingGroups = previousPending;
+          this.saved.activation = null;
           await this.persist();
         } else this.log('Ownership acceptance may have committed; the new server entry is retained for explicit reconciliation.');
         throw error;

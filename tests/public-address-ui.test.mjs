@@ -10,8 +10,8 @@ test('desktop library projects each server binding instead of repeating the help
  const begin=source.indexOf("case 'getState':"),end=source.indexOf("case 'alwaysOnStatus':",begin);
  const state={servers:[{id:'a',playerPort:25565,state:'running',group:null},{id:'b',playerPort:25567,state:'offline',group:null}],onboarding:{}};
  const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
- const run=new AsyncFunction('backend','alwaysOn','onboardingChecks','publicAddress','app',`switch('getState'){${source.slice(begin,end)}}`);
- const result=await run({getState:async()=>state},{status:async()=>({running:true,fingerprint:'helper'})},()=>({ready:'incomplete'}),{status:server=>({state:server?.id==='a'?'reachable':'reserved',address:server?.id?server.id+'.tun.ply.gg':'legacy-helper.tun.ply.gg'})},{getVersion:()=> '0.6.1-alpha'});
+ const run=new AsyncFunction('backend','helperForSelected','helpers','onboardingChecks','publicAddress','app',`switch('getState'){${source.slice(begin,end)}}`);
+ const result=await run({getState:async()=>state},async()=>({status:async()=>({running:true,fingerprint:'helper'})}),{runningGamePorts:async()=>[]},()=>({ready:'incomplete'}),{status:server=>({state:server?.id==='a'?'reachable':'reserved',address:server?.id?server.id+'.tun.ply.gg':'legacy-helper.tun.ply.gg'})},{getVersion:()=> '0.6.1-alpha'});
  assert.deepEqual(result.servers.map(s=>s.publicJoinAddress?.address),['a.tun.ply.gg','b.tun.ply.gg']);
  assert.deepEqual(result.servers.map(s=>s.publicJoinAddress?.targetServerId),['a','b']);
 });
@@ -27,8 +27,9 @@ test('desktop enable rechecks captured selection after helper status await',asyn
  const begin=source.indexOf("case 'publicAddressStatus':"),end=source.indexOf("case 'pairAlwaysOn':",begin);
  const a={id:'a',playerPort:25565,state:'running'},b={id:'b',playerPort:25567,state:'offline'};let selected=a,mutations=0;
  const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
- const run=new AsyncFunction('method','p','backend','alwaysOn','publicAddress','shell',`let publicSelectionEpoch=0;switch(method){${source.slice(begin,end)}}`);
- await assert.rejects(run('publicAddressEnable',{id:'a'},{getState:async()=>({server:selected,servers:[a,b]})},{status:async()=>{selected=b;return {running:false};}},{enable:async()=>{mutations++;}},{}),/selected server changed/i);
+ // The awaited preflight now reads the per-group helper ports; the captured selection must still be rechecked after it.
+ const run=new AsyncFunction('method','p','backend','helpers','publicAddress','shell',`let publicSelectionEpoch=0;switch(method){${source.slice(begin,end)}}`);
+ await assert.rejects(run('publicAddressEnable',{id:'a'},{getState:async()=>({server:selected,servers:[a,b]})},{runningGamePorts:async()=>{selected=b;return [];}},{enable:async()=>{mutations++;}},{}),/selected server changed/i);
  assert.equal(mutations,0);
 });
 

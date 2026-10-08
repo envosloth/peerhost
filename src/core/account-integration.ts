@@ -32,16 +32,16 @@ export class AccountIntegration {
   }
   async status(){
     if(!this.client)return {configured:false,signedIn:false,online:false,username:null,detail:'Online accounts are not connected in this build yet. Local hosting still works.'};
-    const s=await this.load();if(!s||s.expiresAt<=Date.now())return {configured:true,signedIn:false,online:true,username:null,detail:'Create an account or sign in to this account directory.'};
+    const s=await this.load();if(!s||s.expiresAt<=Date.now())return {configured:true,directoryFingerprint:this.client.endpoint.fingerprint,signedIn:false,online:true,username:null,detail:'Create an account or sign in to this account directory.'};
     try {
       const me=await this.client.call('me',{token:s.token});
       if(!me||Object.keys(me).join(',')!=='username'||accountUsername(me.username)!==me.username)throw new Error('Invalid account service reply');
       // The authenticated token/device binding is authority; usernames may change on another PC.
       // Status stays read-only, so it cannot overwrite a concurrent encrypted login or logout.
-      return {configured:true,signedIn:true,online:true,username:me.username,detail:'Signed in · '+this.client.endpoint.host};
+      return {configured:true,directoryFingerprint:this.client.endpoint.fingerprint,signedIn:true,online:true,username:me.username,detail:'Signed in · '+this.client.endpoint.host};
     }catch(e){
-      if((e as Error).message==='Sign in again')return {configured:true,signedIn:false,online:true,username:null,detail:'Your session expired. Sign in again.'};
-      return {configured:true,signedIn:true,online:false,username:s.username,detail:'Account service is unavailable. Your local world is unaffected.'};
+      if((e as Error).message==='Sign in again')return {configured:true,directoryFingerprint:this.client.endpoint.fingerprint,signedIn:false,online:true,username:null,detail:'Your session expired. Sign in again.'};
+      return {configured:true,directoryFingerprint:this.client.endpoint.fingerprint,signedIn:true,online:false,username:s.username,detail:'Account service is unavailable. Your local world is unaffected.'};
     }
   }
   private async exclusive<T>(work:()=>Promise<T>):Promise<T>{if(this.busy)throw new Error('An account operation is already in progress');this.busy=true;try{return await work();}finally{this.busy=false;}}
@@ -76,7 +76,7 @@ export class AccountIntegration {
       } catch {
         throw new Error('Your account may have changed, but verification or saving the local session failed. Do not save again; sign in with the requested username and password to check.');
       }
-      return {configured:true,signedIn:true,online:true,username,detail:'Signed in · '+this.client.endpoint.host};
+      return {configured:true,directoryFingerprint:this.client.endpoint.fingerprint,signedIn:true,online:true,username,detail:'Signed in · '+this.client.endpoint.host};
     });
   }
   private async call(op:string,p:Record<string,unknown>={}){const s=await this.load();if(!s||!this.client)throw new Error('Sign in first');return this.client.call(op,{token:s.token,...p});}
@@ -142,16 +142,19 @@ export class AccountIntegration {
     });
   });}
   async logout(){return this.exclusive(async()=>{await this.call('logout');await rm(this.file,{force:true});return this.status();});}
-  async send(username:string){return this.exclusive(async()=>{
+  async send(username:string,group:{fingerprint:string;serverId:string|null}){return this.exclusive(async()=>{
+    if(!group||typeof group!=='object'||!fingerprintOK(group.fingerprint)||!(group.serverId===null||typeof group.serverId==='string'))throw new Error('Invalid hosting group');
     const found=await this.call('lookup',{username:accountUsername(username)});
     if(found.username!==accountUsername(username)||!Array.isArray(found.devices)||!found.devices.length||found.devices.length>8||!found.devices.every((v:unknown)=>fingerprintOK(v)))throw new Error('Invalid account lookup reply');
     // Invite the most recently signed-in PC; membership remains a device-specific authority.
-    const fingerprint=found.devices[0];const invite=await this.app.createInviteFor(fingerprint);
+    // The invitation is created against the group the user APPROVED (captured before the awaited directory lookup),
+    // so a selection change while the lookup is in flight can never redirect it to a different world's group.
+    const fingerprint=found.devices[0];const invite=await this.app.createInviteForGroup(group.fingerprint,fingerprint,group.serverId);
     const sent=await this.call('send',{username:found.username,fingerprint,code:invite.code});
     if(typeof sent.id!=='string'||!/^[a-f0-9-]{36}$/.test(sent.id))throw new Error('Invalid invitation reply');
     const inbox=await this.call('sent');
     if(!Array.isArray(inbox.ids)||!inbox.ids.includes(sent.id))throw new Error('Invitation delivery could not be verified');
-    return {username:found.username};
+    return {username:found.username,group:group.fingerprint};
   });}
   private validateRequest(r:any){
     if(!r||typeof r.id!=='string'||!/^[a-f0-9-]{36}$/.test(r.id)||accountUsername(r.from)!==r.from||typeof r.code!=='string'||r.code.length>1500||!Number.isSafeInteger(r.expiresAt))throw new Error('Invalid friend request reply');
@@ -162,6 +165,7 @@ export class AccountIntegration {
   async requests(){const reply=await this.call('inbox');if(!Array.isArray(reply.requests)||reply.requests.length>100)throw new Error('Invalid invitation inbox');return reply.requests.map((r:any)=>this.validateRequest(r));}
   async accept(id:string){return this.exclusive(async()=>{
     const r=await this.call('request',{id});this.validateRequest(r);if(r.id!==id)throw new Error('Invalid friend request');
+    const invitation=decodeInvite(r.code);
     const s=(await this.load())!;
     // Per-server hosting: without a serverId this records membership only — bound to the selected world when one
     // exists, otherwise as a separate pending group. No world is created, downloaded or started here.
@@ -169,6 +173,7 @@ export class AccountIntegration {
       if((error as {code?:unknown})?.code==='PEER_AUTHORIZATION_DENIED')throw new Error('The always-on PC refused this invitation (it may have expired or been replaced). Ask your friend for a new one, then accept it.');
       throw error;
     });
+    if(joined.fingerprint!==invitation.relayFingerprint||joined.pending!==(joined.serverId===null))throw new Error('Group membership for the exact invitation could not be verified. Any durably saved membership was retained; refresh Friends before retrying.');
     // Authoritative readback before dismissing: membership must be durably recorded for this exact group…
     const state=await this.app.getState();
     const recorded=joined.serverId!==null
@@ -177,8 +182,8 @@ export class AccountIntegration {
     if(!recorded)throw new Error('Group membership could not be verified');
     // …and the relay itself must independently confirm this device's membership before the invitation is dismissed.
     const relayPeer=state.peers.find((peer:any)=>peer.fingerprint===joined.fingerprint);
-    if(!relayPeer||!(await relayFriends(this.identity,relayPeer)).members.some((m)=>m.you))throw new Error('Group membership could not be verified');
-    await this.dismissRequest(id);return {joined:true,group:joined.relayName};
+    if(!relayPeer||relayPeer.host!==invitation.host||relayPeer.port!==invitation.port||!(await relayFriends(this.identity,relayPeer)).members.some((m)=>m.you&&m.fingerprint===this.identity.fingerprint))throw new Error('Group membership could not be verified. Any durably saved membership was retained; refresh Friends before retrying.');
+    await this.dismissRequest(id);return {joined:true,group:joined.relayName,fingerprint:joined.fingerprint,serverId:joined.serverId,requestId:id};
   });}
   private async dismissRequest(id:string){
     let uncertain:unknown;

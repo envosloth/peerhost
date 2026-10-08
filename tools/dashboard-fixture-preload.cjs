@@ -57,7 +57,7 @@ contextBridge.exposeInMainWorld('seedhost', { call: async (method, payload) => {
     fixture.accountFriends = (fixture.accountFriends ?? []).filter(f => f.username !== payload.username);
     return { removed: true, username: payload.username };
   }
-  if (method === 'accountSend') { fixture.hostInvites = [...(fixture.hostInvites ?? []), payload.username]; return { sent: true, username: payload.username }; }
+  if (method === 'accountSend') { fixture.hostInvites = [...(fixture.hostInvites ?? []), payload.username]; return { sent: true, username: payload.username, group: payload.fingerprint }; }
   if (method === 'accountStartGroup') { fixture.state.relay = fixture.state.relay ?? { name: 'Fixture group', fingerprint: 'c'.repeat(64), parkOnStop: true }; return { created: true }; }
   if (method === 'accountAccept') {
     const request = (fixture.accountRequests ?? []).find(r => r.id === payload.id);

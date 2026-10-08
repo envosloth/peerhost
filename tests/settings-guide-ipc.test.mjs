@@ -3,17 +3,20 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {validateCall} from '../dist/src/core/ipc-policy.js';
 const url='file:///seedhost/index.html',id='a'.repeat(32);
-async function harness(backend,alwaysOn,confirm=async()=>true){
+// The desktop handler resolves helpers per group now, so the slice scope carries the registry and the
+// selected-group lookup instead of one app-wide always-on host.
+async function harness(backend,helpers,confirm=async()=>true,helperForSelected=async()=>({status:async()=>({running:false})})){
  const source=await readFile(new URL('../dist/apps/desktop/main.js',import.meta.url),'utf8');const start=source.indexOf("ipcMain.handle('seedhost:call',"),end=source.indexOf('tray = new Tray(',start);
  const mainFrame={url},window={webContents:{id:1,mainFrame}};let handler;
- new Function('ipcMain','validateCall','backend','alwaysOn','accounts','identity','confirm','window','rendererUrl',`let publicSelectionEpoch=0;${source.slice(start,end)}`)({handle(_c,cb){handler=cb;}},validateCall,backend,alwaysOn,{status:async()=>({signedIn:true,online:true,username:'alex'})},{fingerprint:'b'.repeat(64)},confirm,window,url);
+ new Function('ipcMain','validateCall','backend','helpers','helperForSelected','accounts','identity','confirm','window','rendererUrl',`let publicSelectionEpoch=0;${source.slice(start,end)}`)({handle(_c,cb){handler=cb;}},validateCall,backend,helpers,helperForSelected,{status:async()=>({signedIn:true,online:true,username:'alex'})},{fingerprint:'b'.repeat(64)},confirm,window,url);
  return (method,payload)=>handler({sender:{id:1},senderFrame:mainFrame},method,payload);
 }
 test('group creation starts group control without forcing always-on opt-in or touching another server',async()=>{
  const calls=[];const state={server:{id,name:'QA'},servers:[{id,playerPort:25565}],relay:null};
  const backend={getState:async()=>state,joinHostingGroup:async p=>calls.push(['join',p]),saveRelay:async p=>calls.push(['saveRelay',p])};
  const role={startGroup:async()=>{calls.push(['startGroup']);return {enabled:false};},enable:async()=>calls.push(['FORCED']),ownerInvite:async()=>({code:'test'})};
- const invoke=await harness(backend,role);assert.deepEqual(await invoke('accountStartGroup'),{created:true});assert.equal(calls.some(c=>c[0]==='FORCED'),false);assert.ok(calls.some(c=>c[0]==='startGroup'));
+ const helpers={create:async()=>({root:'fresh',fingerprint:'c'.repeat(64),host:role}),list:()=>[],runningGamePorts:async()=>[]};
+ const invoke=await harness(backend,helpers);assert.deepEqual(await invoke('accountStartGroup'),{created:true});assert.equal(calls.some(c=>c[0]==='FORCED'),false);assert.ok(calls.some(c=>c[0]==='startGroup'));
 });
 test('disband IPC validates exact selected-server/group payload and cancellation never mutates',async()=>{
  const fp='c'.repeat(64),calls=[];const state={server:{id,name:'QA'},relay:{fingerprint:fp}};
