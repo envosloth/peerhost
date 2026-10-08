@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.3-alpha
+
+Local unsigned alpha for this PC, installed beside 0.6.2-alpha. Not published to GitHub.
+
+- Hosting invitations: resending for the same friend and hosting group atomically replaces the pending request (fresh id and endpoint) instead of refusing "An invitation is already waiting"; other groups coexist; exact retries stay idempotent.
+- Revocation: removal is serialized on the relay queue and the cross-process lock; a handoff still pending to that device is refused; revoking a settled holder still cuts access (pinned by the gateway suites).
+- Park/claim decisions commit under the same cross-process lock as revocation; the first world lineage is established by the configured group owner (ownerless legacy groups keep the previous behavior).
+- A damaged ownership record no longer blocks startup or the library: the recovery journal is kept, ownership stays fenced, healthy worlds remain selectable.
+- Concurrent group creation reserves the primary helper atomically.
+- Tests: the concurrent-junction-replacement regression tolerates the transient Windows EBADF realpath race (reproduced 1/10 on the unmodified baseline); new falsification-tested regressions for the fixes above.
+
 ## 0.6.1-alpha
 
 Unsigned portable Windows alpha. Preserve independent world backups.
