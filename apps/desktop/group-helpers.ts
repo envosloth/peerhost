@@ -29,6 +29,7 @@ export interface GroupHelper { root: string; fingerprint: string; host: AlwaysOn
 export interface GroupHelpersDeps {
   /** Loads the OS-encrypted identity in a helper root, creating one the first time a root is used. */
   loadIdentity(root: string): Promise<PeerIdentity>;
+  publishStoppedInitial?: (group: string, owner: string) => Promise<void>;
   /** Role options for a helper; `extra` helpers never answer the app-wide LAN pairing discovery. */
   role(extra: boolean): GroupHelperRole | Promise<GroupHelperRole>;
 }
@@ -44,7 +45,7 @@ export class GroupHelpers {
   private async load(root: string, extra: boolean): Promise<GroupHelper> {
     const identity = await this.deps.loadIdentity(root);
     const role = await this.deps.role(extra);
-    const options = { ...role, loadGroupIdentity: this.deps.loadIdentity };
+    const options = { ...role, loadGroupIdentity: this.deps.loadIdentity, publishStoppedInitial: this.deps.publishStoppedInitial };
     const host = new AlwaysOnHost(root, identity, extra ? { ...options, discoveryPort: role.discoveryPort ?? 0 } : options);
     return { root, fingerprint: identity.fingerprint, host };
   }

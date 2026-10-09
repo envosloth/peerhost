@@ -12,12 +12,12 @@ import { addMods, exportClientPack, modsDirectory, ordinaryDirectory, removeMod,
 import { ModrinthClient, assertModTarget, isGameVersion, isModLoader, isProjectKey, type ModSort } from './modrinth.js';
 import { indexedMods, modTarget, readModIndex, writeModIndex, type ModVerificationCache } from './mod-index.js';
 import { installMod, assertModInstallComplete, type InstallModInput } from './mod-install.js';
-import { openRelayOperation, relayRequest, relayStatus, relayInvite, relayInviteFor, relayRemoveFriend, relayFriends, relayDisbandGroup, relayDisbandStatus, joinRelayInvite, type RelayStatus, relayPublic } from './relay-client.js';
+import { openRelayOperation, relayRequest, relayStatus, relayInitialPublish, relayHostState, openRelayHostSession, relayInvite, relayInviteFor, relayRemoveFriend, relayFriends, relayDisbandGroup, relayDisbandStatus, joinRelayInvite, type RelayStatus, relayPublic } from './relay-client.js';
 import { decodeInvite, type Invite } from './invites.js';
 import { friendName, fingerprintOK } from './relay-friends-store.js';
 import { initializeOnboardingScope, readOnboarding, saveOnboarding, validateOnboarding, onboardingChecks, type SetupConfiguration } from './onboarding.js';
 import { ServerSetupClient, probeJava, type CreateServerInput } from './server-setup.js';
-import { validateSimpleProfileInput, withCustomJavaArgs, withoutJvmHeapArgs, type SimpleProfileInput } from './java-arguments.js';
+import { validateSimpleProfileInput, validateCustomJavaArgs, withCustomJavaArgs, withoutJvmHeapArgs, type SimpleProfileInput } from './java-arguments.js';
 import { findAlwaysOnPC, normalizePairingCode, pairingInvite, type FoundAlwaysOn } from './always-on.js';
 import { readGameGateway, saveGameGatewayConfig, validateGameGateway } from './game-gateway-config.js';
 import { gatewayStatus, startHostGameGateway } from './game-gateway.js';
@@ -57,6 +57,8 @@ interface ApplicationOptions {
   /** Fail-closed route ownership check, inside the ordinary launch operation lock. */
   beforeServerStart?: (server: { id: string; playerPort: number }) => Promise<void>;
   serverSetup?: ServerSetupClient;
+  /** Trusted local embedding seam; never supplied by a peer or exposed as renderer command input. */
+  resolveGroupLaunchProfile?: (serverDir: string, localProfile: Readonly<LaunchProfileInput>) => Promise<LaunchProfileInput>;
   /** Optional provider-retirement guard; called under the create operation lock. */
   chooseServerPort?: (id: string, occupied: number[]) => Promise<number>;
   modrinth?: ModrinthClient;
@@ -66,10 +68,29 @@ interface ApplicationOptions {
 /** Revisions kept by cleanup: the current one plus this many ancestors. */
 const CLEANUP_ANCESTORS = 2;
 
+export async function groupJavaLaunchArgs(serverDir: string, localArgs: string[] = []): Promise<string[]> {
+  const launcher = localArgs.indexOf('-jar');
+  if (localArgs.length && launcher < 0) throw new Error('Unsupported local Java launch plan; configure a supported JAR plan for this group');
+  const prefix = localArgs.slice(0, Math.max(0, launcher));
+  const heap = prefix.filter(arg => /^-Xm[sx]\d+[MG]$/i.test(arg));
+  const custom = validateCustomJavaArgs(prefix.filter(arg => !heap.includes(arg)));
+  const entries = await readdir(serverDir, { withFileTypes: true });
+  if (entries.some(e => e.isFile() && /\.(?:sh|bat|cmd|ps1)$/i.test(e.name))) throw new Error('Group Start does not support a scripted server or launcher argument files; only unambiguous Vanilla/Fabric JAR plans are supported.');
+  const candidates = entries.filter(e => e.isFile() && /^(?:server|minecraft_server[._][\w.+-]+|fabric-server-launch)\.jar$/i.test(e.name));
+  const allJars = entries.filter(e => e.isFile() && /\.jar$/i.test(e.name));
+  const fabric = candidates.find(e => e.name === 'fabric-server-launch.jar');
+  const jar = fabric && allJars.every(e => e.name === 'server.jar' || e.name === fabric.name) ? fabric.name : allJars.length === 1 && candidates.length === 1 ? candidates[0]!.name : undefined;
+  if (!jar) throw new Error('Group Start requires an unambiguous Vanilla/Fabric server JAR; unsupported layouts cannot use Group Start.');
+  return [...heap, ...custom, '-jar', jar, 'nogui'];
+}
+
 const isStoppedState = (state: string | undefined) => state === undefined || state === 'offline' || state === 'failed';
 
 export class SeedHostApplication {
+  private opened = false;
   private saved: SavedState = { version: 2, settings: defaultSettings(), servers: [], activeServerId: null, peers: [], pendingGroups: [], activation: null };
+  private groupHostSession?: { close(): void };
+  private groupHostReservation?: { serverId: string; revision: { generation: number; snapshotId: string; lineage: string; reservation: string }; stopped: boolean };
   private gatewayTunnel?: { close: () => Promise<void> };
   private gatewayEpoch = 0;
   private gatewayState: {state: 'off' | 'connecting' | 'ready' | 'error'; detail: string} = { state: 'off', detail: 'No local host tunnel is active' };
@@ -142,6 +163,7 @@ export class SeedHostApplication {
       this.scheduleTimer = setInterval(() => { void this.tickServerSchedules().catch(error => this.log('Scheduler: ' + String((error as Error).message))); }, 1000);
       this.scheduleTimer.unref();
     }
+    this.opened = true;
   }
 
   async getState() {
@@ -936,7 +958,65 @@ export class SeedHostApplication {
 
   async startServerWithApproval(confirm: (approval: LaunchApproval) => Promise<boolean>): Promise<void> {
     this.assertStopped();
-    await this.operation('startServer', async () => {
+    const group = this.activeServer()?.group;
+    if (group) return this.startGroupWithApproval(group.fingerprint, confirm);
+    await this.operation('startServer', () => this.launchInsideOperation(confirm));
+  }
+
+  /** Explicit group-targeted execution consent, including membership with no local server. */
+  async startGroup(fingerprint: string, approved: boolean): Promise<void> {
+    if (!approved) throw new Error('Confirm that you trust the server executables and mods');
+    await this.startGroupWithApproval(fingerprint, async () => true);
+  }
+
+  async startGroupWithApproval(fingerprint: string, confirm: (approval: LaunchApproval) => Promise<boolean>): Promise<void> {
+    if (!fingerprintOK(fingerprint)) throw new Error('Invalid hosting group');
+    this.assertStopped();
+    await this.operation('startGroup: syncing', async token => {
+      const pending = this.saved.pendingGroups.find(group => group.fingerprint === fingerprint);
+      const bound = this.saved.servers.filter(server => server.group?.fingerprint === fingerprint);
+      if (bound.length > 1) throw new Error('Ambiguous hosting group binding');
+      if (pending && bound.length) throw new Error('Conflicting hosting group binding');
+      if (!pending && !bound[0]) throw new Error('This PC has not joined that hosting group');
+      const peer = this.saved.peers.find(peer => peer.fingerprint === fingerprint);
+      if (!peer) throw new Error('Missing pinned hosting group endpoint');
+      const initial = await this.reachRelay(peer, 'Hosting status is unknown; nothing was started.');
+      if (!initial) {
+        this.busy = 'startGroup: publishing initial stopped server';
+        if (bound[0]) {
+          this.saved.activeServerId = bound[0].id;
+          await this.park();
+        } else await relayInitialPublish(this.identity, peer);
+      }
+      this.busy = 'startGroup: acquiring';
+      if (pending) await this.claimIntoNewServer(pending, token);
+      else {
+        if (!bound[0]) throw new Error('This PC has not joined that hosting group');
+        this.saved.activeServerId = bound[0].id;
+        await this.persist();
+        // Only the still safely-owned stopped holder may publish local edits; legacy uncertain holders remain fenced.
+        if (initial?.state === 'transferred' && initial.owner === this.identity.fingerprint) {
+          this.busy = 'startGroup: publishing stopped changes';
+          await this.park();
+        }
+        await this.claimBoundServer(this.requireRelay(), token);
+      }
+      const server = this.requireActive();
+      if (this.options.resolveGroupLaunchProfile) {
+        server.profile = validateLaunchProfile(await this.options.resolveGroupLaunchProfile(server.serverDir, Object.freeze({ ...server.profile, args: [...server.profile.args] })));
+      } else {
+        if (!server.profile.executable) throw new Error('Configure an approved local Java runtime and launch profile before starting this group');
+        await probeJava(server.profile.executable);
+        const args = await groupJavaLaunchArgs(server.serverDir, server.profile.args);
+        server.profile = validateLaunchProfile({ ...server.profile, args });
+      }
+      await this.persist();
+      this.busy = 'startGroup: starting';
+      await this.launchInsideOperation(confirm);
+    });
+  }
+
+  private async launchInsideOperation(confirm: (approval: LaunchApproval) => Promise<boolean>): Promise<void> {
       this.playerSamples.clear();
       const server = this.activeServer();
       if (!server?.profile.executable) throw new Error('Configure a launch profile first');
@@ -968,11 +1048,25 @@ export class SeedHostApplication {
       await this.options.beforeServerStart?.({ id: server.id, playerPort: await readServerPort(server.serverDir) });
       revalidate();
       await ledger.startHosting();
+      let admissionAttempted = false;
+      let admitted = false;
+      let spawned = false;
+      let revision: { generation: number; snapshotId: string; lineage: string; reservation: string } | undefined;
       try {
         revalidate();
         // Recheck after the ledger's filesystem awaits, then spawn without another await.
         await this.options.beforeServerStart?.({ id: server.id, playerPort: await readServerPort(server.serverDir) });
         revalidate();
+        if (server.group) {
+          const authority = await ledger.status();
+          if (!authority.lineage) throw new Error('Group hosting requires verified lineage');
+          revision = { generation: authority.generation, snapshotId: authority.snapshotId, lineage: authority.lineage, reservation: randomUUID() };
+          admissionAttempted = true;
+          await relayHostState(this.identity, this.requireRelay(), 'host-start', revision);
+          admitted = true;
+          this.groupHostReservation = { serverId: server.id, revision, stopped: false };
+          revalidate();
+        }
         const launched = new ServerProcess({
           executable: approval.profile.executable, args: [...approval.profile.args], cwd: approval.serverDir,
           startTimeoutMs: server.profile.startTimeoutSeconds * 1000, stopTimeoutMs: server.profile.stopTimeoutSeconds * 1000,
@@ -981,20 +1075,54 @@ export class SeedHostApplication {
         this.controlledProcess = launched;
         launched.on('line', (line: string) => this.log(line));
         launched.on('state', (state: string) => {
+          // 'starting' is emitted synchronously after spawn; even a child that immediately exits
+          // counts as launched. ENOENT with no child PID is provably pre-spawn.
+          if (launched.pid !== undefined) spawned = true;
           if ((state !== 'offline' && state !== 'failed') || this.process !== launched || this.controlledProcess === launched) return;
+          this.groupHostSession?.close(); this.groupHostSession = undefined;
           void this.closeGameGateway();
           this.unexpectedExit = ledger;
           if (!this.busy) void this.operation('processExit', async () => {}).catch((error) => this.log('Ownership recovery error: ' + String(error)));
         });
         await launched.start();
+        if (server.group) {
+          const authority = await ledger.status();
+          if (!authority.lineage) throw new Error('Group hosting requires verified lineage');
+          try {
+            this.groupHostSession = await openRelayHostSession(this.identity, this.requireRelay(), revision!);
+          } catch (error) {
+            // Execution was already admitted and the tracked process is running. Lost telemetry is UNKNOWN,
+            // not a failed launch or released authority; keep the hosting ledger so orderly Stop can publish.
+            this.log('Hosting is running locally, but the group could not observe it: ' + String(error));
+          }
+        }
         await this.startGameGateway();
       } catch (error) {
-        await ledger.markUncertain();
+        if (!spawned && (!admissionAttempted || admitted)) {
+          try {
+            // Only acknowledged exact admission and proven no-spawn permits cancellation.
+            // A lost host-start acknowledgment remains fenced even on this still-running PC.
+            if (admitted) await relayHostState(this.identity, this.requireRelay(), 'host-cancel', revision!);
+            await ledger.stopHosting(approval.snapshotId);
+            this.groupHostReservation = undefined;
+          } catch (cancelError) {
+            await ledger.markUncertain();
+            throw new AggregateError([error, cancelError], 'Start failed; exact admission cancellation is unverified. Explicit recovery required.');
+          }
+        } else await ledger.markUncertain();
         throw error;
       } finally {
         this.controlledProcess = undefined;
       }
-    });
+  }
+
+  /** Called only after graceful stop AND durable final snapshot, never after a crash/timeout. */
+  private async finishGroupHostReservation(serverId: string): Promise<void> {
+    const reservation = this.groupHostReservation;
+    if (!reservation || reservation.serverId !== serverId || !reservation.stopped) return;
+    try { await relayHostState(this.identity, this.requireRelay(), 'host-stopped', reservation.revision); }
+    catch (error) { throw new Error('Group relay unreachable or stopped admission unresolved; final snapshot is retained. Retry Stop to resolve the exact reservation and publish.', { cause: error }); }
+    this.groupHostReservation = undefined;
   }
 
   sendCommand(command: string): void {
@@ -1010,11 +1138,20 @@ export class SeedHostApplication {
   private async stopServerInsideOperation(): Promise<void> {
       this.playerSamples.clear();
       const server = this.activeServer();
-      if (!server || !this.process?.pid) throw new Error('No owned process is running');
+      if (!server) throw new Error('No owned process is running');
+      if (!this.process?.pid) {
+        this.assertStopped();
+        if (!server.group) throw new Error('No owned process is running');
+        this.busy = 'stopServer: retrying publication';
+        await this.finishGroupHostReservation(server.id);
+        await this.park();
+        return;
+      }
       await this.closeGameGateway();
       this.controlledProcess = this.process;
       try {
         await this.process.stop();
+        this.groupHostSession?.close(); this.groupHostSession = undefined;
         // createSnapshot returns only after objects, the manifest and their directories are flushed,
         // so the ledger never points at a revision that a power cut could lose.
         await assertServerFileTransactionsComplete(server.serverDir);
@@ -1022,6 +1159,7 @@ export class SeedHostApplication {
         await this.ledger().stopHosting(snapshot.id);
         server.snapshotId = snapshot.id;
         await this.persist();
+        if (this.groupHostReservation?.serverId === server.id) this.groupHostReservation.stopped = true;
         this.log('Stopped cleanly and committed final snapshot ' + snapshot.id);
       } catch (error) {
         await this.ledger().markUncertain();
@@ -1029,10 +1167,11 @@ export class SeedHostApplication {
       } finally {
         this.controlledProcess = undefined;
       }
-      if (server.group?.parkOnStop) {
-        // The stop itself succeeded; a park failure is reported, not thrown.
-        try { await this.park(); }
-        catch (error) { this.log(`Could not park on the relay: ${(error as Error).message}`); }
+      if (server.group) {
+        // A captured group Stop includes publication. Failure leaves custody unavailable and is not success.
+        this.busy = 'stopServer: publishing';
+        await this.finishGroupHostReservation(server.id);
+        await this.park();
       }
   }
 
@@ -1381,6 +1520,7 @@ export class SeedHostApplication {
     let serverId: string | null = null;
     if (input.target) {
       input.target.group = { fingerprint: peer.fingerprint, parkOnStop: targetGroup?.parkOnStop ?? input.parkOnStop ?? true };
+      this.saved.pendingGroups = previousPending.filter(group => group.fingerprint !== peer.fingerprint);
       serverId = input.target.id;
     } else {
       const bound = this.saved.servers.find((entry) => entry.group?.fingerprint === peer.fingerprint);
@@ -1548,13 +1688,16 @@ export class SeedHostApplication {
       await this.closeGameGateway();
       const active = this.activeServer();
       const previous = active ? active.group : this.saved.pendingGroups;
-      if (active) active.group = relay ? { ...relay } : null;
-      else this.saved.pendingGroups = relay ? [{ fingerprint: relay.fingerprint, parkOnStop: relay.parkOnStop,
+      const previousPending = this.saved.pendingGroups;
+      if (active) {
+        active.group = relay ? { ...relay } : null;
+        if (relay) this.saved.pendingGroups = previousPending.filter(group => group.fingerprint !== relay.fingerprint);
+      } else this.saved.pendingGroups = relay ? [{ fingerprint: relay.fingerprint, parkOnStop: relay.parkOnStop,
         relayName: this.saved.peers.find((peer) => peer.fingerprint === relay.fingerprint)?.name ?? 'Relay', since: Date.now(), adoptable: true }] : [];
       try { await this.persist(); }
       catch (error) {
         if (active) active.group = previous as RelayConfig | null;
-        else this.saved.pendingGroups = previous as SavedPendingGroup[];
+        this.saved.pendingGroups = previousPending;
         throw error;
       }
       if (relay) this.log(`Relay set to ${this.relayPeer()?.name ?? 'the relay'}${active ? ` for ${active.name}` : ''}${relay.parkOnStop ? '; the server is parked there after each clean stop' : ''}.`);
@@ -1610,6 +1753,26 @@ export class SeedHostApplication {
   async parkAtRelay(): Promise<void> {
     this.assertStopped();
     await this.operation('parkAtRelay', () => this.park());
+  }
+
+  /** Same-PC helper callback: resolve only the durable enrolled world, never an arbitrary path. */
+  async publishStoppedInitialGroup(fingerprint: string, owner = this.identity.fingerprint): Promise<void> {
+    if (!this.opened) throw new Error('The bound group owner application is offline or closed');
+    if (!fingerprintOK(fingerprint) || owner !== this.identity.fingerprint) throw new Error('Initial publication owner mismatch');
+    this.assertStopped();
+    await this.operation('publishStoppedInitialGroup', async () => {
+      const bindings = this.saved.servers.filter(server => server.group?.fingerprint === fingerprint);
+      if (bindings.length !== 1) throw new Error('Initial publication requires one enrolled managed world');
+      const previous = this.saved.activeServerId;
+      this.saved.activeServerId = bindings[0]!.id;
+      try {
+        const peer = this.requireRelay();
+        const members = await relayFriends(this.identity, peer);
+        if (members.owner !== owner) throw new Error('Initial publication requires the enrolled group owner');
+        if (await this.reachRelay(peer, 'Initial publication is unavailable.')) return;
+        await this.park();
+      } finally { this.saved.activeServerId = previous; await this.persist(); }
+    });
   }
 
   private async park(): Promise<void> {
@@ -1698,13 +1861,17 @@ export class SeedHostApplication {
       if (pending.length > 1) throw new Error('This PC has joined more than one hosting group. Choose the group to download first.');
     }
     const relay = this.requireRelay();
-    await this.operation('claimFromRelay', async (token) => {
+    await this.operation('claimFromRelay', token => this.claimBoundServer(relay, token));
+  }
+
+  private async claimBoundServer(relay: SavedPeer, token: symbol): Promise<void> {
       const me = this.identity.fingerprint;
       const status = await this.reachRelay(relay, 'Nothing was changed.');
       if (!status) throw new Error('The relay holds no server yet. Park one on it from the PC that has it.');
       if (status.state === 'transferred') {
         if (status.owner === me) throw new Error('This PC already holds the server; there is nothing to claim.');
-        throw new Error(`The server is checked out by ${status.ownerName ?? 'another PC'}. That PC must park it on the relay before another PC can claim it.`);
+        if (status.hosting) throw new Error(`Start refused: ${status.ownerName ?? 'another PC'} is hosting this group. Nobody else may start or take over.`);
+        throw new Error(`The server is checked out by ${status.ownerName ?? 'another PC'}. Hosting status is unknown; only verified stopped publication makes this group available.`);
       }
       if (status.state === 'offered' && status.pendingTarget !== me) {
         throw new Error(`The server is pending checkout to ${status.pendingName ?? 'another PC'}; that PC must retry its claim first.`);
@@ -1725,7 +1892,6 @@ export class SeedHostApplication {
       }
       if (!accepted) throw new Error('The relay sent no ownership offer; nothing changed.');
       this.log('Claimed the server from the relay. Configure this PC\'s launch profile and approve executable/mod trust before starting.');
-    });
   }
 
   /**
@@ -1754,7 +1920,8 @@ export class SeedHostApplication {
     if (!status) throw new Error('The group holds no server yet. Park one on it from the PC that has it.');
     if (status.state === 'transferred') {
       if (status.owner === me) throw new Error('This PC already holds the server; there is nothing to claim.');
-      throw new Error(`The server is checked out by ${status.ownerName ?? 'another PC'}. That PC must park it on the group’s always-on PC before another PC can claim it.`);
+      if (status.hosting) throw new Error(`Start refused: ${status.ownerName ?? 'another PC'} is hosting this group. Nobody else may start or take over.`);
+      throw new Error(`The server is checked out by ${status.ownerName ?? 'another PC'}. Hosting status is unknown; only verified stopped publication makes this group available.`);
     }
     if (status.state === 'offered' && status.pendingTarget !== me) {
       throw new Error(`The server is pending checkout to ${status.pendingName ?? 'another PC'}; that PC must retry its claim first.`);
@@ -1969,5 +2136,7 @@ export class SeedHostApplication {
     await this.closeGameGateway();
     if (this.process?.pid) await this.stopServer();
     if (this.listener) { await this.listener.close(); this.listener = undefined; }
+    this.groupHostSession?.close(); this.groupHostSession = undefined;
+    this.opened = false;
   }
 }

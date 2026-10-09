@@ -10,7 +10,7 @@ const out=await mkdtemp(path.join(root,'release','alpha-'));
 console.log('Packaging a local unsigned Windows alpha. This is not a release approval or Minecraft verification.');
 const directories=await packager({dir:root,name:'SeedHost',platform:'win32',arch:'x64',out,
   asar:false,prune:true,overwrite:false,tmpdir:process.env.TMPDIR||out,
-  ignore:[/^\/\.git(?:\/|$)/,/^\/\.test-data(?:\/|$)/,/^\/release(?:\/|$)/,/^\/tests(?:\/|$)/,/^\/src(?:\/|$)/,/^\/tools(?:\/|$)/,/^\/dist\/(?:tests|tools)(?:\/|$)/,/^\/AGENTS\.md$/],
+  ignore:[/^\/\.git(?:\/|$)/,/^\/\.test-data(?:\/|$)/,/^\/release(?:\/|$)/,/^\/tests(?:\/|$)/,/^\/src(?:\/|$)/,/^\/tools(?:\/|$)/,/^\/dist\/(?:tests|tools)(?:\/|$)/,/^\/AGENTS\.md$/,/^\/docs\/member-start-(?:resume-task|revocation-checkpoint|continuation-report|workflow-audit)\.md$/],
   // The exe keeps its SeedHost.exe name; Windows shows the Seed Hosting product name and seed icon.
   icon:path.join(root,'apps','desktop','icon.ico'),
   win32metadata:{ProductName:'Seed Hosting',FileDescription:'Seed Hosting — Minecraft servers you share with friends (alpha)','requested-execution-level':'asInvoker'},

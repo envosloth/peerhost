@@ -33,7 +33,11 @@ async function startRelay(t: TestContext, root: string, identity?: PeerIdentity,
 /** A host app that trusts the relay (and vice versa) and uses it as its relay. */
 async function host(t: TestContext, root: string, name: string, relay: RelayNode, identity?: PeerIdentity, confirm = async () => true) {
   const id = identity ?? await createIdentity();
-  const app = new SeedHostApplication(path.join(root, name), id, { confirmIncomingHandoff: confirm });
+  const app = new SeedHostApplication(path.join(root, name), id, {
+    confirmIncomingHandoff: confirm,
+    // Explicit local approval for a synthetic process; never a peer-provided runtime.
+    resolveGroupLaunchProfile: async () => ({ executable: process.execPath, args: [fixture, '--lifetime-ms=30000'] }),
+  });
   await app.open();
   t.after(() => app.close().catch(() => {}));
   await relay.trust(name, id.fingerprint);
@@ -55,7 +59,7 @@ async function closedPort(): Promise<number> {
 }
 const world = async (app: SeedHostApplication) => readFile(path.join((await app.getState()).server!.serverDir, 'world.bin'), 'utf8');
 
-test('a server parked on the relay is claimed by a PC that never had it while the original host is off, and back again', async (t) => {
+test('ordinary group Start and mandatory Stop carry the latest server while the previous holder is off', async (t) => {
   const { root, source } = await workspace(t, 'relay-roundtrip-');
   const relay = await startRelay(t, root);
   const ia = await createIdentity();
@@ -65,42 +69,23 @@ test('a server parked on the relay is claimed by a PC that never had it while th
   await a.startServer(true);
   await writeFile(path.join((await a.getState()).server!.serverDir, 'world.bin'), 'edited on A');
   await a.stopServer();
-  await a.parkAtRelay();
   const parked = (await a.getState()).server!;
   assert.equal(parked.ownership.state, 'transferred');
-  assert.equal(parked.ownership.owner, relay.identity.fingerprint);
-  assert.equal(parked.ownerName, 'the relay');
-  await assert.rejects(a.startServer(true), /ownership/i);
-  assert.deepEqual((await held(relay)), { owner: relay.identity.fingerprint, state: 'owned', generation: 1, snapshotId: parked.snapshotId, pendingTarget: null });
-  await a.close(); // A is now "off".
-
-  let approvals = 0;
-  const b = (await host(t, root, 'b', relay, undefined, async () => { approvals++; return true; })).app;
+  assert.equal((await held(relay))!.generation, 3);
+  await a.close();
+  const b = (await host(t, root, 'b', relay)).app;
   assert.equal((await b.getState()).server, null);
-  await b.claimFromRelay();
-  const claimed = (await b.getState()).server!;
-  assert.equal(claimed.ownership.state, 'owned');
-  assert.equal(claimed.ownership.generation, 2);
-  assert.equal(approvals, 0, 'clicking Claim is the consent; no second dialog');
-  assert.equal(claimed.profile.executable, '', 'never inherit the other host executable');
+  await b.startGroup(relay.identity.fingerprint, true);
+  assert.equal((await b.getState()).server!.state, 'running');
   assert.equal(await world(b), 'edited on A');
-  assert.equal((await held(relay))!.state, 'transferred');
-  await profile(b);
-  await b.startServer(true);
-  await writeFile(path.join(claimed.serverDir, 'world.bin'), 'edited on B');
+  await writeFile(path.join((await b.getState()).server!.serverDir, 'world.bin'), 'edited on B');
   await b.stopServer();
-  await b.parkAtRelay();
-  assert.equal((await b.getState()).server!.ownership.owner, relay.identity.fingerprint);
-
-  a = (await host(t, root, 'a', relay, ia)).app; // A powers back on with its old profile.
-  assert.equal((await a.getState()).server!.ownership.state, 'transferred');
-  await a.claimFromRelay();
-  const back = (await a.getState()).server!;
-  assert.equal(back.ownership.state, 'owned');
-  assert.equal(back.ownership.generation, 4, 'A skips the generations it missed while off');
-  assert.equal(await world(a), 'edited on B');
-  assert.equal(await readFile(path.join(source, 'world.bin'), 'utf8'), 'original', 'the imported source is never touched');
+  assert.equal((await held(relay))!.generation, 5);
+  a = (await host(t, root, 'a', relay, ia)).app;
   await a.startServer(true);
+  assert.equal((await a.getState()).server!.ownership.generation, 6);
+  assert.equal(await world(a), 'edited on B');
+  assert.equal(await readFile(path.join(source, 'world.bin'), 'utf8'), 'original');
   await a.stopServer();
 });
 
@@ -164,7 +149,7 @@ test('parking on a relay that already acknowledged-but-lost a claim treats the n
     snapshotId: (await b.getState()).server!.snapshotId, pendingTarget: null });
 });
 
-test('an unreachable relay never fences the host, and park-on-stop keeps the server when the relay is down', async (t) => {
+test('an unreachable relay never fences a stopped holder and group Start refuses unknown status', async (t) => {
   const { root, source } = await workspace(t, 'relay-unreachable-');
   const relay = await startRelay(t, root);
   const a = (await host(t, root, 'a', relay)).app;
@@ -178,11 +163,10 @@ test('an unreachable relay never fences the host, and park-on-stop keeps the ser
   await a.addPeer({ name: 'Relay', fingerprint: relay.identity.fingerprint, host: '127.0.0.1', port: await closedPort() });
   await assert.rejects(a.parkAtRelay(), /unreachable.*stays on this PC/i);
   assert.equal((await a.getState()).server!.ownership.state, 'owned', 'no offer was prepared');
-  await a.startServer(true);
-  await a.stopServer(); // park-on-stop fails quietly
+  await assert.rejects(a.startServer(true), /unreachable.*unknown/i);
   const state = await a.getState();
   assert.equal(state.server!.ownership.state, 'owned');
-  assert.ok(state.logs.some((line) => /could not park/i.test(line)));
+  assert.equal(state.server!.state, 'offline');
 });
 
 test('the relay declines a different server, even with a higher generation, and the host keeps it', async (t) => {

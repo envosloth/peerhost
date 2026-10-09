@@ -5,7 +5,7 @@ import { AccountIntegration } from '../../src/core/account-integration.js';
 import { PlayitIntegration } from '../../src/core/playit.js';
 import { playitApi, probeMinecraft } from '../../src/core/playit-network.js';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { SeedHostApplication } from '../../src/core/application.js';
+import { SeedHostApplication, groupJavaLaunchArgs } from '../../src/core/application.js';
 import { readServerPort } from '../../src/core/network-info.js';
 import { loadIdentity } from '../../src/core/identity-store.js';
 import { validateCall } from '../../src/core/ipc-policy.js';
@@ -57,7 +57,14 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
   app.whenReady().then(async()=>{
     if(!safeStorage.isEncryptionAvailable())throw new Error('OS protected key storage (Windows DPAPI, macOS Keychain, or a Linux Secret Service) is unavailable. Refusing to store an unencrypted identity.');
     const identity=await loadIdentity(root,{encrypt:v=>safeStorage.encryptString(v),decrypt:v=>safeStorage.decryptString(v)});
-    backend=new SeedHostApplication(root,identity,{beforeServerStart:async server=>{
+    backend=new SeedHostApplication(root,identity,{resolveGroupLaunchProfile:async(serverDir,local)=>{
+      // Discover LOCAL Java only. Shared files choose a bounded relative JAR plan, never an OS executable.
+      const args=await groupJavaLaunchArgs(serverDir,local.args);
+      const runtimes=local.executable?[await probeJava(local.executable)]:await discoverJava(path.join(root,'runtimes'));
+      if(runtimes.length!==1)throw new Error('Choose an approved local Java runtime in this server’s settings, then retry Start. Missing or ambiguous local runtime setup cannot be guessed.');
+      const hasHeap=args.some(arg=>/^-Xm[sx]\d+[MG]$/i.test(arg));
+      return {...local,executable:runtimes[0]!.executable,args:hasHeap?args:['-Xms512M','-Xmx2048M',...args]};
+    },beforeServerStart:async server=>{
       if(!publicAddress)throw new Error('Public route ownership guard is not ready; server launch refused');
       await publicAddress.assertCanStart(server);
     },chooseServerPort:async(id,occupied)=>{
@@ -76,6 +83,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
     const vault={encrypt:(v:string)=>safeStorage.encryptString(v),decrypt:(v:Buffer)=>safeStorage.decryptString(v)};
     helpers=new GroupHelpers(path.join(root,'always-on'),{
       loadIdentity:helperRoot=>loadIdentity(helperRoot,vault),
+      publishStoppedInitial:(pin,owner)=>backend.publishStoppedInitialGroup(pin,owner),
       role:async extra=>{
         const reservedGamePorts=(await backend.getState()).servers.map(server=>server.playerPort);
         if(profileArgument&&process.env.SEEDHOST_TEST_LOOPBACK==='1')return {host:'127.0.0.1',port:0,gamePorts:[0],discoveryPort:0,reservedGamePorts};
@@ -133,6 +141,11 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
           return host.setControlRoute({host:p.host,port:p.port});
         }
         case 'listHostingGroups':return backend.listHostingGroups(helpers.list().flatMap(entry=>entry.host.localGroupFingerprints()));
+        case 'startGroup':return backend.startGroupWithApproval(p.fingerprint,async approval=>{
+          const helperPorts=await helpers.runningGamePorts(),minecraftPort=await readServerPort(approval.serverDir);
+          if(helperPorts.includes(minecraftPort))throw new Error('Minecraft port is used by the player gateway. Choose a different port in Server settings; no process was launched.');
+          return true;
+        });
         case 'claimPendingGroup':return backend.claimPendingGroup(p.fingerprint);
         case 'respondIncomingHandoff':incomingHandoff.respond(p.id,p.accepted);return {responded:true};
         case 'accountStatus':return accounts.status();

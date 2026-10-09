@@ -11,7 +11,7 @@ import { createIdentity } from '../dist/src/core/peer-transport.js';
 async function fixture(t){
  const root=await mkdtemp(path.join(process.env.TMPDIR,'ph-runtime-gateway-')),source=path.join(root,'source');await mkdir(source);await writeFile(path.join(source,'eula.txt'),'eula=true\n');await writeFile(path.join(source,'world.bin'),'fixture');
  const relay=new RelayNode(path.join(root,'relay'),await createIdentity(),{log:()=>{},game:{host:'127.0.0.1',port:0}});await relay.open();await relay.listen();await relay.listenGame();
- const app=new SeedHostApplication(path.join(root,'app'),await createIdentity());await app.open();await relay.trust('Host',app.identity.fingerprint);await app.addPeer({name:'Relay',fingerprint:relay.identity.fingerprint,...relay.endpoint});await app.saveRelay({fingerprint:relay.identity.fingerprint,parkOnStop:false});await app.importExisting(source,true);await app.parkAtRelay();await app.claimFromRelay();
+ const app=new SeedHostApplication(path.join(root,'app'),await createIdentity(),{resolveGroupLaunchProfile:async(_dir,local)=>local.executable?local:{executable:process.execPath,args:[path.resolve('tools/fake-java-server.mjs'),'--lifetime-ms=30000']}});await app.open();await relay.trust('Host',app.identity.fingerprint);await app.addPeer({name:'Relay',fingerprint:relay.identity.fingerprint,...relay.endpoint});await app.saveRelay({fingerprint:relay.identity.fingerprint,parkOnStop:false});await app.importExisting(source,true);await app.parkAtRelay();await app.claimFromRelay();
  await app.saveProfile({executable:process.execPath,args:[path.resolve('tools/fake-java-server.mjs'),'--lifetime-ms=30000']});
  const sockets=new Set(),echo=createServer(s=>{sockets.add(s);s.once('close',()=>sockets.delete(s));s.on('error',()=>{});s.pipe(s);});await new Promise(r=>echo.listen(0,'127.0.0.1',r));
  t.after(async()=>{await app.close();await relay.close();for(const s of sockets)s.destroy();await new Promise(r=>echo.close(r));await rm(root,{recursive:true,force:true});});return{root,app,relay,localPort:echo.address().port};
@@ -33,11 +33,12 @@ test('corrupt optional gateway metadata is visible and never blocks console/clea
  const{app,relay,localPort}=await fixture(t);await app.saveGameGateway({enabled:true,localPort});await app.startServer(true);await until(async()=>(await app.checkGameGateway()).ready);
  const file=path.join(app.root,'game-gateway.json');await writeFile(file,'broken optional metadata');
  const state=await app.getState();assert.match(state.gateway.detail,/unreadable/i);app.sendCommand('say metadata remains optional');await app.stopServer();
- assert.equal((await app.getState()).server.ownership.state,'owned');assert.equal(await readFile(file,'utf8'),'broken optional metadata');await assert.rejects(app.saveGameGateway({enabled:false,localPort}),/unreadable/i);assert.equal((await gatewayStatus(app.identity,{...relay.endpoint,fingerprint:relay.identity.fingerprint})).ready,false);
+ assert.equal((await app.getState()).server.ownership.state,'transferred');assert.equal(await readFile(file,'utf8'),'broken optional metadata');await assert.rejects(app.saveGameGateway({enabled:false,localPort}),/unreadable/i);assert.equal((await gatewayStatus(app.identity,{...relay.endpoint,fingerprint:relay.identity.fingerprint})).ready,false);
 });
-test('unreachable opted-in relay does not stop local hosting or graceful save',async t=>{
- const{app,relay,localPort}=await fixture(t);await app.saveGameGateway({enabled:true,localPort});await relay.close();await app.startServer(true);
- assert.equal((await app.getState()).server.state,'running');assert.equal((await app.getState()).gateway.state,'error');app.sendCommand('say direct hosting survives');await app.stopServer();assert.equal((await app.getState()).server.ownership.state,'owned');
+test('unreachable group control refuses Start even when the optional player gateway is opted in',async t=>{
+ const{app,relay,localPort}=await fixture(t);await app.saveGameGateway({enabled:true,localPort});await relay.close();
+ await assert.rejects(app.startServer(true),/unreachable.*unknown/i);
+ assert.equal((await app.getState()).server.state,'offline');assert.equal((await app.getState()).server.ownership.state,'owned');
 });
 test('unexpected process exit closes forwarding and fences ownership',async t=>{
  const{app,relay,localPort}=await fixture(t);await app.saveGameGateway({enabled:true,localPort});await app.saveProfile({executable:process.execPath,args:[path.resolve('tools/fake-java-server.mjs'),'--lifetime-ms=1500']});await app.startServer(true);

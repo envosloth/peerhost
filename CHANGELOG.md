@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.5-alpha
+
+Unsigned portable Windows alpha for one-click group hosting. Both hosts should update; keep independent world backups before testing.
+
+- Group **Start server** synchronizes the latest safely saved world, mods, configuration and deletions, then acquires exclusive authority and launches locally. Pending membership creates a new managed server without replacing an unrelated world.
+- Active hosts block competing Starts. Concurrent Starts admit one winner. Durable starting reservations fence revocation and handoff races; unreachable or uncertain custody never means idle.
+- Group Stop must save and publish before another host can start, even with the legacy park-on-stop option off. Failed publication remains fenced and retryable.
+- Explicit group binding consumes only its matching pending membership; Windows setup-progress saves retry transient reader-held atomic replacement failures without deleting the old file.
+- Automatic group launch supports validated unambiguous Vanilla/Fabric JAR layouts and approved local Java. Script/argument-file/ambiguous modloader layouts refuse; advanced launch is not a group bypass.
+- Crash/restart or lost Start acknowledgment may conservatively strand a pending admission. No automatic expiry, takeover or unsafe recovery was added.
+- Real Electron and synthetic Java process/file checks cover latest bytes, deletions, A→B→A rotation, active-host refusal and single-spawn competition. These are not Minecraft gameplay, arbitrary modpack or different-network certification.
+
 ## 0.6.4-alpha
 
 Unsigned portable Windows alpha. Includes the previously local 0.6.3-alpha ownership/revocation fixes below; keep independent world backups.

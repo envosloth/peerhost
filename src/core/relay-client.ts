@@ -8,7 +8,7 @@ import { friendName } from './relay-friends-store.js';
 
 /** Relay connections start with one of these frames; `park` and `claim` then run the ordinary transfer protocol. */
 export const RELAY_PROTOCOL_VERSION = 1;
-export type RelayOperation = 'status' | 'park' | 'claim' | 'join' | 'invite' | 'friends' | 'gateway-status' | 'game-tunnel' | 'public-status' | 'public-enable' | 'public-disable' | 'remove-friend' | 'invite-for' | 'disband' | 'disband-status';
+export type RelayOperation = 'status' | 'park' | 'claim' | 'join' | 'invite' | 'friends' | 'gateway-status' | 'game-tunnel' | 'public-status' | 'public-enable' | 'public-disable' | 'remove-friend' | 'invite-for' | 'disband' | 'disband-status' | 'initial-publish' | 'host-start' | 'host-running' | 'host-cancel' | 'host-stopped';
 export const relayRequest = (op: RelayOperation) => ({ type: 'relay', version: RELAY_PROTOCOL_VERSION, op });
 
 export interface RelayCustody {
@@ -20,7 +20,7 @@ export interface RelayCustody {
   /** Set while a claim is waiting for that PC's acknowledgment. Only that PC can complete (retry) it. */
   pendingTarget: string | null;
 }
-export interface RelayStatus extends RelayCustody { ownerName: string | null; pendingName: string | null }
+export interface RelayStatus extends RelayCustody { ownerName: string | null; pendingName: string | null; /** True only with a current authenticated host control session; null means unknown, never idle. */ hosting: true | null; /** Null for older relays: absence never proves no pending admission. */ pendingStart: boolean | null }
 export type RelayFriendsCustody = 'unknown' | 'parked' | 'pending' | 'held';
 export interface RelayFriends {
   canManage: boolean;
@@ -150,7 +150,32 @@ function parseStatus(frame: unknown): RelayStatus | null {
   }
   return { owner: custody.owner, state: custody.state as RelayCustody['state'], generation: custody.generation as number,
     snapshotId: custody.snapshotId, pendingTarget: custody.pendingTarget as string | null,
-    ownerName: name(reply.ownerName), pendingName: name(reply.pendingName) };
+    ownerName: name(reply.ownerName), pendingName: name(reply.pendingName), hosting: reply.hosting === true ? true : null,
+    pendingStart: typeof reply.pendingStart === 'boolean' ? reply.pendingStart : null };
+}
+
+export async function relayHostState(identity: PeerIdentity, relay: RelayPeer, op: 'host-start' | 'host-running' | 'host-cancel' | 'host-stopped', revision: { generation: number; snapshotId: string; lineage: string; reservation: string }): Promise<void> {
+  const reply = await friendRequest(identity, relay, { ...relayRequest(op), ...revision });
+  if (Object.keys(reply).sort().join(',') !== 'type' || reply.type !== 'relay-host-accepted') throw new Error('Group hosting admission could not be verified; do not retry an uncertain launch automatically');
+}
+
+/** Keep authenticated liveness separate from durable custody; a disconnect never releases the world. */
+export async function openRelayHostSession(identity: PeerIdentity, relay: RelayPeer, revision: { generation: number; snapshotId: string; lineage: string; reservation: string }): Promise<{ close(): void }> {
+  const socket = await connectPeer(identity, relay.fingerprint, relay.host, relay.port);
+  try {
+    await writeFrame(socket, { ...relayRequest('host-running'), ...revision });
+    const reply = await readFrame(socket) as Record<string, unknown>;
+    if (reply?.type === 'error') throw new Error(`Relay refused: ${String(reply.message).slice(0, 512)}`);
+    if (!reply || Object.keys(reply).join(',') !== 'type' || reply.type !== 'relay-host-accepted') throw new Error('Group host session could not be verified');
+    socket.on('error', () => {});
+    return { close: () => socket.destroy() };
+  } catch (error) { socket.destroy(); throw error; }
+}
+
+/** A member's Start may request ONLY the enrolled owner's bound, safely stopped initial revision. */
+export async function relayInitialPublish(identity: PeerIdentity, relay: RelayPeer): Promise<void> {
+  const reply = await friendRequest(identity, relay, relayRequest('initial-publish'));
+  if (Object.keys(reply).sort().join(',') !== 'type' || reply.type !== 'relay-initial-published') throw new Error('Initial publication could not be verified');
 }
 
 /** Ask the relay what it holds. Read-only; also serves as the reachability check before any offer is prepared. */

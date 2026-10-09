@@ -29,7 +29,7 @@ for(const relative of files){
   assert.equal(actual,expected,'Stale or mismatched packaged source: '+relative);
   verified.push({path:relative.replaceAll('\\','/'),sha256:actual});
 }
-for(const privatePath of ['.git','.test-data','.env','.env.local','identity.json','state.json','node_modules/electron','node_modules/playwright']){
+for(const privatePath of ['docs/member-start-resume-task.md','docs/member-start-revocation-checkpoint.md','docs/member-start-continuation-report.md','docs/member-start-workflow-audit.md','.git','.test-data','.env','.env.local','identity.json','state.json','node_modules/electron','node_modules/playwright']){
   await assert.rejects(access(path.join(bundled,privatePath)),{code:'ENOENT'},'Private/development data must not be bundled: '+privatePath);
 }
 const bytes=await readFile(executable),report={executable,executableBytes:bytes.length,executableSha256:sha(bytes),sourceFilesVerified:verified.length,files:verified,scope:'Resource equivalence and packaging exclusions only; separate exact-package desktop and Minecraft checks are required.'};

@@ -40,6 +40,10 @@ export class RelayNode {
   private game?: RelayGameGateway;
   /** Optional one-click public address for this relay's player gateway; any member can turn it on. */
   publicAddress?: PublicAddress;
+  /** Running same-PC owner application binding only; no file paths or remote commands on the wire. */
+  publishStoppedInitial?: (group: string, owner: string) => Promise<void>;
+  private initialPublication?: Promise<void>;
+  private hostSessions = new Map<string, { socket: TLSSocket; generation: number; snapshotId: string }>();
   private readonly keepRevisions: number;
   private readonly log: (line: string) => void;
   private readonly defaultName: string;
@@ -107,6 +111,30 @@ export class RelayNode {
     if (config.disbandedBy || !config.trusted.some((member) => member.fingerprint === source)) throw new Error('Invite required; untrusted device refused');
   }
 
+  /** Durable admission is consequential work, even when its acknowledgment/session was lost.
+   * Read only while holding withRelayLock; never expire or infer cancellation from a disconnect. */
+  private async hostObservation(): Promise<{ owner: string; generation: number; snapshotId: string; lineage: string; state: string; reservation?: string } | null> {
+    let observation;
+    try { observation = JSON.parse(await readFile(path.join(this.root, 'host-observation.json'), 'utf8')); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+    if (!observation || typeof observation !== 'object' || Array.isArray(observation) ||
+        !['generation,lineage,owner,reservation,snapshotId,state', 'generation,lineage,owner,snapshotId,state'].includes(Object.keys(observation).sort().join(',')) ||
+        !fingerprintOK(observation.owner) || !fingerprintOK(observation.snapshotId) || !Number.isSafeInteger(observation.generation) || observation.generation < 1 ||
+        typeof observation.lineage !== 'string' || observation.lineage.length < 1 || observation.lineage.length > 512 || /[\x00-\x1f\x7f]/.test(observation.lineage) ||
+        ('reservation' in observation && (typeof observation.reservation !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(observation.reservation))) ||
+        !['starting', 'hosting', 'cancelled', 'stopped'].includes(observation.state)) throw new Error('Hosting admission recovery required: invalid durable reservation');
+    return observation;
+  }
+
+  private async pendingStart(owner?: string): Promise<boolean> {
+    const observation = await this.hostObservation();
+    return observation?.state === 'starting' && (!owner || observation.owner === owner);
+  }
+
+  private async requireNoPendingStart(owner?: string): Promise<void> {
+    if (await this.pendingStart(owner)) throw new Error('Hosting start is pending; resolve the exact admitted start before revocation or handoff. Lost acknowledgment is unknown, not cancellation.');
+  }
+
   async trust(name: string, fingerprint: string): Promise<void> {
     const memberName = friendName(name, 100);
     if (!fingerprintOK(fingerprint)) throw new Error('Fingerprint must be exactly 64 lowercase SHA256 hex digits');
@@ -129,6 +157,7 @@ export class RelayNode {
     const run = this.queue.then(() => this.mutate(async config => {
       this.requireMember(source, config);
       if (config.owner !== source) throw new Error('Only the group owner can disband the group');
+      await this.requireNoPendingStart();
       const custody = await this.custody();
       if (custody && (custody.state !== 'transferred' || custody.owner !== source || custody.pendingTarget)) throw new Error('Hand the world back to the group owner and finish every handoff before disbanding');
       config.disbandedBy = source;
@@ -149,6 +178,7 @@ export class RelayNode {
       this.requireMember(source, config);
       if (config.owner !== source) throw new Error('Only the group owner can remove a member');
       if (fingerprint === config.owner) throw new Error('The group owner cannot be removed');
+      await this.requireNoPendingStart(fingerprint);
       const custody = await this.custody();
       if (custody?.owner === fingerprint || custody?.pendingTarget === fingerprint) throw new Error('Ask this friend to hand the world back before removing them');
       if (!config.trusted.some(m => m.fingerprint === fingerprint)) return;
@@ -171,6 +201,7 @@ export class RelayNode {
       const config = await readRelayConfig(this.root, this.defaultName);
       if (!config.trusted.some((host) => host.fingerprint === fingerprint)) throw new Error('Not a trusted relay friend');
       const name = config.trusted.find((host) => host.fingerprint === fingerprint)?.name ?? 'a friend';
+      await this.requireNoPendingStart(fingerprint);
       const custody = await this.custody();
       if (custody?.pendingTarget === fingerprint) {
         throw new Error('This friend has a handoff pending; finish or decline that handoff before removing them');
@@ -365,8 +396,8 @@ export class RelayNode {
     let retained = false;
     try {
       const request = await readInviteFrame(socket, 4096, REQUEST_TIMEOUT_MS) as Record<string, unknown>;
-      if (!request || request.type !== 'relay' || request.version !== RELAY_PROTOCOL_VERSION || !['status', 'park', 'claim', 'join', 'invite', 'friends', 'gateway-status', 'game-tunnel', 'public-status', 'public-enable', 'public-disable', 'remove-friend', 'invite-for', 'disband', 'disband-status'].includes(request.op as string) ||
-          Object.keys(request).length !== (request.op === 'join' || request.op === 'game-tunnel' ? 5 : request.op === 'remove-friend' || request.op === 'invite-for' ? 4 : 3)) {
+      if (!request || request.type !== 'relay' || request.version !== RELAY_PROTOCOL_VERSION || !['status', 'park', 'claim', 'join', 'invite', 'friends', 'gateway-status', 'game-tunnel', 'public-status', 'public-enable', 'public-disable', 'remove-friend', 'invite-for', 'disband', 'disband-status', 'initial-publish', 'host-start', 'host-running', 'host-cancel', 'host-stopped'].includes(request.op as string) ||
+          Object.keys(request).length !== (['host-start', 'host-running', 'host-cancel', 'host-stopped'].includes(request.op as string) ? 7 : request.op === 'join' || request.op === 'game-tunnel' ? 5 : request.op === 'remove-friend' || request.op === 'invite-for' ? 4 : 3)) {
         throw new Error('Unsupported relay request; both ends must run the same SeedHost alpha');
       }
       if (request.op === 'join') {
@@ -383,6 +414,61 @@ export class RelayNode {
         return;
       }
       this.requireMember(source);
+      if (['host-start', 'host-running', 'host-cancel', 'host-stopped'].includes(request.op as string)) {
+        const run = this.queue.then(() => withRelayLock(this.root, async () => {
+          await this.reload(); this.requireMember(source);
+          const custody = await this.ledger().status();
+          if (custody.state !== 'transferred' || custody.owner !== source || custody.generation !== request.generation || custody.snapshotId !== request.snapshotId || custody.lineage !== request.lineage) throw new Error('Hosting refused: exact latest checked-out lineage is not held by this device');
+          if (typeof request.reservation !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(request.reservation)) throw new Error('Invalid hosting reservation');
+          const observation = await this.hostObservation();
+          const exact = observation?.owner === source && observation.generation === custody.generation && observation.snapshotId === custody.snapshotId && observation.lineage === custody.lineage && observation.reservation === request.reservation;
+          if (request.op === 'host-start') {
+            await this.requireNoPendingStart();
+            if (observation?.state === 'hosting' && observation.owner === source && observation.generation === custody.generation) throw new Error('Hosting is unresolved; stop the previous process before starting again');
+          } else {
+            if (!exact) throw new Error('Hosting reservation mismatch; explicit recovery required');
+            const allowed = request.op === 'host-running' ? ['starting', 'hosting'] : request.op === 'host-cancel' ? ['starting', 'cancelled'] : ['starting', 'hosting', 'stopped'];
+            if (!allowed.includes(observation!.state)) throw new Error('Hosting reservation cannot be resolved from this state');
+          }
+          const state = request.op === 'host-start' ? 'starting' : request.op === 'host-running' ? 'hosting' : request.op === 'host-cancel' ? 'cancelled' : 'stopped';
+          await durableJSON(path.join(this.root, 'host-observation.json'), { owner: source, generation: custody.generation, snapshotId: custody.snapshotId, lineage: custody.lineage, reservation: request.reservation, state });
+        }));
+        this.queue = run.catch(() => {});
+        await run;
+        if (request.op === 'host-running') {
+          this.hostSessions.get(source)?.socket.destroy();
+          const session = { socket, generation: request.generation as number, snapshotId: request.snapshotId as string };
+          this.hostSessions.set(source, session);
+          const clear = () => { if (this.hostSessions.get(source) === session) this.hostSessions.delete(source); };
+          socket.once('close', clear); socket.once('end', clear); socket.on('error', clear);
+          retained = true;
+        }
+        await writeFrame(socket, { type: 'relay-host-accepted' });
+        return;
+      }
+      if (request.op === 'initial-publish') {
+        const owner = await withRelayLock(this.root, async () => {
+          await this.reload(); this.requireMember(source);
+          if (await this.custody()) return null;
+          if (!this.config.owner || !this.publishStoppedInitial) throw new Error('The group owner application is offline or not bound here; initial hosting status is unknown');
+          return this.config.owner;
+        });
+        // Never hold the relay queue/lock across the callback: it parks through this same TLS listener.
+        if (owner) {
+          if (!this.initialPublication) {
+            const publication = this.publishStoppedInitial!(this.identity.fingerprint, owner);
+            this.initialPublication = publication;
+            void publication.finally(() => { if (this.initialPublication === publication) this.initialPublication = undefined; }).catch(() => {});
+          }
+          await this.initialPublication;
+        }
+        await withRelayLock(this.root, async () => {
+          await this.reload(); this.requireMember(source);
+          if (!(await this.custody())) throw new Error('No durable stopped revision was published');
+        });
+        await writeFrame(socket, { type: 'relay-initial-published' });
+        return;
+      }
       if (request.op === 'disband') {
         await this.disbandGroup(source);
         await writeFrame(socket, { type: 'relay-disbanded', owner: source });
@@ -438,8 +524,13 @@ export class RelayNode {
         return;
       }
       if (request.op === 'status') {
-        const custody = await this.custody();
-        await writeFrame(socket, { type: 'relay-status', custody,
+        const { custody, pendingStart } = await withRelayLock(this.root, async () => {
+          await this.reload(); this.requireMember(source);
+          return { custody: await this.custody(), pendingStart: await this.pendingStart() };
+        });
+        const session = custody ? this.hostSessions.get(custody.owner) : undefined;
+        const hosting = custody?.state === 'transferred' && session && !session.socket.destroyed && session.generation === custody.generation && session.snapshotId === custody.snapshotId && this.config.trusted.some(member => member.fingerprint === custody.owner) ? true : null;
+        await writeFrame(socket, { type: 'relay-status', custody, hosting, pendingStart,
           ownerName: this.nameOf(custody?.owner ?? null), pendingName: this.nameOf(custody?.pendingTarget ?? null) });
         socket.end();
         return;
@@ -473,6 +564,8 @@ export class RelayNode {
           this.log(`Declined park from ${who}: the device is not a trusted member of this group.`);
           return false;
         }
+        await this.requireNoPendingStart();
+        if ((await this.hostObservation())?.state === 'hosting') throw new Error('Hosting is unresolved; verified Stop must resolve the exact admission before handoff.');
         let current;
         try { current = await ledger.status(); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
         // The first world lineage is established by the group owner, never by whichever member answers first;
@@ -514,6 +607,7 @@ export class RelayNode {
     const offer = await withRelayLock(this.root, async () => {
       await this.reload();
       this.requireMember(target);
+      await this.requireNoPendingStart();
       const custody = await this.custody();
       if (!custody) throw new Error('The relay holds no server yet. Park one on it first.');
       if (custody.state === 'owned') {
@@ -549,6 +643,8 @@ export class RelayNode {
   }
 
   async close(): Promise<void> {
+    for (const session of this.hostSessions.values()) session.socket.destroy();
+    this.hostSessions.clear();
     await this.publicAddress?.close();
     if (this.game) { await this.game.close(); this.game = undefined; }
     if (this.listener) { await this.listener.close(); this.listener = undefined; }

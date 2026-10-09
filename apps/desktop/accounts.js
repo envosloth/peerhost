@@ -19,8 +19,8 @@
     if(key===renderedGroupsKey){for(const button of $('hosting-group-list').querySelectorAll('button'))button.disabled=working;return;}
     const nodes=groups.map(g=>{
       const li=element('li','account-request');li.dataset.hostingGroup=g.fingerprint;
-      li.append(element('p','friend-name',g.pending?`Remote group: ${g.name}`:g.name),element('p','field-help',g.pending?'No local server bound · World not on this PC yet. Download only when the owner has handed it to the group.':`Server: ${g.serverName} · ${g.localAuthority?'Created on this PC':'Joined group'} · open Multi-host to check members and custody.`));
-      const button=element('button','button button-small',g.pending?'Download as a new server':'Open server Multi-host');button.type='button';button.disabled=working;
+      li.append(element('p','friend-name',g.pending?`Remote group: ${g.name}`:g.name),element('p','field-help',g.pending?'No local server bound · World not on this PC yet. Start syncs the complete latest safely stopped server, then acquires exclusive hosting and launches it using this PC’s Java. An active or unknown holder cannot be taken over.':`Server: ${g.serverName} · ${g.localAuthority?'Created on this PC':'Joined group'} · open Multi-host to check members and custody.`));
+      const button=element('button','button button-small',g.pending?'Start server':'Open server Multi-host');button.type='button';button.disabled=working;
       button.addEventListener('click',()=>{if(!button.disabled)window.dispatchEvent(new CustomEvent('seedhost-group-action',{detail:{fingerprint:g.fingerprint,serverId:g.serverId,pending:g.pending}}));});
       li.append(button);
       if(g.localAuthority){const routeButton=element('button','text-button','Configure hosting connection');routeButton.type='button';routeButton.dataset.controlRoute=g.fingerprint;routeButton.disabled=working;routeButton.addEventListener('click',()=>{if(!routeButton.disabled)void openControlRoute(g.fingerprint);});li.append(routeButton);}
@@ -331,7 +331,7 @@
       const peer=binding?.endpoint||saved?.peers?.find(p=>validPin(p.fingerprint)&&p.fingerprint===binding?.fingerprint);
       const scopeMatches=Boolean(result)&&(!('serverId' in result)||(result.serverId===null?Boolean(pending):validText(result.serverId)&&saved?.servers?.some(s=>s.id===result.serverId&&s.group?.fingerprint===trustedPin)));
       if(result?.joined!==true||!scopeMatches||!validText(r.group)||result.group!==r.group||!binding||!peer||!endpoint||!validText(endpoint.host)||!validText(peer.host)||!validPort(endpoint.port)||!validPort(peer.port)||peer.host!==endpoint.host||peer.port!==endpoint.port||('fingerprint' in result&&!validPin(trustedPin))||('requestId' in result&&result.requestId!==r.id))throw new Error('Group enrollment could not be confirmed. This PC may already be enrolled; refresh members and check the group before retrying.');
-      $('hosting-request-feedback').textContent=bound?(saved.server?`Joined ${result.group}. Your existing world stays on this PC; nothing was downloaded or started.`:`Joined ${result.group}. Your world has not been downloaded or started.`):`Joined ${result.group}. The shared world is not on this PC yet; nothing was downloaded, started or changed. Use Friends → Your hosting groups → Download as a new server when the owner has handed it over.`;
+      $('hosting-request-feedback').textContent=bound?(saved.server?`Joined ${result.group}. Your existing world stays on this PC; nothing was downloaded or started.`:`Joined ${result.group}. Your world has not been downloaded or started.`):`Joined ${result.group}. The shared world is not on this PC yet; nothing was downloaded, started or changed. Use Friends → Your hosting groups → Start server to sync the latest safely stopped world and host it. Active or unknown holders cannot be taken over.`;
       await readGroups(current);
       if(!current())return;
       render(); changed();

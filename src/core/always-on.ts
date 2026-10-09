@@ -134,7 +134,7 @@ export class AlwaysOnHost {
   private groupHost?: AlwaysOnHost;
   private retainedRole?: AlwaysOnHost;
   private retainedRoleGeneration?: string;
-  constructor(readonly root: string, private readonly identity: PeerIdentity, private readonly options: { port?: number; gamePorts?: number[]; reservedGamePorts?: number[]; discoveryPort?: number; host?: string; advertise?: { host: string; port: number }; loadGroupIdentity?: (root: string) => Promise<PeerIdentity> } = {}) {
+  constructor(readonly root: string, private readonly identity: PeerIdentity, private readonly options: { port?: number; gamePorts?: number[]; reservedGamePorts?: number[]; discoveryPort?: number; host?: string; advertise?: { host: string; port: number }; loadGroupIdentity?: (root: string) => Promise<PeerIdentity>; publishStoppedInitial?: (group: string, owner: string) => Promise<void> } = {}) {
     const reserved = options.reservedGamePorts;
     if (reserved !== undefined && (!Array.isArray(reserved) || Array.from(reserved).some(port => !Number.isInteger(port) || port < 1 || port > 65535))) {
       throw new Error('reservedGamePorts must be an array of integer ports between 1 and 65535');
@@ -213,7 +213,7 @@ export class AlwaysOnHost {
     if (existing) await readFile(path.join(root, 'identity.json'));
     const identity = await this.options.loadGroupIdentity(root);
     // Never inherit public routing, fixed ports, or the old role opt-in into a new group.
-    return new AlwaysOnHost(root, identity, { host: this.options.host, port: this.options.port === 0 ? 0 : undefined, gamePorts: this.options.gamePorts, reservedGamePorts: this.options.reservedGamePorts, discoveryPort: this.options.discoveryPort, loadGroupIdentity: this.options.loadGroupIdentity });
+    return new AlwaysOnHost(root, identity, { host: this.options.host, port: this.options.port === 0 ? 0 : undefined, gamePorts: this.options.gamePorts, reservedGamePorts: this.options.reservedGamePorts, discoveryPort: this.options.discoveryPort, loadGroupIdentity: this.options.loadGroupIdentity, publishStoppedInitial: this.options.publishStoppedInitial });
   }
 
   async startGroup(name: string, creating = false): Promise<AlwaysOnStatus> {
@@ -311,6 +311,7 @@ export class AlwaysOnHost {
       }
     }
     const relay = new RelayNode(this.root, this.identity, { log: () => undefined });
+    relay.publishStoppedInitial = this.options.publishStoppedInitial;
     await relay.open();
     if (name) await relay.setName(name);
     const host = this.options.host ?? '0.0.0.0';

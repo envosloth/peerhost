@@ -129,6 +129,19 @@ export async function saveOnboarding(root: string, input: unknown, serverId?: st
   const handle = await open(temporary, 'wx', 0o600);
   try { await handle.writeFile(JSON.stringify(progress)); await handle.sync(); }
   finally { await handle.close(); }
-  try { await rename(temporary, file); await syncDirectory(root); }
-  finally { await rm(temporary, { force: true }); }
+  try {
+    // Windows ordinary readers can deny delete-sharing. Keep atomic replacement and
+    // the staged bytes; retry only transient sharing denials, never unlink the target.
+    const delays = process.platform === 'win32' ? [10, 20, 40, 80, 160] : [];
+    for (let attempt = 0; ; attempt++) {
+      const target = await readOnboarding(root, false, serverId);
+      if (target.error) throw new Error(target.error);
+      try { await rename(temporary, file); break; }
+      catch (error) {
+        if (attempt >= delays.length || !['EPERM', 'EBUSY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+        await new Promise(resolve => setTimeout(resolve, delays[attempt]));
+      }
+    }
+    await syncDirectory(root);
+  } finally { await rm(temporary, { force: true }); }
 }

@@ -23,7 +23,7 @@
     searchSetupMods: 'Searching available mods…', searchMods: 'Searching available mods…',
     listSnapshots: 'Loading backups…', updateCheck: 'Checking for updates…', updateDownload: 'Downloading and verifying the update…', updateInstall: 'Preparing to restart and install the update…',
     importServer: 'Choosing / copying your server…', createSnapshot: 'Saving a backup…',
-    saveProfile: 'Saving launch settings…', startServer: 'Starting server…', stopServer: 'Stopping server and saving the world…',
+    saveProfile: 'Saving launch settings…', startGroup: 'Syncing the latest stopped server, acquiring exclusive hosting and starting…', startServer: 'Syncing / acquiring / starting server…', stopServer: 'Stopping server, saving and publishing the latest world…',
     createServer: 'Setting up your world — downloading and checking the official files (and Java, if needed)… this can take a few minutes.', saveOnboarding: 'Saving…',
     configureSimpleProfile: 'Saving Java and memory…', pickJava: 'Checking the Java you chose…', restoreSnapshot: 'Restoring backup…',
     saveGameGateway: 'Saving…', checkGameGateway: 'Testing the player address…', selectServer: 'Switching server…', deleteServer: 'Deleting the server and its backups…',
@@ -992,8 +992,8 @@
     $('server-status').classList.toggle('is-working', ['starting', 'stopping'].includes(server?.state));
     $('server-status').classList.toggle('is-failed', server?.state === 'failed');
     $('import-server').disabled = blocked || active;
-    $('start-server').disabled = blocked || !server || Boolean(server.modInstallError) || active || !ownsServer() || profileDirty || !server.profile?.executable || !Array.isArray(server.profile?.args);
-    $('stop-server').disabled = blocked || !server || !['running', 'starting'].includes(server.state);
+    $('start-server').disabled = blocked || !server || Boolean(server.modInstallError) || active || profileDirty || (!server.group && (!ownsServer() || !server.profile?.executable || !Array.isArray(server.profile?.args)));
+    $('stop-server').disabled = blocked || !server || (!['running', 'starting'].includes(server.state) && !(server.group && isStopped() && ownership?.owner === state?.deviceId && ['owned', 'offered'].includes(ownership?.state)));
     $('create-snapshot').disabled = !canSnapshot();
     const cleanable = Boolean(server) && isStopped() && ['owned', 'offered', 'transferred'].includes(ownership?.state);
     $('clean-up').disabled = blocked || !cleanable;
@@ -1345,11 +1345,12 @@
     const group = event.detail;
     if (!group || !/^[a-f0-9]{64}$/.test(group.fingerprint) || isBusy()) return;
     if (group.pending) {
-      $('hosting-group-feedback').textContent = 'Downloading as a new server… Nothing will start automatically.';
-      const ok = await runAction('claimPendingGroup', { fingerprint: group.fingerprint }, () => {
-        if (!state?.servers?.some(s => s.group?.fingerprint === group.fingerprint) || state?.pendingGroups?.some(g => g.fingerprint === group.fingerprint)) throw new Error('The downloaded group was not confirmed in the server library.');
+      $('hosting-group-feedback').textContent = 'Syncing the latest stopped server, acquiring hosting authority and starting…';
+      const ok = await runAction('startGroup', { fingerprint: group.fingerprint }, () => {
+        const server = state?.servers?.find(s => s.group?.fingerprint === group.fingerprint);
+        if (!server || state?.pendingGroups?.some(g => g.fingerprint === group.fingerprint)) throw new Error('The group server was not confirmed in the library.');
       });
-      $('hosting-group-feedback').textContent = ok ? 'Downloaded as a new server. Review its launch settings before starting.' : 'Download was not confirmed. Check the group’s custody and retry the same group; your unrelated servers are unchanged.';
+      $('hosting-group-feedback').textContent = ok ? 'Group Start completed.' : 'Start needs attention. Your unrelated servers are unchanged. If local Java setup is required, open the received server’s settings, configure its local launch profile and retry Start.';
       window.dispatchEvent(new Event('seedhost-account-changed'));
     } else if (typeof group.serverId === 'string') {
       if (!await runAction('selectServer', { id: group.serverId })) return;
