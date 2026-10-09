@@ -86,7 +86,15 @@ async function harness(options = {}) {
   function $(id) { return ctx.$(id); }
 }
 
-// These tests assert the intended safe behavior and should go RED on the current source.
+// Regressions exercise real renderer functions behind an isolated fixture.
+test('native managed-folder refusal remains inline without an in-app editor', async () => {
+  const h = await harness({ call: async method => { if (method === 'openServerFolder') throw new Error('Unreadable managed folder'); } });
+  h.select('server-files'); await h.$('file-open-folder').fire('click');
+  assert.match(h.$('file-feedback').textContent, /Unreadable managed folder/);
+  assert.equal(h.calls.some(c => c.method === 'listServerFiles'), false);
+  assert.equal(h.ids.has('file-editor'), false);
+});
+
 test('native null consent must not become a successful runAction result', async () => {
   const h = await harness(); const ok = await h.ctx.actualRunAction('managePlayer', { id: A, action: 'kick', name: 'Alex' });
   console.log('OBSERVED runAction null-cancel return:', ok);
@@ -99,29 +107,9 @@ test('cancelled player action must not claim a command was sent', async () => {
   assert.doesNotMatch(h.$('player-feedback').textContent, /Command sent/);
 });
 
-test('cancelled file write must not claim verified save for unchanged text', async () => {
-  const text = 'unchanged'; const h = await harness({ call: async (method, payload) => method === 'readServerFile' ? { handled: true, result: { serverId: payload.id, path: payload.path, text, hash: hash(text), bytes: Buffer.byteLength(text) } } : null });
-  await h.open('a.txt'); await h.$('file-save').fire('click');
-  console.log('OBSERVED null write-cancel feedback:', h.$('file-feedback').textContent);
-  assert.doesNotMatch(h.$('file-feedback').textContent, /Verified saved/);
-});
 
-test('late file-save verification must not retarget a newer editor after A-B-A selection', async () => {
-  const verify = defer(); let aReads = 0; const texts = { 'a.txt': 'A contents', 'b.txt': 'B contents' };
-  const h = await harness({ call: async (method, payload) => {
-    if (method === 'readServerFile') { const result = { serverId: payload.id, path: payload.path, text: texts[payload.path], hash: hash(texts[payload.path]), bytes: Buffer.byteLength(texts[payload.path]) }; if (payload.path === 'a.txt' && ++aReads === 2) return { handled: true, result: await verify.promise }; return { handled: true, result }; }
-    if (method === 'writeServerFile') return { handled: true, result: { serverId: payload.id, path: payload.path, hash: hash(payload.text), bytes: Buffer.byteLength(payload.text), backupFile: 'scratch-only' } };
-    return null;
-  } });
-  await h.open('a.txt'); const saving = h.$('file-save').fire('click'); await flush();
-  assert.equal(aReads, 2, 'old verify really is in flight');
-  await h.change(B); await h.change(A); await h.open('b.txt');
-  assert.equal(h.$('file-name').textContent, 'b.txt'); assert.equal(h.$('file-editor').value, texts['b.txt']);
-  verify.resolve({ serverId: A, path: 'a.txt', text: texts['a.txt'], hash: hash(texts['a.txt']), bytes: Buffer.byteLength(texts['a.txt']) }); await saving; await flush();
-  await h.$('file-save').fire('click'); const writes = h.calls.filter(c => c.method === 'writeServerFile');
-  console.log('OBSERVED displayed name/current text/second write:', JSON.stringify({ displayed: h.$('file-name').textContent, editor: h.$('file-editor').value, secondWrite: writes[1].payload }));
-  assert.equal(writes[1].payload.path, 'b.txt', 'the newer visible b.txt editor must not write b contents into a.txt');
-});
+
+
 
 test('scheduler read-back must accept actual backend trimmed names without an unconfirmed-save error', async () => {
   const ts = fs.readFileSync(path.join(repo, 'src/core/server-scheduler.ts'), 'utf8');
@@ -142,36 +130,11 @@ test('disabled scheduler state must be displayed and prevent unavailable mutatio
   assert.equal(h.$('schedule-save').disabled, true, 'backend explicitly disabled scheduling; save must not remain enabled');
 });
 
-test('unconfirmed file read-back must invalidate saving until an explicit reload', async () => {
-  let reads = 0; const before = 'old text', newer = 'new text';
-  const h = await harness({ call: async (method, payload) => {
-    if (method === 'readServerFile') { if (++reads > 1) throw new Error('Verification failed'); return { handled: true, result: { serverId: payload.id, path: payload.path, text: before, hash: hash(before), bytes: before.length } }; }
-    if (method === 'writeServerFile') return { handled: true, result: { serverId: payload.id, path: payload.path, hash: hash(newer), bytes: newer.length, backupFile: 'scratch-only' } };
-    return null;
-  } });
-  await h.open('a.txt'); h.$('file-editor').value = newer; await h.$('file-save').fire('click');
-  console.log('OBSERVED unconfirmed-save disabled / feedback:', JSON.stringify({ disabled: h.$('file-save').disabled, feedback: h.$('file-feedback').textContent }));
-  assert.equal(h.$('file-save').disabled, true, 'an uncertain write must require reload rather than reusing the stale hash');
-});
 
-test('read-only text path from backend listing must not expose an enabled Save action', async () => {
-  const h = await harness({ call: async (method, payload) => {
-    if (method === 'listServerFiles') return { handled: true, result: { serverId: payload.id, path: payload.path, entries: [{ name: 'latest.log', path: 'logs/latest.log', kind: 'file', bytes: 3, editable: false }], truncated: false } };
-    if (method === 'readServerFile') return { handled: true, result: { serverId: payload.id, path: payload.path, text: 'log', hash: hash('log'), bytes: 3 } };
-    return null;
-  } });
-  h.select('server-files'); await flush(); await h.open('logs/latest.log');
-  console.log('OBSERVED backend read-only file save enabled:', !h.$('file-save').disabled);
-  assert.equal(h.$('file-save').disabled, true, 'server-files.ts explicitly refuses .log writes');
-});
 
-test('file browsing failure must have feedback outside the hidden unopened editor', async () => {
-  const h = await harness({ call: async method => { if (method === 'listServerFiles') throw new Error('Unreadable managed folder'); return null; } });
-  h.select('server-files'); await flush();
-  const feedback = h.$('file-feedback'); let invisible = false; for (let n = feedback; n; n = n.parentElement) if (n.hidden) invisible = true;
-  console.log('OBSERVED file-list failure / feedback hidden:', JSON.stringify({ feedback: feedback.textContent, hidden: invisible }));
-  assert.match(feedback.textContent, /Couldn’t list/); assert.equal(invisible, false, 'folder error must be visible before any file is open');
-});
+
+
+
 
 test('fresher selected-server getState logs must not be masked forever by dashboard cache on Home', async () => {
   const h = await harness(); h.dashboards[A].logs = ['older dashboard line']; await h.$('dashboard-refresh').fire('click'); h.select('home'); await h.change(A, false, ['older dashboard line', 'new output']);

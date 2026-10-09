@@ -121,6 +121,7 @@
     </aside>
 
     <main class="workspace" id="workspace" tabindex="-1">
+      <div id="app-notices" class="app-notices"><p id="app-notice" class="warning-copy" role="status" aria-live="polite" hidden></p><section id="incoming-handoff" class="well" aria-label="Incoming world handoff" hidden><h2>Incoming world handoff</h2><p id="incoming-handoff-copy" class="field-help"></p><p class="warning-copy">Accept only a world you trust. Receiving files does not authorize running them; nothing starts automatically.</p><div class="page-actions"><button id="incoming-handoff-decline" type="button" class="button">Decline</button><button id="incoming-handoff-accept" type="button" class="button button-primary">Accept world files</button></div><p id="incoming-handoff-feedback" class="field-help" role="status"></p></section></div>
       <!-- No title strip: a borderless drag row on the page carries the live status and the window buttons. -->
       <div class="topbar">
         <p id="activity-message" class="activity" role="status" aria-live="polite">Reading app state…</p>
@@ -218,27 +219,27 @@
 
             <section id="snapshot-history" class="snapshot-history card" aria-labelledby="snapshot-history-title" hidden><div class="compact-heading"><h3 id="snapshot-history-title">Backups</h3><button id="refresh-snapshots" type="button" class="text-button">Refresh</button></div><p class="field-help">Saved copies of your world, kept locally on this PC — not a remote backup. Restoring never deletes anything: your current world is kept and backed up first.</p><p id="snapshot-history-status" class="field-help" role="status"></p><ul id="snapshot-list" class="snapshot-list" aria-label="Backups"></ul></section>
 
-            <details id="mods-details" class="profile-details card">
-              <summary><svg class="icon summary-chevron" aria-hidden="true"><use href="#i-chevron"/></svg><span class="summary-title">Mods</span><span id="mods-summary" class="summary-meta">Server &amp; client</span></summary>
+            <section id="mods-details" class="card mods-workspace" aria-label="Mods discovery and installed files">
+              <header class="mods-workspace-head"><h2>Discover mods</h2><span id="mods-summary" class="summary-meta">Server &amp; client</span></header>
               <section id="mod-browser" class="mod-browser" aria-labelledby="mod-browser-heading">
                 <div class="compact-heading"><h3 id="mod-browser-heading">Browse Modrinth</h3><span class="subtle-label">COMPATIBLE MODS</span></div>
-                <p class="field-help">Popular mods first. Search and installs use your saved loader and Minecraft version. Installing asks for native confirmation, including required dependencies.</p>
+                <p class="field-help">Search compatible mods using the loader and Minecraft version below. Installs include required dependencies and verified download hashes; nothing starts automatically.</p>
                 <form id="mod-target-form" class="mod-target-form" novalidate>
-                  <div><label for="mod-loader">Mod loader</label><select id="mod-loader" disabled><option value="">Choose loader</option><option value="fabric">Fabric</option><option value="quilt">Quilt</option><option value="forge">Forge</option><option value="neoforge">NeoForge</option></select></div>
+                  <div><label for="mod-loader">Mod loader</label><div class="chip-options mod-choice-options" data-bridge="mod-loader" role="radiogroup" aria-label="Mod loader"></div><select id="mod-loader" class="select-bridge" tabindex="-1" aria-hidden="true" disabled><option value="">Choose loader</option><option value="fabric">Fabric</option><option value="quilt">Quilt</option><option value="forge">Forge</option><option value="neoforge">NeoForge</option></select></div>
                   <div><label for="mod-game-version">Minecraft version</label><input id="mod-game-version" type="text" maxlength="32" placeholder="e.g. 1.21.1" autocomplete="off" spellcheck="false" disabled></div>
                   <button id="save-mod-target" type="submit" class="button button-small" disabled>Save compatibility</button>
                 </form>
                 <p id="mod-target-feedback" class="field-help" role="status">Import a modded server to browse compatible mods.</p>
                 <form id="mod-search-form" class="mod-search-form" role="search">
                   <label class="sr-only" for="mod-query">Search Modrinth mods</label><input id="mod-query" type="search" maxlength="200" placeholder="Search mods, e.g. Lithium" autocomplete="off" disabled>
-                  <div class="mod-sort-field"><label for="mod-sort">Sort</label><select id="mod-sort" aria-describedby="mod-search-status" disabled><option value="downloads">Downloads</option><option value="popularity">Popularity (followers)</option><option value="title-asc">A–Z (this page only)</option><option value="title-desc">Z–A (this page only)</option><option value="relevance">Relevance</option><option value="newest">Newest</option><option value="updated">Recently updated</option></select></div>
+                  <div class="mod-sort-field"><label for="mod-sort">Sort</label><div class="chip-options mod-choice-options" data-bridge="mod-sort" role="radiogroup" aria-label="Sort Modrinth results"></div><select id="mod-sort" class="select-bridge" tabindex="-1" aria-hidden="true" aria-describedby="mod-search-status" disabled><option value="downloads">Downloads</option><option value="popularity">Popularity (followers)</option><option value="title-asc">A–Z (this page only)</option><option value="title-desc">Z–A (this page only)</option><option value="relevance">Relevance</option><option value="newest">Newest</option><option value="updated">Recently updated</option></select></div>
                   <button id="search-mods" type="submit" class="button button-small" disabled>Search</button>
                 </form>
                 <p id="mod-search-status" class="field-help" role="status" aria-live="polite">Save compatibility to browse mods.</p>
-                <ul id="mod-results" class="mod-results" aria-label="Compatible Modrinth mods" aria-busy="false"></ul>
+                <fieldset id="mod-placement-controls" class="mod-placement-controls"><legend>Install placement</legend><p class="field-help">Automatic uses the project’s published server/client requirements. Overrides remain subject to dependency and compatibility checks.</p><div class="chip-options"><label class="chip-option"><input type="radio" name="mod-placement" value="auto" checked><span>Automatic</span></label><label class="chip-option"><input type="radio" name="mod-placement" value="server"><span>Server</span></label><label class="chip-option"><input type="radio" name="mod-placement" value="client"><span>Client pack</span></label><label class="chip-option"><input type="radio" name="mod-placement" value="both"><span>Server + client</span></label></div></fieldset><ul id="mod-results" class="mod-results" aria-label="Compatible Modrinth mods" aria-busy="false"></ul>
                 <div class="mod-pagination"><button id="mod-previous" type="button" class="button button-small" disabled>Previous</button><span id="mod-page" class="field-help">No results loaded</span><button id="mod-next" type="button" class="button button-small" disabled>Next</button></div>
               </section>
-              <h3 class="installed-mods-heading">Installed files <span class="section-caption">Advanced: import local .jar files below</span></h3>
+              <h2 class="installed-mods-heading">Installed mods <span class="section-caption">Server and player files kept separate</span></h2>
               <div class="mods-panel">
                 <div class="mods-column well">
                   <div class="compact-heading"><h3>Server mods <span class="section-caption">mods/</span></h3><button id="add-server-mods" type="button" class="button button-small" disabled>Add .jar…</button></div>
@@ -253,7 +254,7 @@
                 </div>
               </div>
               <p class="warning-copy mods-warning">Mods run code on every PC that loads them. Only add files you trust.</p>
-            </details>
+                          </section>
 
             <details id="profile-details" class="profile-details card">
               <summary><svg class="icon summary-chevron" aria-hidden="true"><use href="#i-chevron"/></svg><span class="summary-title">Advanced launch settings</span><span class="summary-meta">Java path &amp; arguments</span></summary>
@@ -373,6 +374,7 @@
                   <div class="compact-heading peer-list-heading"><h3>Trusted peers</h3><span id="peer-count" class="subtle-label">NONE ADDED</span></div>
                   <div id="peers-empty" class="peers-empty well"><p>No trusted peers yet.</p><span>Exchange fingerprints and listener endpoints first. Adding a peer does not establish a connection.</span></div>
                   <ul id="peer-list" class="peer-list" aria-label="Trusted peers"></ul>
+                  <p id="peer-transfer-warning" class="warning-copy">Send snapshot shares world files, including configuration and player data, without granting ownership. Hand off transfers hosting authority to the named, pinned peer: this PC is fenced before transfer and remains fenced if the acknowledgment is lost. Retry the same offer to reconcile it; an explicit recipient decline restores ownership. The recipient must accept inline. Nothing starts automatically. Use only peers whose full fingerprint you have verified.</p>
                   <details id="add-peer-details" class="add-peer-details well"><summary><svg class="icon summary-chevron" aria-hidden="true"><use href="#i-chevron"/></svg><span class="summary-title">Trust a peer</span><span aria-hidden="true" class="summary-plus">＋</span></summary><form id="peer-form" class="peer-form" novalidate>
                     <label for="peer-name">Peer name</label><input id="peer-name" type="text" placeholder="A name you recognize" maxlength="80" autocomplete="off" disabled>
                     <label for="peer-fingerprint">Verified fingerprint</label><textarea id="peer-fingerprint" class="mono" rows="2" placeholder="64 lowercase hexadecimal characters" spellcheck="false" autocomplete="off" disabled aria-describedby="peer-trust-help"></textarea>
@@ -480,7 +482,7 @@
         <button type="button" data-setup-step="server"><span class="step-dot" aria-hidden="true"></span><span class="step-copy"><span class="step-name">Your server</span><small>Create, import or join</small></span></button>
         <button type="button" data-setup-step="runtime"><span class="step-dot" aria-hidden="true"></span><span class="step-copy"><span class="step-name">Memory</span><small>Already set up for you</small></span></button>
         <button type="button" data-setup-step="friends"><span class="step-dot" aria-hidden="true"></span><span class="step-copy"><span class="step-name">Friends</span><small>Optional · share hosting</small></span></button>
-        <button type="button" data-setup-step="gateway"><span class="step-dot" aria-hidden="true"></span><span class="step-copy"><span class="step-name">Always-on PC</span><small>Optional · one address</small></span></button>
+
         <button type="button" data-setup-step="ready"><span class="step-dot" aria-hidden="true"></span><span class="step-copy"><span class="step-name">Done</span><small>Start and play</small></span></button>
       </nav>
       <div class="setup-art" aria-hidden="true"><svg class="phyllo" viewBox="-100 -100 200 200" data-seeds="150"></svg><svg class="logo setup-art-logo"><use href="#logo"/></svg></div>
@@ -531,14 +533,15 @@
             <fieldset id="setup-mods" class="form-section setup-mods" hidden>
               <legend class="form-section-head"><span class="section-num" aria-hidden="true">4</span><span><span class="section-title">Mods <span class="optional-tag">optional</span></span><span class="field-help">Pick any mods from Modrinth. Only ones that work with your version are shown; required extras (like Fabric API) are added for you.</span></span></legend>
               <div class="setup-mods-search"><input id="setup-mod-query" type="search" maxlength="200" placeholder="Search mods — e.g. Sodium, Lithium, Waystones" autocomplete="off" spellcheck="false" aria-label="Search mods"><button id="setup-mod-search" type="button" class="button">Search</button></div>
-              <label for="setup-mod-sort">Sort Modrinth results</label><select id="setup-mod-sort" aria-describedby="setup-mod-status"><option value="downloads">Downloads</option><option value="popularity">Popularity (followers)</option><option value="title-asc">A–Z (this page only)</option><option value="title-desc">Z–A (this page only)</option><option value="relevance">Relevance</option><option value="newest">Newest</option><option value="updated">Recently updated</option></select>
+              <label for="setup-mod-sort">Sort Modrinth results</label><div class="chip-options mod-choice-options" data-bridge="setup-mod-sort" role="radiogroup" aria-label="Sort Modrinth results"></div><select id="setup-mod-sort" class="select-bridge" tabindex="-1" aria-hidden="true" aria-describedby="setup-mod-status"><option value="downloads">Downloads</option><option value="popularity">Popularity (followers)</option><option value="title-asc">A–Z (this page only)</option><option value="title-desc">Z–A (this page only)</option><option value="relevance">Relevance</option><option value="newest">Newest</option><option value="updated">Recently updated</option></select>
               <ul id="setup-mod-list" class="setup-mod-list" aria-label="Mods"></ul>
               <p id="setup-mod-status" class="field-help" role="status"></p>
               <div class="mod-pagination"><button id="setup-mod-previous" type="button" class="button button-small" disabled>Previous</button><span id="setup-mod-page" class="field-help">No results loaded</span><button id="setup-mod-next" type="button" class="button button-small" disabled>Next</button></div>
               <p id="setup-mod-picked" class="setup-mod-picked" hidden></p>
             </fieldset>
             <div class="setup-create-actions"><button id="setup-create" type="submit" class="button button-primary button-large">Create my world</button><span class="field-help">Downloads and checks the official server files, plus Java if this PC needs it. Nothing starts until you press Start.</span></div>
-            <p id="setup-eula-note" class="field-help eula-note">By creating a world you agree to the <button type="button" data-setup-link="eula" class="text-button inline-link">Minecraft EULA</button>.</p>
+            <p id="setup-download-note" class="field-help">Choose a download folder in the native picker. Your chosen directory receives the official server files in a new app-created subfolder. Seed Hosting keeps a separate managed working copy for hosting and safe handoffs; Server files opens that working copy, not the downloaded originals.</p>
+             <p id="setup-eula-note" class="field-help eula-note">By creating a world you agree to the <button type="button" data-setup-link="eula" class="text-button inline-link">Minecraft EULA</button>.</p>
             <button type="button" data-setup-link="fabric" class="text-button" hidden>About Fabric ↗</button>
           </form>
         </section>
@@ -566,7 +569,7 @@
           <details class="setup-more"><summary>Using a modpack or custom start command?</summary><p>Modpack start files and arguments are kept as they are. For anything unusual, edit the full command yourself.</p><button id="setup-advanced" type="button" class="text-button">Open advanced launch settings</button></details>
         </section>
         <section id="setup-friends" data-setup-panel="friends" hidden><h3>Friends <span class="optional-tag">optional</span></h3><p class="setup-lead">Add friends by username and answer friend requests right here when signed in. Friendships do not share hosting or world files; hosting invitations live in each server’s Multi-host page.</p><ul class="setup-points"><li><strong>Have a friend request?</strong> Sign in, then accept it below without leaving this guide. Hosting invitations are separate, in Multi-host.</li><li><strong>Starting a group?</strong> Sign in, then create your hosting group in a server’s Multi-host page.</li><li><strong>Just playing on your own Wi-Fi?</strong> Skip this — friends can join your server directly.</li></ul><div id="setup-friends-slot"><form id="setup-friend-add-form" hidden><label for="setup-friend-username">Friend’s username</label><div class="account-input-row"><input id="setup-friend-username" type="text" minlength="3" maxlength="24" pattern="[A-Za-z0-9_]{3,24}" autocomplete="off" spellcheck="false" required><button id="setup-friend-send" type="submit" class="button button-primary">Send friend request</button></div></form><ul id="setup-friend-request-list" aria-label="Friend requests in setup"></ul><p id="setup-friend-feedback" class="field-help" role="status"></p><p id="setup-friends-status" class="field-help" role="status">Open the Friends page to sign in, add friends by username and answer requests.</p><button id="setup-open-friends" type="button" class="button button-primary">Open Friends</button></div></section>
-        <section id="setup-gateway" data-setup-panel="gateway" hidden><h3>Always-on PC <span class="optional-tag">optional</span></h3><p class="setup-lead">A spare computer that stays on — an old laptop, mini PC or home server — keeps your world between play sessions and gives friends one address to join, even when you’re offline. It takes one click.</p>
+        <section id="setup-gateway" hidden><h3>Always-on PC <span class="optional-tag">optional</span></h3><p class="setup-lead">A spare computer that stays on — an old laptop, mini PC or home server — keeps your world between play sessions and gives friends one address to join, even when you’re offline. It takes one click.</p>
           <div id="always-on-choices" class="setup-choices always-on-choices">
             <button id="always-on-be" type="button" class="choice-card"><span class="choice-icon" aria-hidden="true"><svg class="icon"><use href="#i-server"/></svg></span><strong>This PC stays on</strong><span>Make this computer the always-on PC. Seed Hosting runs it for you — nothing to install.</span><span class="choice-go" aria-hidden="true">Make it the always-on PC →</span></button>
             <button id="always-on-pair" type="button" class="choice-card"><span class="choice-icon" aria-hidden="true"><svg class="icon"><use href="#i-friends"/></svg></span><strong>I play on this PC</strong><span>Connect to your always-on PC with the code it shows. Takes a few seconds.</span><span class="choice-go" aria-hidden="true">Enter the code →</span></button>
@@ -595,10 +598,7 @@
       <footer class="setup-footer"><button id="setup-back" type="button" class="button">Back</button><p id="setup-status" class="setup-status" role="status" aria-live="polite"></p><button id="setup-later" type="button" class="text-button">Set up later</button><button id="setup-unskip" type="button" class="text-button" hidden>Undo skip</button><button id="setup-skip" type="button" class="button" hidden>Skip</button><button id="setup-next" type="button" class="button button-primary">Next</button></footer>
     </div>
   </dialog>
-  <dialog id="send-dialog" class="send-dialog" aria-labelledby="send-dialog-title" aria-describedby="send-dialog-warning">
-    <div class="dialog-head"><p class="eyebrow">PEER SNAPSHOT</p><button id="close-send" type="button" class="dialog-close icon-button" aria-label="Cancel snapshot send" title="Close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
-    <h2 id="send-dialog-title">Send this snapshot?</h2><p id="send-dialog-recipient"></p><code id="send-dialog-fingerprint" class="mono dialog-fingerprint well"></code><p id="send-dialog-snapshot" class="field-help mono"></p><p id="send-dialog-warning" class="warning-copy">This shares server files, which may contain private configuration or player data. Verify the recipient’s fingerprint. Sending is not proof of a completed hosting handoff.</p><div class="dialog-actions"><button id="cancel-send" type="button" class="button">Cancel</button><button id="confirm-send" type="button" class="button button-primary" disabled>Send snapshot</button></div>
-  </dialog>
+
   <dialog id="hosting-route-dialog" class="account-dialog" aria-labelledby="hosting-route-title">
     <div class="compact-heading"><h2 id="hosting-route-title">Hosting control connection</h2><button id="hosting-route-close" type="button" class="text-button">Close</button></div>
     <p id="hosting-route-listener" class="field-help"></p>

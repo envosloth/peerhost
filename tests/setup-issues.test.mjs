@@ -111,8 +111,8 @@ test('setup completion requires saved configuration or explicit durable optional
   await app.saveOnboarding({ ...done, skipped: ['friends', 'gateway'] });
   await app.close(); const reopened = new SeedHostApplication(path.join(root, 'profile'), identity); await reopened.open(); t.after(() => reopened.close());
   let state = await reopened.getState();
-  assert.deepEqual(state.onboarding.skipped, ['friends', 'gateway']);
-  assert.deepEqual(onboarding.onboardingChecks(state.onboarding, state), { server: 'complete', runtime: 'complete', friends: 'skipped', gateway: 'skipped', ready: 'complete' });
+  assert.deepEqual(state.onboarding.skipped, ['friends']);
+  assert.deepEqual(onboarding.onboardingChecks(state.onboarding, state), { server: 'complete', runtime: 'complete', friends: 'skipped', ready: 'complete' });
   assert.throws(() => call('saveOnboarding', { ...done, checks: { friends: true } }), /Invalid/);
   await reopened.saveProfile({ executable: java, args: [] }); state = await reopened.getState();
   assert.equal(onboarding.onboardingChecks(state.onboarding, state).runtime, 'pending');

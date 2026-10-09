@@ -46,8 +46,8 @@ try{
  assert.equal((await page.evaluate(()=>window.seedhost.call('accountStatus'))).username,'profile_changed');await click('#profile-close');
  console.log('STEP 4: import stopped disposable source and verify only Server settings in workspace');
  await click('#home-tab');await app.evaluate(({dialog},dir)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[dir]});dialog.showMessageBox=async()=>({response:1});},source);
- await click('#import-server');await page.waitForFunction(()=>document.querySelector('#server-list button[data-action="open"]'));
- await click('#server-list button[data-action="open"]');await click('#server-settings-tab');
+ await click('#import-server');await page.waitForFunction(()=>document.querySelector('#server-list [data-action="open"]'));
+ await click('#server-list [data-action="open"]');await click('#server-settings-tab');
  assert.equal(await page.locator('#settings-tab').isVisible(),false);assert.equal(await page.locator('#friends-tab').isVisible(),false);assert.equal(await page.locator('#profile-open').isVisible(),true);await shot('server-settings');
  await click('#home-tab');await click('#settings-tab');assert.equal(await page.locator('#settings-panel').isVisible(),true);await shot('app-settings');
  console.log('STEP 5: sign out, log in with the new credentials, then restart and verify persisted session');

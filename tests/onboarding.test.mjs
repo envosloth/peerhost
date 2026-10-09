@@ -10,7 +10,7 @@ test('new profile setup progress survives reopening without creating a server',a
  const identity=await createIdentity();const app=new SeedHostApplication(root,identity);
  t.after(async()=>{await app.close();await rm(root,{recursive:true,force:true});});await app.open();
  const state=await app.getState();assert.equal(state.onboarding?.step,'server');assert.equal(state.onboarding.dismissed,false);
- const progress={step:'gateway',dismissed:true,completed:false,skipped:['friends'],draft:{name:'Our world',loader:'fabric',gameVersion:'1.21.1',memoryMiB:2048}};
+ const progress={step:'ready',dismissed:true,completed:false,skipped:['friends'],draft:{name:'Our world',loader:'fabric',gameVersion:'1.21.1',memoryMiB:2048}};
  await app.saveOnboarding(progress);
  const reopened=new SeedHostApplication(root,identity);await reopened.open();
  assert.deepEqual((await reopened.getState()).onboarding,{version:1,...progress,error:null});

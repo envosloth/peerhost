@@ -28,13 +28,20 @@ async function mainHarness(backend, confirm) {
     ({ handle(_channel, callback) { handler = callback; } }, validateCall, backend, confirm, window, url);
   return (method, payload) => handler({ sender: { id: 1 }, senderFrame: mainFrame }, method, payload);
 }
-test('native dashboard writes require consent and route the exact selected server payload', async () => {
+test('explicit dashboard actions route exact validated payloads without a second warning popup', async () => {
   const invoked = [];
   const backend = new Proxy({ getState: async () => ({ server: { id, name: 'QA world' } }) }, { get(target, key) { return target[key] || (async (...args) => { invoked.push({ key, args }); return 'accepted'; }); } });
-  const denied = await mainHarness(backend, async () => false);
-  for (const [method, payload] of calls.filter(([method]) => !['getServerDashboard', 'listServerFiles', 'readServerFile'].includes(method))) await denied(method, payload);
-  assert.deepEqual(invoked, [], 'cancelled consent never invokes a mutation');
-  const accepted = await mainHarness(backend, async () => true);
+  const accepted = await mainHarness(backend, async () => { throw Error('Routine actions never show a warning popup'); });
+  for (const [method, payload] of calls.slice(3)) await accepted(method, payload);
+  assert.deepEqual(invoked, [
+    {key:'writeServerFile',args:[id,'server.properties','motd=Saved\n',hash]},
+    {key:'saveServerSettings',args:[id,{'max-players':'10',pvp:'true'}]},
+    {key:'saveServerSchedule',args:[id,{name:'Backup',action:'backup',intervalMinutes:30,enabled:true}]},
+    {key:'deleteServerSchedule',args:[id,scheduleId]},
+    {key:'runServerSchedule',args:[id,scheduleId]},
+    {key:'managePlayer',args:[id,'kick','TestPlayer']},
+  ]);
+  invoked.length=0;
   await accepted('writeServerFile', { id, path: 'note.txt', text: 'Saved text', expectedHash: hash });
   assert.deepEqual(invoked, [{ key: 'writeServerFile', args: [id, 'note.txt', 'Saved text', hash] }]);
 });

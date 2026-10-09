@@ -170,52 +170,35 @@ test('native joining rejects malformed or expired codes before prompting or enro
   assert.deepEqual(dialogs, [], 'renderer-supplied metadata is never accepted');
 });
 
-test('native join consent describes the exact current code and its hosting permissions', async () => {
+test('explicit legacy join independently validates the current code rather than an earlier preview', async () => {
   const dialogs = [];
-  const harness = await mainHarness({ confirm: async (...args) => { dialogs.push(args); return false; } });
+  const calls = [];
+  const harness = await mainHarness({ backend: { joinWithInvite: async payload => { calls.push(payload); return { joined:true }; } }, confirm: async (...args) => { dialogs.push(args); throw Error('No legacy join warning popup'); } });
   await harness.invoke('previewInvite', { code: existingCode });
   const currentInvite = { ...invites.decodeInvite(existingCode), relayName: 'The actual joining group', host: '127.0.0.1',
     port: 47626, relayFingerprint: 'b'.repeat(64), expiresAt: 0xffffffff - 10 };
   const currentCode = invites.encodeInvite(currentInvite);
-  assert.equal(await harness.invoke('joinWithInvite', { code: currentCode, name: 'Joining friend' }), undefined);
-  assert.equal(dialogs.length, 1, 'canceling join shows one dialog and performs no backend action');
-  const [message, detail] = dialogs[0];
-  const shown = `${message}\n${detail}`;
-  assert.ok(shown.includes(currentInvite.relayName), 'consent must display the decoded group name, not an earlier preview');
-  assert.ok(shown.includes(`${currentInvite.host}:${currentInvite.port}`), 'consent must display the decoded host and port');
-  assert.ok(shown.includes(new Date(currentInvite.expiresAt * 1000).toISOString()), 'consent must display an unambiguous expiry');
-  assert.ok(shown.includes(currentInvite.relayFingerprint), 'consent must display the full relay fingerprint');
-  assert.match(shown, /compare[\s\S]*friend[\s\S]*trusted channel/i);
-  assert.match(shown, /group[\s\S]*read[\s\S]*world files[\s\S]*share hosting/i);
-  assert.match(shown, /does not download or start a server/i);
-  assert.match(shown, /clean stops will attempt to send the world to the always-on PC/i);
-  assert.match(shown, /offline[\s\S]*world stays local/i);
-  assert.match(shown, /parsed locally/i);
-  assert.match(shown, /do not prove[\s\S]*authentic[\s\S]*reachable/i);
-  assert.equal(shown.includes(expectedPreview.relayName), false);
-  assert.equal(shown.includes(currentInvite.token.toString('hex')), false);
-  assert.equal(shown.includes(currentCode), false, 'consent never leaks the bearer token via the invite code');
+  const preview = await harness.invoke('previewInvite', { code:currentCode });
+  assert.deepEqual(preview, {relayName:currentInvite.relayName,host:currentInvite.host,port:currentInvite.port,relayFingerprint:currentInvite.relayFingerprint,expiresAt:currentInvite.expiresAt*1000});
+  assert.doesNotMatch(JSON.stringify(preview), new RegExp(currentInvite.token.toString('hex')));
+  const payload = { code:currentCode, name:'Joining friend' };
+  assert.deepEqual(await harness.invoke('joinWithInvite', payload), {joined:true});
+  assert.deepEqual(calls,[payload]);assert.deepEqual(dialogs,[]);
 });
 
-test('native approval forwards the original validated join payload only after consent', async () => {
+test('explicit legacy join forwards the original validated payload without a second popup', async () => {
   const payload = { code: ` \n${existingCode}\n`, name: 'Joining friend' };
   const calls = [];
-  let approved = false;
   const backend = { async joinWithInvite(input) {
-    assert.equal(approved, true, 'enrollment is never attempted before approval');
     calls.push(input);
     return { relayName: expectedPreview.relayName };
   } };
-  const harness = await mainHarness({ backend, confirm: async () => {
-    assert.deepEqual(calls, []);
-    approved = true;
-    return true;
-  } });
+  const harness = await mainHarness({ backend, confirm: async () => { throw Error('No second join warning popup'); } });
   assert.deepEqual(await harness.invoke('joinWithInvite', payload), { relayName: expectedPreview.relayName });
   assert.deepEqual(calls, [payload], 'the backend retains its own validation of the original code and friend name');
 });
 
-test('backend final validation still rejects an invitation that expires during native consent', async t => {
+test('backend final validation rejects an invitation that expires after privileged decoding', async t => {
   const root = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), 'seedhost-invite-consent-'));
   const application = new SeedHostApplication(root, await createIdentity());
   t.after(async () => { await application.close(); await rm(root, { recursive: true, force: true }); });
@@ -225,14 +208,13 @@ test('backend final validation still rejects an invitation that expires during n
   const code = invites.encodeInvite(invite);
   t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
   let dialogs = 0;
-  const harness = await mainHarness({ backend: application, confirm: async () => {
-    dialogs++;
+  const harness = await mainHarness({ backend: {joinWithInvite: async payload => {
     t.mock.timers.setTime((invite.expiresAt + 1) * 1000);
-    return true;
-  } });
+    return application.joinWithInvite(payload);
+  }}, confirm: async () => {dialogs++;throw Error('No join warning popup');} });
   await assert.rejects(harness.invoke('joinWithInvite', { code, name: 'Joining friend' }), /expired/i);
-  assert.equal(dialogs, 1);
-  assert.deepEqual(await filesUnder(root), before, 'expired-after-consent join writes no application state');
+  assert.equal(dialogs, 0);
+  assert.deepEqual(await filesUnder(root), before, 'expired-at-backend join writes no application state');
   const state = await application.getState();
   assert.equal(state.relay, null);
   assert.deepEqual(state.peers, []);

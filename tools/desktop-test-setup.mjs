@@ -15,7 +15,7 @@ export async function openSelectedServer(page) {
   await page.bringToFront();
   if (await page.locator('#operate-tab').isVisible()) return;
   await page.locator('#home-tab').click();
-  await page.locator('#server-list .is-current button[data-action="open"]').click();
+  await page.locator('#server-list .is-current[data-action="open"]').click();
   await page.waitForFunction(() => !document.querySelector('#operate-panel').hidden && !document.querySelector('#operate-tab').hidden);
 }
 

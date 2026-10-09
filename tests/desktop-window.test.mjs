@@ -61,6 +61,7 @@ async function layoutProblems(page, rootSelector = 'body') {
 test('splash, borderless/fullscreen toggle, page tabs, appearance, minimize, close-to-tray and layout integrity', { timeout: 180000 }, async () => {
   const { app, page, root } = await launch('chrome');
   const errors = []; page.on('pageerror', (e) => errors.push(String(e)));
+  let requestedStage = null;
   try {
     assert.equal((await win(app)).count, 1, 'the splash lives inside the single app window, not a second BrowserWindow');
     await page.waitForFunction(() => document.querySelector('#app-version')?.textContent?.match(/^v\d+\.\d+\.\d+/));
@@ -143,7 +144,8 @@ test('splash, borderless/fullscreen toggle, page tabs, appearance, minimize, clo
     await page.locator('#nav-setup').click();
     await page.waitForFunction(() => document.querySelector('#setup-dialog').open);
     assert.equal(await page.locator('.setup-rail').isVisible(), true, 'guide has a side rail with the steps');
-    assert.equal(await page.locator('.setup-rail [data-setup-step]').count(), 5);
+    assert.equal(await page.locator('.setup-rail [data-setup-step]').count(), 4);
+    assert.equal(await page.locator('[data-setup-step="gateway"]').count(), 0, 'the optional helper is not a guide prerequisite');
     await page.locator('[data-setup-step="server"]').click();
     await page.waitForFunction(() => !document.querySelector('#setup-server').hidden && document.querySelector('#activity-message').textContent.startsWith('Ready'));
     // A saved draft resumes straight into the create form; otherwise pick "Create a new world" first.
@@ -168,7 +170,10 @@ test('splash, borderless/fullscreen toggle, page tabs, appearance, minimize, clo
       await app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setSize(w, h), [w, h]);
       await page.waitForFunction((w) => innerWidth <= w, w);
       assert.deepEqual(await layoutProblems(page, '#setup-dialog'), [], 'create form at ' + w);
-      for (const stage of ['runtime', 'friends', 'gateway', 'ready', 'server']) {
+      for (const stage of ['runtime', 'friends', 'ready', 'server']) {
+        requestedStage = stage;
+        console.log('WINDOW GUIDE STEP: ' + stage + ' at ' + w);
+        await page.bringToFront();
         await page.locator(`[data-setup-step="${stage}"]`).click();
         await page.waitForFunction((stage) => !document.querySelector('#setup-' + stage).hidden && document.querySelector('#activity-message').textContent.startsWith('Ready'), stage);
         assert.deepEqual(await layoutProblems(page, '#setup-dialog'), [], stage + ' stage at ' + w);
@@ -188,7 +193,7 @@ test('splash, borderless/fullscreen toggle, page tabs, appearance, minimize, clo
     await writeFile(path.join(source, 'fixture.txt'), 'Disposable window navigation fixture.\n');
     await app.evaluate(({ dialog }, source) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [source] }); dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false }); }, source);
     await page.locator('#home-tab').click(); await page.locator('#import-server').click();
-    await page.waitForFunction(() => document.querySelector('#server-list .is-current button[data-action="open"]'));
+    await page.waitForFunction(() => document.querySelector('#server-list .is-current[data-action="open"]'));
     await page.reload();
     await page.waitForFunction(() => document.querySelector('#splash')?.hasAttribute('hidden'));
     for (const name of serverTabs) assert.equal(await page.locator('#' + name + '-tab').isHidden(), true, name + ' stays hidden on Home with remembered selection');
@@ -262,5 +267,21 @@ test('splash, borderless/fullscreen toggle, page tabs, appearance, minimize, clo
     console.log('WINDOW PASS: visible real Electron navigation/chrome/layout; NOT Minecraft. ARTIFACT_DIR=' + root);
     const hold = Number(process.env.SEEDHOST_QA_HOLD_SECONDS || 0);
     if (hold) { console.log('Holding visible window for ' + hold + ' seconds.'); await new Promise(resolve => setTimeout(resolve, hold * 1000)); }
+  } catch (error) {
+    // Preserve the exact failed state; do not retry clicks or weaken the stage/readiness assertions.
+    try {
+      console.error('WINDOW DIAGNOSTIC: ' + JSON.stringify(await page.evaluate((requestedStage) => ({
+        requestedStage,
+        visibleStages: [...document.querySelectorAll('[data-setup-panel]')].filter(e => !e.hidden).map(e => e.dataset.setupPanel),
+        activity: document.querySelector('#activity-message')?.textContent,
+        guideError: document.querySelector('#setup-error')?.textContent,
+        error: document.querySelector('#error-text')?.textContent,
+        dialogOpen: document.querySelector('#setup-dialog')?.open,
+        steps: [...document.querySelectorAll('[data-setup-step]')].map(e => ({ step: e.dataset.setupStep, disabled: e.disabled, current: e.getAttribute('aria-current') })),
+        focused: document.activeElement?.id,
+      }), requestedStage)));
+      await page.screenshot({ path: path.join(root, 'window-failure.png') });
+    } catch (diagnosticError) { console.error('WINDOW DIAGNOSTIC unavailable: ' + String(diagnosticError)); }
+    throw error;
   } finally { await app.close(); }
 });

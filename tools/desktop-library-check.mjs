@@ -62,11 +62,11 @@ try {
   assert.equal(await page.locator('#server-list [data-action="select"]').count(), 0, 'no legacy switch action remains');
 
   // Switch to the first server through the card's visible control; the card opens the workspace.
-  await rows.first().locator('button[data-action="open"]').click();
+  await rows.first().click();
   await page.waitForFunction(() => document.querySelector('#server-name').textContent === 'alpha');
   await page.waitForFunction(() => document.querySelector('#server-list .server-row.is-current .server-row-name')?.textContent === 'alpha');
   assert.equal(await page.locator('#operate-panel').isVisible(), true, 'opening a card lands on the selected server workspace');
-  assert.equal(await rows.filter({ hasText: 'alpha' }).locator('button[data-action="open"]').textContent(), 'Open server');
+  assert.match(await rows.filter({ hasText: 'alpha' }).getAttribute('aria-label'), /Open alpha/);
 
   // Back to Home for the library actions.
   await page.locator('#home-tab').click();

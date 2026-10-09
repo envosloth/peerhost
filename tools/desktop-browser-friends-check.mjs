@@ -95,9 +95,8 @@ if (process.argv.includes('--static')) {
     await wait(a.page, () => document.querySelector('#server-name').textContent.includes('NOT Minecraft'));
     await settled(a.page);
     if (!friendsOnly) {
-    await click(a.page, '#mods-details > summary');
-    await reveal(a.page, '#mod-loader');
-    await a.page.locator('#mod-loader').selectOption('fabric');
+    await click(a.page, '#mods-tab');
+    await a.page.locator('[data-bridge="mod-loader"] input[value="fabric"]').check();
     await a.page.locator('#mod-game-version').fill('1.21.1');
     await click(a.page, '#save-mod-target');
     await wait(a.page, () => document.querySelector('#mod-target-feedback').textContent.includes('fabric 1.21.1'));
@@ -143,7 +142,7 @@ if (process.argv.includes('--static')) {
     await a.page.reload(); await settled(a.page);
     assert.ok((await getState(a.page)).server.mods.server.some((mod) => mod.source?.projectId === 'gvQqBUqZ'), 'provenance survives reload');
     assert.equal((await getState(a.page)).server.modTarget.gameVersion, '1.21.1');
-    await click(a.page, '#mods-details > summary');
+    await click(a.page, '#mods-tab');
     await a.page.bringToFront();
     await a.page.locator('#mod-query').fill('lithium');
     await click(a.page, '#search-mods');

@@ -18,6 +18,7 @@ import { onboardingChecks } from '../../src/core/onboarding.js';
 import { AlwaysOnHost } from '../../src/core/always-on.js';
 import { Updater } from '../../src/core/updater.js';
 import { GroupHelpers } from './group-helpers.js';
+import { InlineHandoffConsent } from './inline-consent.js';
 import { PerServerPublicAddresses, playitClaim } from '../../src/core/public-address.js';
 const setupLinks: Record<string,string> = Object.freeze({
   eula:'https://www.minecraft.net/en-us/eula',
@@ -26,6 +27,7 @@ const setupLinks: Record<string,string> = Object.freeze({
   relay:'https://github.com/envosloth/seedhost/blob/main/docs/relay.md',
 });
 let window:BrowserWindow;let tray:Tray;let backend:SeedHostApplication;let helpers:GroupHelpers;let publicAddress:PerServerPublicAddresses;let quitAllowed=false;let quitting=false;
+let appNotice:string|null=null;const incomingHandoff=new InlineHandoffConsent();
 // Display name; the profile folder below is SeedHost (or --profile-root).
 app.setName('Seed Hosting');
 const profileArgument=process.argv.find(a=>a.startsWith('--profile-root='));
@@ -41,12 +43,12 @@ async function quit(){
   if(quitting)return;quitting=true;
   try{
     const state=await backend.getState();
-    if(state.busy){show();await dialog.showMessageBox(window,{type:'warning',message:'An operation is still in progress.',detail:'Wait until it completes before quitting.',buttons:['Keep app open']});return;}
+    if(state.busy){show();appNotice='An operation is still in progress. Wait until it completes before quitting.';return;}
     if(state.server?.state==='running'||state.server?.state==='starting'){
-      show();if(!await confirm('Stop hosting and quit?','Players will disconnect. Seed Hosting will request a clean stop and save a final local snapshot. This does not guarantee another device has received it.'))return;
+      show();
     }
-    await backend.close();await publicAddress?.close();await helpers?.closeAll();quitAllowed=true;app.quit();
-  }catch(e){show();await dialog.showMessageBox(window,{type:'error',message:'Seed Hosting could not quit safely.',detail:String(e),buttons:['Keep app open']});}
+    incomingHandoff.close();await backend.close();await publicAddress?.close();await helpers?.closeAll();quitAllowed=true;app.quit();
+  }catch(e){show();appNotice='Could not quit safely: '+String(e).slice(0,300);}
   finally{quitting=false;}
 }
 if(!app.requestSingleInstanceLock()){app.quit();}else{
@@ -58,8 +60,11 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
     backend=new SeedHostApplication(root,identity,{beforeServerStart:async server=>{
       if(!publicAddress)throw new Error('Public route ownership guard is not ready; server launch refused');
       await publicAddress.assertCanStart(server);
+    },chooseServerPort:async(id,occupied)=>{
+      if(!publicAddress)throw new Error('Public route ownership guard is not ready; server creation refused');
+      return publicAddress.newServerPort(id,occupied);
     },confirmIncomingHandoff:async(source,snapshot)=>{
-      show();return confirm('Accept hosting ownership from this peer?','Verified peer: '+source+'\nSnapshot: '+snapshot.id+'\nThis copies server files into a new local directory. Old files are retained. It will not start automatically; review the local launch profile and executable/mod trust first.');
+      show();return incomingHandoff.request(source,snapshot.id);
     }});await backend.open();
     const accountConfig=await loadAccountServiceConfig({profileRoot:root,
       bundledDirectory:fileURLToPath(new URL('../../../apps/desktop/',import.meta.url)),
@@ -112,7 +117,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
           const a=await accounts.status();if(!a.signedIn||!a.online||!a.username)throw new Error('Sign in first');
           const state=await backend.getState();
           if(state.relay)throw new Error('This PC already belongs to a group');
-          if(!await confirm('Create a hosting group for '+(state.server?.name??'your next server')+'?','Only group control runs while this app is open. The optional always-on PC/player gateway stays off unless you explicitly enable it in Multi-host. Worlds, friendships and public addresses are unchanged.'))return null;
+
           const helper=await helpers.create();
           const role=await helper.host.startGroup(a.username+'’s group',true);
           const invite=await helper.host.ownerInvite(a.username,identity.fingerprint);
@@ -124,11 +129,12 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
           const host=helpers.list().map(entry=>entry.host.forGroupFingerprint(p.fingerprint)).find(Boolean);
           if(!host)throw new Error('This group authority is not hosted on this PC. Ask the group owner to configure its control route.');
           if(method==='getHostingControlRoute')return host.controlRoute();
-          if(!await confirm('Change this group’s invitation control route?', 'Future invitations will name '+p.host+':'+p.port+'. This does not create NAT forwarding, a tunnel or a VPN, and does not verify reachability. Existing invitations keep their old endpoint; send replacements. Minecraft player addresses and all worlds are unchanged.'))return null;
+
           return host.setControlRoute({host:p.host,port:p.port});
         }
         case 'listHostingGroups':return backend.listHostingGroups(helpers.list().flatMap(entry=>entry.host.localGroupFingerprints()));
         case 'claimPendingGroup':return backend.claimPendingGroup(p.fingerprint);
+        case 'respondIncomingHandoff':incomingHandoff.respond(p.id,p.accepted);return {responded:true};
         case 'accountStatus':return accounts.status();
         case 'accountRequests':return accounts.requests();
         case 'accountUpdateProfile':return accounts.updateProfile(p as {username:string;currentPassword:string;newPassword?:string});
@@ -149,7 +155,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
           if(!state.server||state.server.id!==p.id||state.relay?.fingerprint!==p.fingerprint)throw new Error('The selected server or group changed. Refresh before continuing.');
           await backend.checkGroupDisband(p.id,p.fingerprint);
           if(epoch!==publicSelectionEpoch)throw new Error('The selected server changed. Refresh before continuing.');
-          if(!await confirm('Disband the group for “'+state.server.name+'”?','This permanently revokes ALL group members and outstanding invitations at the group relay. Copies of worlds already held by other PCs cannot be erased. This server must be stopped and safely owned here, with every handoff finished. Worlds, local and relay backups, account-level friendships, accounts, Playit routes and your app-wide always-on opt-in are retained. Older relays without verified revocation refuse this action; a local disconnect is not disbanding. This group identity cannot be reused.','Disband group'))return null;
+
           const latest=await backend.getState();
           if(epoch!==publicSelectionEpoch||latest.server?.id!==p.id||latest.relay?.fingerprint!==p.fingerprint)throw new Error('The selected server or group changed. Refresh before continuing.');
           return backend.disbandGroup(p.id,p.fingerprint);
@@ -157,18 +163,18 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         case 'removeFriend':{
           const friends=await backend.listFriends(),target=friends.members.find(m=>m.fingerprint===p.fingerprint);
           if(!friends.canManage||!target||target.you||target.fingerprint===friends.owner)throw new Error('Only the group owner can remove a friend');
-          if(!await confirm('Remove “'+target.name+'” from your group?','They will lose access to shared hosting here. Copies of world files they already have cannot be erased. This does not ban them from Minecraft; use the Minecraft whitelist for that.'))return {removed:false};
+
           await backend.removeFriend(p.fingerprint);return {removed:true};
         }
         case 'playitStatus':return playit.status();
         case 'playitSetup':return shell.openExternal('https://playit.gg/download');
         case 'playitCheck':return playit.check();
-        case 'playitCreate':if(await confirm('Make the Minecraft gateway public?', 'This creates a free playit Minecraft Java tunnel to your configured always-on player gateway. Anyone with its address can attempt to join; keep Minecraft online-mode enabled and use a whitelist for private play. Your playit agent must run on the always-on PC. No router, firewall or startup settings are changed.'))return playit.create();return null;
-        case 'playitDisconnect':if(await confirm('Disconnect playit from this app?', 'Only this app’s encrypted connection is removed. The public tunnel and external agent keep running. Disable or delete the tunnel in your playit account to stop public access.')){await playit.disconnect();return playit.status();}return null;
+        case 'playitCreate':return playit.create();
+        case 'playitDisconnect':await playit.disconnect();return playit.status();
         case 'playitImport':{
           const selected=await dialog.showOpenDialog(window,{title:'Select the approved playit agent secret file (plain hex)',properties:['openFile']});
           if(selected.canceled||!selected.filePaths[0])return null;
-          if(!await confirm('Connect this playit agent?', 'Seed Hosting stores an OS-encrypted copy of this agent credential to check or create its public Minecraft tunnel. Select the agent running on your always-on PC; never send this file to friends.'))return null;
+
           try{await playit.importAgentFile(selected.filePaths[0]);return playit.status();}catch{throw new Error('Could not connect that agent. Select its plain hexadecimal secret file and check playit approval.');}
         }
         case 'selectServer':++publicSelectionEpoch;return backend.selectServer(p.id);
@@ -180,22 +186,18 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
           return backend.deleteServer(p.id);
         }
         case 'getServerDashboard':return backend.getServerDashboard(p.id);
+        case 'openServerFolder':{
+          const folder=await backend.resolveServerFolder(p.id);
+          const error=await shell.openPath(folder);
+          if(error)throw new Error('Could not open server folder: '+error);
+          return {opened:true,serverId:p.id};
+        }
         case 'listServerFiles':return backend.listServerFiles(p.id,p.path);
         case 'readServerFile':return backend.readServerFile(p.id,p.path);
         case 'writeServerFile':case 'saveServerSettings':case 'saveServerSchedule':case 'deleteServerSchedule':case 'runServerSchedule':case 'managePlayer':{
           const state=await backend.getState();
           if(!state.server||state.server.id!==p.id)throw new Error('The selected server changed. Refresh before continuing.');
-          const prompts:Record<string,[string,string]>={
-            writeServerFile:['Save changes to “'+p.path+'” for '+state.server.name+'?','Only the managed copy is edited. The server must be stopped and owned here; a rollback copy is saved first. This can change server behavior.'],
-            saveServerSettings:['Save Minecraft settings for '+state.server.name+'?','These settings apply on the next start. The managed server must be stopped and owned here. A rollback copy of server.properties is saved first. No router/firewall settings are changed.'],
-            saveServerSchedule:['Save a schedule for '+state.server.name+'?','Schedules run only while Seed Hosting is open, including in the tray. An enabled schedule may stop this server, save a stopped-world backup, or send the exact console command you selected. No server starts automatically and no OS task is created.'],
-            deleteServerSchedule:['Delete this server schedule?','The local schedule is removed. Existing world files and backups are not changed.'],
-            runServerSchedule:['Run this server schedule now?','Its configured backup, graceful stop, or console command will run once. Ownership and server state are checked again before execution.'],
-            managePlayer:['Send “'+p.action+'” for '+p.name+'?','This sends a Minecraft player command only to '+state.server.name+' while it is running and owned here. Console shows the result; membership in your hosting group is unchanged.'],
-          };
-          const prompt=prompts[method]!;
-          if(method==='saveServerSchedule'&&p.schedule.command)prompt[1]+='\nCommand: '+p.schedule.command;
-          if(!await confirm(prompt[0],prompt[1]))return null;
+
           if(method==='writeServerFile')return backend.writeServerFile(p.id,p.path,p.text,p.expectedHash);
           if(method==='saveServerSettings')return backend.saveServerSettings(p.id,p.settings);
           if(method==='saveServerSchedule')return backend.saveServerSchedule(p.id,p.schedule);
@@ -214,18 +216,17 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
             return !collision&&pub.address&&['reachable','reserved','pending'].includes(pub.state)
               ?{address:pub.address,reachability:(pub.state==='reachable'?'verified':'unverified') as 'verified'|'unverified',source:'playit' as const,targetServerId:entry.id}:null;
           };
-          return {...state,version:app.getVersion(),servers:state.servers.map(entry=>({...entry,publicJoinAddress:publicJoin(entry)})),
+          return {...state,appNotice,incomingHandoff:incomingHandoff.status(),version:app.getVersion(),servers:state.servers.map(entry=>({...entry,publicJoinAddress:publicJoin(entry)})),
             onboarding:{...state.onboarding,checks,completed:checks.ready==='complete'}};
         }
         case 'alwaysOnStatus':return (await helperForSelected()).status();
         case 'alwaysOnEnable':{
           const host=await helperForSelected();
-          const status=await host.status();
-          if(!status.running&&!await confirm('Make this PC the always-on PC?','Seed Hosting will keep your friends’ world here between play sessions and give players one address to join. It listens on this network (control port 47625 and a separate player gateway port, normally 25566) while the app is open; managed Minecraft server ports are kept separate. Only PCs you approve for the group can store or take the world. Keep this PC on and Seed Hosting open (it can sit in the tray). Nothing else on this PC is changed.'))return status;
+
           return host.enable(p.name,(await backend.getState()).servers.map(server=>server.playerPort));
         }
         case 'alwaysOnDisable':
-          if(!await confirm('Stop being the always-on PC?','Paired PCs can’t store or take the world here until you turn it back on, and the shared player gateway goes offline. Local per-server public addresses are separate. The stored world and pairings are kept.'))return (await helperForSelected()).status();
+
           return (await helperForSelected()).disable();
         case 'alwaysOnNewCode':return (await helperForSelected()).newCode();
         case 'publicAddressStatus':case 'publicAddressEnable':case 'publicAddressDisable':case 'publicAddressOpenApproval':{
@@ -250,7 +251,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
           return status;
         }
         case 'pairAlwaysOn':
-          if(!await confirm('Connect to your always-on PC?','Seed Hosting will look for the always-on PC that shows this code on your network, check that it really knows the code, and connect to it. From then on your world is kept there when you stop playing, and friends join one address.'))return null;
+
           return backend.pairAlwaysOn(p as {code:string;name:string});
         case 'searchSetupMods':return backend.searchSetupMods(p as {query:string;gameVersion:string;offset:number;sort?:ModSort});
         case 'setupFabricMods':return backend.setupFabricMods(p as {projectIds:string[]});
@@ -259,17 +260,25 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         case 'pickJava':{
           const selected=await dialog.showOpenDialog(window,{title:'Choose an installed Java executable (java or java.exe)',properties:['openFile'],...(process.platform==='win32'?{filters:[{name:'Java executable',extensions:['exe']}]}:{})});
           if(selected.canceled||!selected.filePaths[0])return null;
-          if(!await confirm('Check this Java executable?', 'Seed Hosting will execute this selected file with -version, without a shell. Select only an installed Java runtime you trust. No Java installation or server start occurs.'))return null;
+
           return probeJava(selected.filePaths[0]);
         }
         case 'createServer':{
           const input={...p} as CreateServerInput;
           if(input.eulaAccepted!==true)throw new Error('Explicit Minecraft EULA acceptance is required before creating a server');
-          if(!await confirm('Create “'+input.name+'”?', 'Seed Hosting downloads the official '+(input.loader==='fabric'?'Fabric':'Minecraft')+' server files'+(input.javaExecutable?'':' and, if this PC needs it, the matching official Java from Mojang')+', and checks every file. Nothing starts until you press Start.\n\nBy creating this world you agree to the Minecraft EULA: https://www.minecraft.net/en-us/eula'))return null;
-          return backend.createServer(input);
+          const location=await dialog.showOpenDialog(window,{title:'Choose where to download server files (a separate managed working copy is kept by Seed Hosting)',buttonLabel:'Download here',properties:['openDirectory','createDirectory']});
+          if(location.canceled||location.filePaths.length!==1)return null;
+          const created=await backend.createServer(input,location.filePaths[0]);
+          try {
+            const state=await backend.getState(),server=state.servers.find(entry=>entry.id===created.serverId);
+            if(!server)throw new Error("The created server is no longer in the library");
+            await publicAddress.enable(server,state.servers);
+          }
+          catch { appNotice='Your server was created. Its public address setup needs attention — open the server’s Join address controls to retry or review provider approval/limits.'; }
+          return created;
         }
         case 'configureSimpleProfile':
-          if(!await confirm('Check Java and save this launch profile?', 'Seed Hosting will execute '+p.javaExecutable+' with -version, without a shell, then save Java and RAM. Only approve a trusted installed runtime. Nothing starts automatically.'))return null;
+          // The labelled Save action is explicit local consent; core validation remains unchanged.
           return backend.configureSimpleProfile(p as unknown as SimpleProfileInput);
         case 'saveGameGateway':return backend.saveGameGateway(p as {enabled:boolean;localPort:number});
         case 'checkGameGateway':return backend.checkGameGateway();
@@ -284,12 +293,12 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         }
         case 'listSnapshots':return backend.listSnapshots();
         case 'restoreSnapshot':
-          if(!await confirm('Restore this saved world revision?', 'Stop hosting first. Seed Hosting will preserve a safety snapshot and the previous folder, then restore into a separate managed folder. Hosting ownership is not rewound. Nothing starts automatically.'))return;
+
           return backend.restoreSnapshot(p.snapshotId);
         case 'importServer':{
-          const selected=await dialog.showOpenDialog(window,{title:'Import a stopped Minecraft Java server',properties:['openDirectory']});
+          const selected=await dialog.showOpenDialog(window,{title:'Choose a stopped Minecraft Java server — never import a running world',buttonLabel:'Import stopped server',properties:['openDirectory']});
           if(selected.canceled||!selected.filePaths[0])return null;
-          if(!await confirm('Is the source server stopped?','Copying a running world can produce an inconsistent snapshot. Confirm that the source has stopped. Seed Hosting creates its own copy and will not edit the source.'))return null;
+
           return backend.importExisting(selected.filePaths[0],true);
         }
         case 'saveProfile':return backend.saveProfile(p as {executable:string;args:string[]});
@@ -309,30 +318,23 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         case 'addPeer':return backend.addPeer(p as any);
         case 'startPeerListener':return backend.startPeerListener();
         case 'sendSnapshot':return backend.sendSnapshot(p.fingerprint);
-        case 'handoff':if(await confirm('Transfer hosting ownership to this peer?','Stop the server first. A fresh snapshot will be captured and shared, including server configuration/player data. This PC becomes fenced before transfer. If acknowledgment is lost or the peer declines, local hosting remains blocked until ownership is reconciled.'))return backend.handoff(p.fingerprint);return;
+        case 'handoff':return backend.handoff(p.fingerprint);
         case 'searchMods':return backend.searchMods(p as {query:string;offset:number;sort?:ModSort});
         case 'saveModTarget':return backend.saveModTarget(p as any);
         case 'installMod':
-          if(!await confirm('Install this Modrinth mod and its required dependencies?', 'Files are filtered for your selected Minecraft version and loader and verified against Modrinth’s SHA-512 checksums. Mods run code; a valid checksum does not make a mod safe. Server/client placement follows its published metadata unless you choose a destination. Nothing starts automatically.'))return;
+
           return backend.installMod(p as any);
         case 'openModPage':return shell.openExternal('https://modrinth.com/mod/'+encodeURIComponent(p.slug));
         case 'createInvite':
-          if(!await confirm('Invite a friend to share hosting?', 'Anyone who redeems this one-use invitation can access the server files and take a turn hosting through your relay. Send it privately to someone you trust.'))return;
+
           return backend.createInvite();
         case 'listFriends':return backend.listFriends();
         case 'previewInvite': {
           return previewInvite(p.code);
         }
         case 'joinWithInvite': {
-          const invite=decodeInvite(p.code);
-          if(!await confirm('Join this friend’s hosting relay?', `Group: ${invite.relayName}
-Always-on PC: ${invite.host}:${invite.port}
-Invitation expires: ${new Date(invite.expiresAt * 1000).toISOString()}
-Full relay fingerprint: ${invite.relayFingerprint}
+          decodeInvite(p.code); // Retain privileged validation even without a second popup.
 
-These details are parsed locally from the invitation; they do not prove the group is authentic or the always-on PC is reachable. Compare the full relay fingerprint with your friend via a trusted channel before continuing. Only use an invitation received privately from a trusted friend.
-
-Joining pins the relay certificate and authorizes this PC. Members of this group can read your world files and share hosting. It does not download or start a server. Clean stops will attempt to send the world to the always-on PC. If that PC is offline, the world stays local.`))return;
           return backend.joinWithInvite(p as {code:string;name:string});
         }
         case 'addMods':{
@@ -342,7 +344,7 @@ Joining pins the relay certificate and authorizes this PC. Members of this group
           if(picked.canceled||!picked.filePaths.length)return [];
           return backend.addMods(p.kind,picked.filePaths);
         }
-        case 'removeMod':if(await confirm('Remove '+p.name+'?',p.kind==='server'?'It is deleted from the server\'s mods folder and will not load on the next start. Earlier snapshots still contain it.':'It is removed from the client pack. Earlier snapshots still contain it.'))return backend.removeMod(p.kind,p.name);return;
+        case 'removeMod':return backend.removeMod(p.kind,p.name);
         case 'exportClientPack':{
           const state=await backend.getState();
           const saved=await dialog.showSaveDialog(window,{title:'Save the client mod pack',buttonLabel:'Save pack',defaultPath:path.join(app.getPath('downloads'),(state.server?.name||'server').replace(/[^\w .-]+/g,'_')+' client mods.zip'),filters:[{name:'Zip archive',extensions:['zip']}]});
@@ -352,9 +354,9 @@ Joining pins the relay certificate and authorizes this PC. Members of this group
         }
         case 'saveRelay':return backend.saveRelay(p.relay);
         case 'checkRelay':return backend.checkRelay();
-        case 'parkAtRelay':if(await confirm('Park the server on the relay?','A final snapshot is captured and stored on the always-on relay. This PC stops being the host until a PC claims the server back. Any PC that trusts the relay can claim it while this one is off.'))return backend.parkAtRelay();return;
-        case 'claimFromRelay':if(await confirm('Claim the server from the relay?','The newest stored revision is copied into a new folder on this PC and this PC becomes the host. Old folders are kept. Nothing starts automatically; review the launch profile and executable/mod trust first.'))return backend.claimFromRelay();return;
-        case 'cleanUp':if(await confirm('Delete old server copies and revisions?','This permanently deletes earlier managed server folders, interrupted transfers, and snapshot revisions older than the current one and its two parents. The current server folder and current revision are kept. Your original imported folder is never touched.'))return backend.cleanUp();return;
+        case 'parkAtRelay':return backend.parkAtRelay();
+        case 'claimFromRelay':return backend.claimFromRelay();
+        case 'cleanUp':return backend.cleanUp();
         case 'getWindowState':return windowState();
         case 'updateStatus':return updater.status();
         case 'updateCheck':return updater.check();
@@ -366,7 +368,7 @@ Joining pins the relay certificate and authorizes this PC. Members of this group
           if(!staged)throw new Error('No verified update is staged yet; download an update first');
           const state=await backend.getState();
           if(state.busy||state.server?.state==='running'||state.server?.state==='starting')throw new Error('Stop the server before installing an update');
-          if(!await confirm('Restart and install Seed Hosting '+staged.version+'?','The app will close, replace its files with the downloaded, checksum-verified update and open again. Worlds, servers and settings are unchanged.'))return updater.status();
+
           await updater.install();
           void quit();
           return updater.status();
@@ -390,5 +392,5 @@ Joining pins the relay certificate and authorizes this PC. Members of this group
     await window.loadFile(html);
     // Quietly check for updates shortly after launch; the Settings card shows the result.
     setTimeout(()=>{void updater.check().catch(()=>undefined);},4000);
-  }).catch(error=>{console.error(error);dialog.showErrorBox('Seed Hosting startup failed',String(error));quitAllowed=true;app.quit();});
+  }).catch(error=>{console.error('Seed Hosting startup failed',error);quitAllowed=true;app.quit();});
 }

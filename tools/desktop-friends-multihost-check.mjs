@@ -40,8 +40,8 @@ async function importWorld(instance,name){
  const source=path.join(root,name);await mkdir(source,{recursive:true});await writeFile(path.join(source,'eula.txt'),'eula=true\n');await writeFile(path.join(source,'world-fixture.bin'),name);
  await instance.app.evaluate(({dialog},source)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[source]});},source);
  await click(instance.page,'#home-tab');await click(instance.page,'#import-server');
- await instance.page.waitForFunction(()=>document.querySelector('#server-list .is-current button[data-action="open"]'));
- await click(instance.page,'#server-list .is-current button[data-action="open"]');await click(instance.page,'#peers-tab');
+ await instance.page.waitForFunction(()=>document.querySelector('#server-list .is-current[data-action="open"]'));
+ await click(instance.page,'#server-list .is-current[data-action="open"]');await click(instance.page,'#peers-tab');
  return {source,state:await call(instance.page,'getState')};
 }
 async function refresh(page){await click(page,'#hosting-requests-refresh');await page.waitForFunction(()=>!document.querySelector('#hosting-requests-refresh').disabled);}
@@ -51,6 +51,39 @@ async function invite(owner,recipient){
  await owner.page.waitForFunction(()=>document.querySelector('#hosting-friend-feedback').textContent.includes('Hosting invitation sent'));
 }
 async function shot(page,name){await page.bringToFront();await page.screenshot({path:path.join(root,name+'.png')});}
+async function checkSolidGroup(instance,pin){
+ const {page,app}=instance;await friends(page);
+ // TEST-ONLY observation: return the original main/IPC result unchanged, and count
+ // actual successful directory refresh completions separately from state reads.
+ await app.evaluate(({ipcMain})=>{
+  const original=ipcMain._invokeHandlers.get('seedhost:call');if(typeof original!=='function')throw Error('Missing real IPC handler');
+  globalThis.__cardAccountRefreshes={original,completed:0};
+  ipcMain._invokeHandlers.set('seedhost:call',async function(event,method,...rest){const result=await original.call(this,event,method,...rest);if(method==='accountRequests'&&Array.isArray(result))globalThis.__cardAccountRefreshes.completed++;return result;});
+ });
+ const selector='[data-hosting-group="'+pin+'"]';await page.locator(selector).waitFor({state:'visible'});
+ await page.locator(selector).scrollIntoViewIfNeeded();await page.locator(selector+' .button').focus();
+ await page.evaluate(selector=>{
+  const card=document.querySelector(selector),button=card.querySelector('.button'),list=document.querySelector('#hosting-group-list');
+  const check=window.hostingCardCheck={card,button,replacements:0,stateReads:0,minOpacity:1,animation:getComputedStyle(card).animationName};
+  check.observer=new MutationObserver(records=>{check.replacements+=records.filter(r=>r.target===list).length;});check.observer.observe(list,{childList:true});
+  check.listener=()=>check.stateReads++;window.addEventListener('seedhost-state-read',check.listener);
+  check.timer=setInterval(()=>{const current=document.querySelector(selector);check.minOpacity=Math.min(check.minOpacity,current?Number(getComputedStyle(current).opacity):0);},50);
+ },selector);
+ try{
+  step('Observe the actual packaged group card through background polls; no test reply overrides.');
+  await page.waitForFunction(()=>window.hostingCardCheck.stateReads>=3);
+  assert.equal(await app.evaluate(async()=>{for(let i=0;i<140;i++){if(globalThis.__cardAccountRefreshes.completed>=1)return true;await new Promise(r=>setTimeout(r,250));}return false;}),true,'at least one real account-directory refresh must complete, not just a state poll');
+  assert.equal(await page.evaluate(()=>document.activeElement===window.hostingCardCheck.button),true,'background polls must preserve focused group action');
+  if(hold){for(let left=hold;left>0;left-=Math.min(15,left)){console.log('INSPECTION solid group '+left+' seconds remaining');await new Promise(r=>setTimeout(r,Math.min(15,left)*1000));}}
+  const result=await page.evaluate(()=>{const c=window.hostingCardCheck;return {cardRetained:c.card.isConnected,replacements:c.replacements,stateReads:c.stateReads,minOpacity:c.minOpacity,animation:c.animation};});
+  console.log('OBSERVED PACKAGED CARD '+JSON.stringify(result));
+  console.log('OBSERVED DIRECTORY REFRESHES '+await app.evaluate(()=>globalThis.__cardAccountRefreshes.completed));
+  assert.equal(result.cardRetained,true);assert.equal(result.replacements,0);assert.ok(result.stateReads>=3);assert.equal(result.minOpacity,1);assert.equal(result.animation,'none');
+  assert.equal(await page.evaluate(()=>document.activeElement===window.hostingCardCheck.button),true,'focus must also survive the entire final visible hold');
+  await shot(page,'05-solid-hosting-card');
+  console.log('PASS: packaged hosting card stays fully opaque without replacement or focus loss across state and account polling.');
+ }finally{await page.evaluate(()=>{const c=window.hostingCardCheck;c.observer.disconnect();clearInterval(c.timer);window.removeEventListener('seedhost-state-read',c.listener);});await app.evaluate(({ipcMain})=>{ipcMain._invokeHandlers.set('seedhost:call',globalThis.__cardAccountRefreshes.original);delete globalThis.__cardAccountRefreshes;});}
+}
 try{
  step('Create real isolated accounts; recipient starts with no local servers.');
  const alice=await launch('audit_alice'),bob=await launch('audit_bob');
@@ -144,7 +177,8 @@ try{
  await click(bob.page,'#notifications-open');assert.match(await bob.page.locator('#notifications-list').textContent(),/audit_alice/);await bob.page.keyboard.press('Escape');
  assert.deepEqual(errors,[]);console.log('PASS: real IPC/TLS invitation acceptance, Friends inbox, no auto-adoption, explicit append-only download, independent groups, persistent deduped notifications.');
  console.log('ARTIFACT_DIR='+root);
- if(hold){await friends(bob.page);await bob.page.bringToFront();for(let left=hold;left>0;left-=Math.min(15,left)){console.log('INSPECTION '+left+' seconds remaining');await new Promise(r=>setTimeout(r,Math.min(15,left)*1000));}}
+ await checkSolidGroup(alice,groupA.fingerprint);
+ assert.deepEqual(errors,[]);
 }catch(error){process.exitCode=1;console.error(error);for(const [i,app] of apps.entries()){const page=await app.firstWindow().catch(()=>null);if(page&&!page.isClosed())await page.screenshot({path:path.join(root,'failure-'+i+'.png')}).catch(()=>{});}console.log('ARTIFACT_DIR='+root);
 }finally{for(const app of [...apps].reverse()){
  console.log('CLEANUP isolated Electron '+app.process().pid);

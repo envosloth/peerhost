@@ -13,7 +13,7 @@
   let serverKey = null;
   let renderedPeers = null;
   let lastLogs = null;
-  let selectedSend = null;
+
   let errorKind = null;
   let relayDirty = false;
   let settingsCategory = 'appearance';
@@ -115,7 +115,7 @@
     if ($('setup-dialog').open) { $('setup-error').textContent = message; $('setup-error').hidden = false; }
   }
 
-  const setupSteps = ['server', 'runtime', 'friends', 'gateway', 'ready'];
+  const setupSteps = ['server', 'runtime', 'friends', 'ready'];
   const DEFAULT_SERVER_NAME = 'My Minecraft server';
   const RECENT_RELEASES = 10;
 
@@ -248,7 +248,7 @@
     select.addEventListener('change', syncBridges);
   }
   function setupPayload() {
-    return { step: setupDraft.step, dismissed: setupDraft.dismissed, completed: setupDraft.completed, skipped: [...setupDraft.skipped], draft: { name: $('setup-name').value, loader: $('setup-loader').value, gameVersion: $('setup-version').value, memoryMiB: Number($('setup-runtime-memory').value) } };
+    return { step: setupDraft.step, dismissed: setupDraft.dismissed, completed: setupDraft.completed, ...(setupDraft.friendsConfigured ? { friendsConfigured: setupDraft.friendsConfigured } : {}), skipped: [...setupDraft.skipped], draft: { name: $('setup-name').value, loader: $('setup-loader').value, gameVersion: $('setup-version').value, memoryMiB: Number($('setup-runtime-memory').value) } };
   }
   function renderVersions() {
     const selected = $('setup-version').value || setupDraft?.draft.gameVersion || '';
@@ -267,7 +267,7 @@
   // Configuration alone, without the saved completed flag: the payload asks to complete, so it cannot read its own prior state.
   function setupResolved() {
     const checks = setupChecks();
-    return checks.server === 'complete' && checks.runtime === 'complete' && [checks.friends, checks.gateway].every(check => check === 'complete' || check === 'skipped');
+    return checks.server === 'complete' && checks.runtime === 'complete' && [checks.friends].every(check => check === 'complete' || check === 'skipped');
   }
   // Configured setup, not visited stages. The main process reports the same derivation after persistence.
   function setupChecks() {
@@ -279,9 +279,9 @@
     return {
       server: server ? 'complete' : 'pending',
       runtime,
-      friends: relay ? 'complete' : setupDraft?.skipped.includes('friends') ? 'skipped' : 'pending',
+      friends: setupDraft?.friendsConfigured || relay ? 'complete' : setupDraft?.skipped.includes('friends') ? 'skipped' : 'pending',
       gateway,
-      ready: setupProgress()?.completed && !server?.modInstallError && Boolean(server?.profile?.executable && server.profile.args?.length) && runtime === 'complete' && ['complete', 'skipped'].includes(relay ? 'complete' : setupDraft?.skipped.includes('friends') ? 'skipped' : 'pending') && ['complete', 'skipped'].includes(gateway) ? 'complete' : 'pending',
+      ready: setupProgress()?.completed && !server?.modInstallError && Boolean(server?.profile?.executable && server.profile.args?.length) && runtime === 'complete' && ['complete', 'skipped'].includes(setupDraft?.friendsConfigured || relay ? 'complete' : setupDraft?.skipped.includes('friends') ? 'skipped' : 'pending') ? 'complete' : 'pending',
     };
   }
   function renderReadySummary() {
@@ -289,18 +289,18 @@
     const java = server?.profile?.executable ? setupJava.find(j => j.executable === server.profile.executable) : null;
     const memory = profileMemoryMiB(server);
     const checks = setupChecks();
-    const optional = [checks.friends, checks.gateway];
+    const optional = [checks.friends];
     const rows = [
       [Boolean(server), server ? `Server: ${server.name}` : 'Server: not created yet — go back to “Your server”.'],
       [setupPrepared(), setupPrepared() ? `Runs with ${java ? `Java ${java.major}` : 'your chosen Java'}${memory ? ` and ${formatMemory(memory)} of memory` : ''}.` : server?.modInstallError ? `Java & memory: unavailable until this is repaired — ${server.modInstallError}` : 'Java & memory: not set yet.'],
-      [checks.friends === 'complete', state?.relay ? `Friends: in group “${state.relay.name}”.` : checks.friends === 'skipped' ? 'Friends: skipped — add them any time from the Friends tab.' : 'Friends: not set up yet — finish the step or explicitly skip it.'],
-      [checks.gateway === 'complete', checks.gateway === 'unavailable' ? `Always-on PC: unavailable until this is repaired — ${state?.gateway?.error || alwaysOnStatus?.error}` : checks.gateway === 'complete' ? 'Always-on PC: ready to give players one address.' : checks.gateway === 'skipped' ? 'Always-on PC: skipped — you can add one later.' : 'Always-on PC: not set up yet — finish the step or explicitly skip it.'],
+      [checks.friends === 'complete', setupDraft?.friendsConfigured === 'request-pending' ? 'Friends: request configured — waiting for them to accept.' : setupDraft?.friendsConfigured === 'accepted' ? 'Friends: accepted and confirmed.' : state?.relay ? `Friends: in group “${state.relay.name}”.` : checks.friends === 'skipped' ? 'Friends: skipped — add them any time from the Friends tab.' : 'Friends: not set up yet — finish the step or explicitly skip it.'],
+
     ];
     const signature = JSON.stringify(rows);
     if ($('setup-ready-list').dataset.signature === signature) return;
     $('setup-ready-list').dataset.signature = signature;
     $('setup-ready-list').replaceChildren(...rows.map(([done, text]) => { const item = element('li', done ? 'is-done' : '', text); return item; }));
-    $('setup-ready-copy').textContent = setupProgress()?.completed && optional.every(check => check === 'complete' || check === 'skipped') ? 'Setup is complete. You can reopen this guide any time from the sidebar.' : 'Finish your server and memory, then either set up Friends and the always-on PC or skip those optional steps. Nothing is falsely marked done.';
+    $('setup-ready-copy').textContent = setupProgress()?.completed && optional.every(check => check === 'complete' || check === 'skipped') ? 'Setup is complete. You can reopen this guide any time from the sidebar.' : 'Finish your server and memory, then send or accept a friend request, or skip Friends. Nothing is falsely marked done.';
   }
   function renderSetup() {
     const blocked = !bridgeReady || isBusy();
@@ -367,7 +367,7 @@
       setupGeneration++;
       setupServerId = newServer ? null : state.server?.id ?? null;
       const saved = setupProgress();
-      setupDraft = saved && setupSteps.includes(saved.step) && saved.draft ? { step: saved.step, dismissed: saved.dismissed, completed: saved.completed, skipped: [...(saved.skipped || [])], draft: { ...saved.draft } } : defaultSetup();
+      setupDraft = saved && setupSteps.includes(saved.step) && saved.draft ? { step: saved.step, dismissed: saved.dismissed, completed: saved.completed, skipped: [...(saved.skipped || [])].filter(s => s !== 'gateway'), ...(saved.friendsConfigured ? { friendsConfigured: saved.friendsConfigured } : {}), draft: { ...saved.draft } } : defaultSetup();
       setupMode = setupDraft.draft.gameVersion || setupDraft.draft.name !== DEFAULT_SERVER_NAME ? 'create' : 'choose';
       $('setup-name').value = setupDraft.draft.name;
       $('setup-loader').value = setupDraft.draft.loader;
@@ -434,8 +434,25 @@
       if (!current() || !actual || Object.keys(fresh).some(key => JSON.stringify(actual[key]) !== JSON.stringify(fresh[key]))) throw new Error('The server was created, but its new-world draft reset could not be confirmed. Check the library before creating another.');
     });
   }
+  // Capture before the social request; never attribute a late result to another guide/world.
+  window.seedGuideFriends = Object.freeze({ capture() {
+    if (!$('setup-dialog').open || setupDraft?.step !== 'friends' || !setupServerId) return null;
+    const generation = setupGeneration, id = setupServerId;
+    return async (configured, current) => {
+      if (!current() || generation !== setupGeneration || setupServerId !== id || state.server?.id !== id || !$('setup-dialog').open) return false;
+      const previous = { configured: setupDraft.friendsConfigured, skipped: [...setupDraft.skipped] };
+      setupDraft.friendsConfigured = configured;
+      setupDraft.skipped = setupDraft.skipped.filter(s => s !== 'friends');
+      const saved = await saveSetup(setupDraft.step, false, false, generation);
+      if (!saved && generation === setupGeneration && setupServerId === id) {
+        if (previous.configured) setupDraft.friendsConfigured = previous.configured; else delete setupDraft.friendsConfigured;
+        setupDraft.skipped = previous.skipped; renderSetup();
+      }
+      return saved;
+    };
+  } });
   $('nav-setup').addEventListener('click', () => openSetup());
-  $('open-gateway-setup').addEventListener('click', () => openSetup('gateway'));
+  $('open-gateway-setup').addEventListener('click', () => window.seedDashboard?.selectPage('peers'));
   $('create-server-empty').addEventListener('click', () => { openSetup('server'); if (!state?.server) { setupMode = 'create'; renderSetup(); $('setup-name').focus(); } });
   $('add-server').addEventListener('click', () => { if ($('add-server').disabled) return; openSetup('server', true); setupMode = 'create'; renderSetup(); $('setup-name').focus(); });
   $('server-list').addEventListener('click', (event) => {
@@ -483,7 +500,7 @@
   $('setup-open-friends').addEventListener('click', () => { if (!$('setup-open-friends').disabled) void routeGuideToAccountJoin(); });
   // A page change closes the guide, so it can never float over a different workspace.
   window.addEventListener('seedhost-page-changed', () => { if ($('setup-dialog').open && !isBusy()) closeSetup(); });
-  $('setup-next').addEventListener('click', () => saveSetup(setupSteps[Math.min(4, setupSteps.indexOf(setupDraft.step) + 1)], setupDraft.step === 'ready'));
+  $('setup-next').addEventListener('click', () => saveSetup(setupSteps[Math.min(setupSteps.length - 1, setupSteps.indexOf(setupDraft.step) + 1)], setupDraft.step === 'ready'));
   $('setup-skip').addEventListener('click', () => saveSetup(setupSteps[setupSteps.indexOf(setupDraft.step) + 1], false, true));
   $('setup-unskip').addEventListener('click', () => {
     if (!setupDraft || isBusy() || !setupDraft.skipped.includes(setupDraft.step)) return;
@@ -787,6 +804,7 @@
 
   async function refreshAlwaysOn() {
     try { alwaysOnStatus = await window.seedhost.call('alwaysOnStatus'); } catch { alwaysOnStatus = null; }
+    renderAlwaysOn(!bridgeReady || isBusy());
     renderSetup();
   }
   function renderAlwaysOn(blocked) {
@@ -920,10 +938,31 @@
     const checks = { server: Boolean(state?.server), start: state?.server?.state === 'running', friends: Boolean(state?.relay), relay: state?.gateway?.enabled === true };
     for (const item of $('getting-started').querySelectorAll('li')) item.classList.toggle('is-done', checks[item.dataset.check] === true);
   }
+  function renderAppNotices(blocked) {
+    const notice = typeof state?.appNotice === 'string' ? state.appNotice : '';
+    $('app-notice').hidden = !notice; $('app-notice').textContent = notice;
+    const offer = state?.incomingHandoff;
+    const valid = offer && typeof offer.id === 'string' && offer.id && typeof offer.source === 'string' && typeof offer.snapshotId === 'string';
+    $('incoming-handoff').hidden = !valid;
+    if (valid) $('incoming-handoff-copy').textContent = `${offer.source} offers world revision ${offer.snapshotId}. Choose Accept or Decline here; no response is sent until you choose.`;
+    // The receiver holds the mutation lock while awaiting this response. Only
+    // another foreground action blocks consent; ordinary mutations stay fenced.
+    for (const id of ['incoming-handoff-accept', 'incoming-handoff-decline']) $(id).disabled = !bridgeReady || Boolean(pendingMethod) || !valid;
+  }
+  for (const accepted of [false, true]) $('incoming-handoff-' + (accepted ? 'accept' : 'decline')).addEventListener('click', async () => {
+    const button = $('incoming-handoff-' + (accepted ? 'accept' : 'decline'));
+    const id = state?.incomingHandoff?.id; if (button.disabled || !id) return;
+    $('incoming-handoff-feedback').textContent = 'Sending your response…';
+    const ok = await runAction('respondIncomingHandoff', { id, accepted });
+    if (state?.incomingHandoff?.id === id) $('incoming-handoff-feedback').textContent = ok ? 'Response sent; waiting for the pending handoff state to clear.' : 'Could not confirm your response. Check the error and retry.';
+    else $('incoming-handoff-feedback').textContent = '';
+  });
   function render() {
     const server = state?.server;
     const blocked = !bridgeReady || isBusy();
     if (publicStatus) renderPublicCard();
+    renderAppNotices(blocked);
+    renderAlwaysOn(blocked);
     const active = !isStopped() || isHosting();
     const profileEditable = !blocked && Boolean(server) && !active;
     const nextServerKey = server ? `${server.serverDir}\n${server.storeDir}` : null;
@@ -1038,11 +1077,7 @@
     $('activity-message').textContent = !bridgeReady ? 'App connection unavailable · actions blocked.' : busy ? busyLabels[busy] || `Working: ${busy}` : 'Ready';
     $('activity-message').classList.toggle('is-busy', Boolean(busy));
     $('activity-message').classList.toggle('is-offline', !bridgeReady);
-    const sendStillCurrent = selectedSend && server?.snapshotId === selectedSend.snapshotId && state?.peers.some((peer) => peer.fingerprint === selectedSend.fingerprint) &&
-      (!selectedSend.retry || pendingOffer()?.target === selectedSend.fingerprint);
-    const allowed = selectedSend?.retry ? bridgeReady && !isBusy() && isStopped() : canSnapshot();
-    $('confirm-send').disabled = !allowed || !sendStillCurrent;
-    if (selectedSend) $('send-dialog-snapshot').textContent = `Snapshot: ${selectedSend.snapshotId}${sendStillCurrent ? '' : ' · State changed. Cancel and review again.'}`;
+
     $('settings-savebar').hidden = settingsCategory === 'appearance' && !settingsDirty;
     window.seedDashboard.update(state, blocked);
   }
@@ -1112,7 +1147,7 @@
       renderedCatalogue = null;
       $('mod-loader').removeAttribute('aria-invalid');
       $('mod-game-version').removeAttribute('aria-invalid');
-      if (targetReady() && $('mods-details').open && bridgeReady) queueMicrotask(() => void searchMods(0));
+      if (targetReady() && !$('mods-panel').hidden && bridgeReady) queueMicrotask(() => void searchMods(0));
     }
     if (!modTargetDirty) {
       $('mod-loader').value = target?.loader || '';
@@ -1168,6 +1203,8 @@
     $('mod-previous').disabled = !searchable || modLoading || !modLoaded || modOffset === 0;
     $('mod-next').disabled = !searchable || modLoading || !modLoaded || !modHits.length || modOffset + MOD_PAGE_SIZE >= modTotal || modOffset + MOD_PAGE_SIZE > 10000;
     $('mod-page').textContent = modLoaded && modHits.length ? `${modOffset + 1}–${modOffset + modHits.length} of ${modTotal.toLocaleString()}` : 'No results loaded';
+    for (const input of $('mod-placement-controls').querySelectorAll('input')) input.disabled = !modsEditable() || modTargetDirty || modLoading;
+    syncBridges();
   }
 
   async function searchMods(offset = 0, query = $('mod-query').value.trim(), sort = $('mod-sort').value) {
@@ -1196,8 +1233,8 @@
     }
   }
 
-  $('mods-details').addEventListener('toggle', () => {
-    if ($('mods-details').open && !modLoaded && !modLoading) void searchMods(0);
+  window.addEventListener('seedhost-page-changed', () => {
+    if (!$('mods-panel').hidden && !modLoaded && !modLoading) void searchMods(0);
   });
   for (const [id, event] of [['mod-loader', 'change'], ['mod-game-version', 'input']]) {
     $(id).addEventListener(event, () => {
@@ -1230,7 +1267,9 @@
       catch (error) { showError(`Could not open Modrinth: ${errorMessage(error)}`); }
     } else if (button.dataset.install) {
       const projectId = button.dataset.install;
-      await runAction('installMod', { projectId });
+      const placement = $('mod-placement-controls').querySelector('input:checked')?.value || 'auto';
+      const targets = placement === 'both' ? ['server', 'client'] : placement === 'auto' ? null : [placement];
+      await runAction('installMod', { projectId, ...(targets ? { targets } : {}) });
       // Installation is confirmed only by the read-back's provenance, never by a
       // successful invoke (the user may have cancelled the native confirmation).
       renderModBrowser();
@@ -1429,7 +1468,8 @@
   }
 
   async function runAction(method, payload, onVerified) {
-    if (!bridgeReady || isBusy()) return false;
+    const responding = method === 'respondIncomingHandoff' && payload?.id === state?.incomingHandoff?.id;
+    if (!bridgeReady || pendingMethod || (state?.busy && !responding)) return false;
     const actionServerId = state?.server?.id;
     const notifyFailure = window.seedNotifications?.captureFailure();
     pendingMethod = method;
@@ -1714,26 +1754,8 @@
     const method = button.dataset.method === 'handoff' ? 'handoff' : 'sendSnapshot';
     const retry = method === 'handoff' && pendingOffer()?.target === peer.fingerprint;
     if (!retry && !canSnapshot()) return;
-    selectedSend = { fingerprint: peer.fingerprint, snapshotId: state.server.snapshotId, method, retry };
-    $('send-dialog-title').textContent = method === 'handoff' ? 'Hand off hosting?' : 'Send this snapshot?';
-    $('confirm-send').textContent = method === 'handoff' ? 'Hand off ownership' : 'Send snapshot';
-    $('send-dialog-warning').textContent = retry ? 'This resends the pending handoff offer. If the peer already accepted it, it simply confirms; it is never applied twice. This PC stays fenced until the peer accepts or declines.' : method === 'handoff' ? 'This shares server files, including configuration/player data, then transfers hosting authority. This PC is fenced before transfer. If the attempt fails it stays fenced and you can retry; if the peer declines, ownership returns here. Both devices must approve. No automatic server start.' : 'This shares server files, which may contain private configuration or player data. Verify the recipient’s fingerprint. Sending is not a hosting handoff.';
-    $('send-dialog-recipient').textContent = `To ${peer.name} · ${formatEndpoint(peer.host, peer.port)}`;
-    $('send-dialog-fingerprint').textContent = peer.fingerprint;
-    render();
     if (peer.fingerprint === state.relay?.fingerprint) return showError('This peer is your relay. Use Park on relay instead; it stores the server for any PC to claim.');
-    $('send-dialog').showModal();
-    $('cancel-send').focus();
-  });
-  $('cancel-send').addEventListener('click', () => { selectedSend = null; $('send-dialog').close(); render(); });
-  $('close-send').addEventListener('click', () => { selectedSend = null; $('send-dialog').close(); render(); });
-  $('send-dialog').addEventListener('close', () => { selectedSend = null; render(); });
-  $('confirm-send').addEventListener('click', () => {
-    if ($('confirm-send').disabled || !selectedSend) return;
-    const {fingerprint,method} = selectedSend;
-    selectedSend = null;
-    $('send-dialog').close();
-    return runAction(method, { fingerprint });
+    return runAction(method, { fingerprint: peer.fingerprint });
   });
   for (const [id, eventName] of [['persistent-address', 'change'], ['gateway-address', 'input'], ['start-at-login', 'change']]) {
     $(id).addEventListener(eventName, () => {

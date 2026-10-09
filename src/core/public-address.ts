@@ -473,6 +473,20 @@ export class PerServerPublicAddresses {
     // rescan; a finished operation must not escape both disk and pending checks.
     if (revision !== this.reservationRevision) await this.assertCanStart(server);
   }
+  /** Allocate only a local Minecraft port. Never creates/repoints a provider tunnel. */
+  async newServerPort(serverId: string, occupied: number[]): Promise<number> {
+    if (this.closed) throw new Error('Public address manager is closed');
+    const excluded = new Set([...occupied, ...await this.deps.reservedPorts?.() ?? []]);
+    for (let port = 25565; port < 25821; port++) {
+      if (excluded.has(port)) continue;
+      try { await this.assertCanStart({ id: serverId, playerPort: port }); return port; }
+      catch (error) {
+        const message = (error as Error).message;
+        if (!message.startsWith('Minecraft port is reserved by another public server') && !message.startsWith('Minecraft port is reserved by a legacy public tunnel')) throw error;
+      }
+    }
+    throw new Error('No unreserved Minecraft port is available for a new server');
+  }
   private agentKey(): Promise<string> {
     return this.key ??= this.owner.approvedKey().catch(error => { this.key = undefined; throw error; });
   }

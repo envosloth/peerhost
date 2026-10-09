@@ -16,6 +16,8 @@ export interface CreateServerInput {
 }
 export interface PreparedServer {
   sourceDir: string;
+  /** Captured download-directory identities stay valid through adoption awaits. */
+  assertSource: () => Promise<void>;
   profile: LaunchProfile;
   loader: 'vanilla' | 'fabric';
   gameVersion: string;
@@ -160,7 +162,7 @@ export class ServerSetupClient {
    * in checksum-verified Maven jars. The Meta /server/jar endpoint has no published checksum.
    * https://github.com/FabricMC/fabric-installer/blob/master/src/main/java/net/fabricmc/installer/server/ServerInstaller.java
    */
-  private async prepareFabric(sourceDir: string, gameVersion: string, javaMajor: number, remainingBytes: number, operation: AbortSignal): Promise<void> {
+  private async prepareFabric(sourceDir: string, gameVersion: string, javaMajor: number, remainingBytes: number, operation: AbortSignal, assertDestination: () => Promise<void>): Promise<void> {
     const meta = this.testOrigin ?? 'https://meta.fabricmc.net';
     const maven = this.testOrigin ?? 'https://maven.fabricmc.net';
     const loaderVersion = '0.19.5'; // Audited modern launcher layout; fail closed on unsupported upstream changes.
@@ -187,6 +189,7 @@ export class ServerSetupClient {
       return { url, size, checksum: library.sha256 as string | undefined, filename: `libraries/lib-${index}.jar` };
     });
     checkFabricMappings(selected.intermediary === undefined ? undefined : object(selected.intermediary).maven, names, loaderVersion, gameVersion);
+    await assertDestination();
     await mkdir(path.join(sourceDir, 'libraries'));
     for (const library of libraries) {
       const checksum = library.checksum ?? (await this.bytes(library.url + '.sha256', ['maven.fabricmc.net'], 256, operation)).toString('utf8').trim();
@@ -195,6 +198,7 @@ export class ServerSetupClient {
       const bytes = await this.bytes(library.url, ['maven.fabricmc.net'], Math.min((library.size as number | undefined) ?? this.maxArtifactBytes, remainingBytes), operation);
       remainingBytes -= bytes.length;
       if (!bytes.length || library.size !== undefined && bytes.length !== library.size || createHash('sha256').update(bytes).digest('hex') !== checksum) throw new Error('Fabric library integrity check failed');
+      await assertDestination();
       await writeFile(path.join(sourceDir, library.filename), bytes, { flag: 'wx', mode: 0o600 });
     }
     const header = (name: string, value: string) => {
@@ -203,6 +207,7 @@ export class ServerSetupClient {
       return [...lines, line].join('\r\n') + '\r\n';
     };
     const manifest = 'Manifest-Version: 1.0\r\n' + header('Main-Class', 'net.fabricmc.loader.impl.launch.server.FabricServerLauncher') + header('Class-Path', libraries.map(library => library.filename).join(' ')) + '\r\n';
+    await assertDestination();
     await writeZip(path.join(sourceDir, 'fabric-server-launch.jar'), [
       { name: 'META-INF/MANIFEST.MF', data: Buffer.from(manifest) },
       { name: 'fabric-server-launch.properties', data: Buffer.from(`launch.mainClass=${profile.mainClass}\n`) },
@@ -218,6 +223,14 @@ export class ServerSetupClient {
     if (typeof stagingParent !== 'string' || !path.isAbsolute(stagingParent) || /[\0\r\n]/.test(stagingParent) || stagingParent.length > 4096) throw new Error('Invalid trusted staging parent');
     const stage = await lstat(stagingParent).catch(() => null);
     if (!stage?.isDirectory() || stage.isSymbolicLink()) throw new Error('Choose an existing non-symlink staging directory');
+    const assertStage = async () => {
+      const current = await lstat(stagingParent), actual = await realpath(stagingParent);
+      const samePath = (a: string, b: string) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+      if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== stage.dev || current.ino !== stage.ino || !samePath(actual, path.resolve(stagingParent))) {
+        throw new Error('Download staging directory changed or passes through links or junctions');
+      }
+    };
+    await assertStage();
     const release = (await this.releases(operation)).versions.find(version => version.id === input.gameVersion);
     if (!release) throw new Error('Choose a supported official release version');
     const raw = await this.bytes(release.url, ['piston-meta.mojang.com', 'launchermeta.mojang.com'], this.maxMetadataBytes, operation);
@@ -236,16 +249,28 @@ export class ServerSetupClient {
     if (!Number.isSafeInteger(download.size) || (download.size as number) < 1 || (download.size as number) > this.maxArtifactBytes || !isHash(download.sha1, 40)) throw new Error('Missing verifiable official server download');
     const bytes = await this.bytes(download.url, ['piston-data.mojang.com', 'launcher.mojang.com'], download.size as number, operation);
     if (bytes.length !== download.size || createHash('sha1').update(bytes).digest('hex') !== download.sha1) throw new Error('Server download integrity check failed');
+    // Official metadata/runtime/artifact reads can take minutes. Revalidate the
+    // captured directory identity at publication, not only before those awaits.
+    await assertStage();
     const sourceDir = await mkdtemp(path.join(stagingParent, 'seedhost-setup-'));
+    const source = await lstat(sourceDir);
+    const assertSource = async () => {
+      await assertStage();
+      const current = await lstat(sourceDir);
+      if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== source.dev || current.ino !== source.ino) throw new Error('Download source directory changed');
+    };
     try {
+      await assertSource();
       await writeFile(path.join(sourceDir, 'server.jar'), bytes, { flag: 'wx', mode: 0o600 });
-      if (input.loader === 'fabric') await this.prepareFabric(sourceDir, input.gameVersion, java.major, this.maxArtifactBytes - bytes.length, operation);
+      if (input.loader === 'fabric') await this.prepareFabric(sourceDir, input.gameVersion, java.major, this.maxArtifactBytes - bytes.length, operation, assertSource);
       operation.throwIfAborted();
+      await assertSource();
       if (input.eulaAccepted === true) await writeFile(path.join(sourceDir, 'eula.txt'), 'eula=true\n', { flag: 'wx', mode: 0o600 });
       const jarName = input.loader === 'fabric' ? 'fabric-server-launch.jar' : 'server.jar';
-      return { sourceDir, loader: input.loader, gameVersion: input.gameVersion, profile: validateLaunchProfile({ executable: java.executable, args: [`-Xms${Math.min(512, input.memoryMiB)}M`, `-Xmx${input.memoryMiB}M`, '-jar', jarName, 'nogui'] }) };
+      return { sourceDir, assertSource, loader: input.loader, gameVersion: input.gameVersion, profile: validateLaunchProfile({ executable: java.executable, args: [`-Xms${Math.min(512, input.memoryMiB)}M`, `-Xmx${input.memoryMiB}M`, '-jar', jarName, 'nogui'] }) };
     } catch (error) {
-      await rm(sourceDir, { recursive: true, force: true });
+      // Never remove a directory reached through a replaced ancestor on failure.
+      try { await assertSource(); await rm(sourceDir, { recursive: true, force: true }); } catch { /* preserve uncertain evidence */ }
       throw error;
     }
   }

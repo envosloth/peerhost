@@ -42,6 +42,12 @@ for(const mode of ['delete','port edit','disconnect','restart after delete','res
  assert.equal(f.tunnels.length,1);
 });
 
+test('new server allocation skips retired routes and currently registered ports without provider writes',async t=>{
+ const f=await fixture(t);f.setServers([f.b]);
+ assert.equal(typeof f.manager.newServerPort,'function');
+ const port=await f.manager.newServerPort('brand-new',[25566,25567]);assert.equal(port,25568);
+ assert.equal(f.tunnels.length,1);await f.manager.assertCanStart({id:'brand-new',playerPort:port});
+});
 test('retired A tunnel prevents ordinary non-public B start and setup on reused port',async t=>{
  const f=await fixture(t);f.setServers([f.b]);
  await assert.rejects(f.manager.enable(f.b,[f.b]),/reserv|public.*port/i);

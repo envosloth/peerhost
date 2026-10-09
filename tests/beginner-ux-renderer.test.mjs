@@ -128,7 +128,7 @@ test('late post-create metadata cannot overwrite a reopened completed guide or n
  try{
   await page.locator('#setup-save-close').click();await page.waitForFunction(()=>!document.querySelector('#setup-dialog').open);
   await page.locator('#add-server').click();await page.locator('#setup-name').fill('Newer pending draft');await page.locator('#setup-save-close').click();await page.waitForFunction(()=>!document.querySelector('#setup-dialog').open);
-  await page.locator(`#server-list button[data-action="open"][data-id="${existing.id}"]`).click();await settled(page);await page.locator('#nav-setup').click();
+  await page.locator(`#server-list [data-action="open"][data-id="${existing.id}"]`).click();await settled(page);await page.locator('#nav-setup').click();
   const pending=await page.evaluate(()=>structuredClone(window.fixture.state.newServerOnboarding));
   await page.evaluate(()=>window.fixture.releaseCreatedMetadata());await page.waitForFunction(()=>document.querySelector('#action-loading').hidden);await settled(page);
   assert.deepEqual(await page.evaluate(id=>window.fixture.guides[id],existing.id),finished,'a stale continuation must not un-complete another world');
@@ -157,7 +157,7 @@ test('first run starts with a plain choice, not a form', async t => {
   assert.equal(await page.locator('#setup-create-form').isVisible(), false, 'no form until a path is chosen');
   assert.equal(await page.locator('#setup-next').isVisible(), false, 'nothing to advance to before a server exists');
   assert.match(await page.locator('[data-setup-step="friends"]').textContent(), /optional/i);
-  assert.match(await page.locator('[data-setup-step="gateway"]').textContent(), /optional/i);
+  assert.equal(await page.locator('[data-setup-step="gateway"]').count(), 0);
 });
 
 test('new world form picks sensible defaults: latest release, automatic Java, one memory choice only on the Memory step', async t => {
@@ -186,14 +186,12 @@ test('stepper shows completed stages and Ready summarises what was set up', asyn
   assert.equal(await page.locator('#setup-next').textContent(), 'Go to my server');
 });
 
-test('always-on PC stage is two big choices, with no terminal or commands anywhere', async t => {
-  const page = await renderer(t);
-  await page.locator('[data-setup-step="gateway"]').click(); await settled(page);
-  assert.equal(await page.locator('#always-on-be').isVisible(), true);
-  assert.equal(await page.locator('#always-on-pair').isVisible(), true);
-  assert.equal(await page.locator('#setup-gateway-advanced').evaluate(d => d.open), false, 'fine controls are folded away');
-  assert.doesNotMatch(await page.locator('#setup-gateway').textContent(), /terminal|Node\.js|seedhost-relay|--host/i);
-  assert.match(await page.locator('#setup-skip').textContent(), /skip/i);
+test('optional always-on role belongs to Multi-host, not the beginner guide', async t => {
+  const page = await renderer(t, appState(server(), { onboarding: { ...progress('ready'), dismissed: true } }));
+  await openSelectedServer(page); await page.locator('#peers-tab').click();
+  assert.equal(await page.locator('#multi-always-on-enable').isVisible(), true);
+  assert.equal(await page.locator('#setup-dialog #setup-gateway').count(), 0);
+  assert.doesNotMatch(await page.locator('#multi-always-on-help').textContent(), /terminal|Node\.js|seedhost-relay|--host/i);
 });
 
 test('Operate without a server shows a getting-started checklist', async t => {

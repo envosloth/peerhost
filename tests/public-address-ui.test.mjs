@@ -10,8 +10,8 @@ test('desktop library projects each server binding instead of repeating the help
  const begin=source.indexOf("case 'getState':"),end=source.indexOf("case 'alwaysOnStatus':",begin);
  const state={servers:[{id:'a',playerPort:25565,state:'running',group:null},{id:'b',playerPort:25567,state:'offline',group:null}],onboarding:{}};
  const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
- const run=new AsyncFunction('backend','helperForSelected','helpers','onboardingChecks','publicAddress','app',`switch('getState'){${source.slice(begin,end)}}`);
- const result=await run({getState:async()=>state},async()=>({status:async()=>({running:true,fingerprint:'helper'})}),{runningGamePorts:async()=>[]},()=>({ready:'incomplete'}),{status:server=>({state:server?.id==='a'?'reachable':'reserved',address:server?.id?server.id+'.tun.ply.gg':'legacy-helper.tun.ply.gg'})},{getVersion:()=> '0.6.1-alpha'});
+ const run=new AsyncFunction('backend','helperForSelected','helpers','onboardingChecks','publicAddress','app','appNotice','incomingHandoff',`switch('getState'){${source.slice(begin,end)}}`);
+ const result=await run({getState:async()=>state},async()=>({status:async()=>({running:true,fingerprint:'helper'})}),{runningGamePorts:async()=>[]},()=>({ready:'incomplete'}),{status:server=>({state:server?.id==='a'?'reachable':'reserved',address:server?.id?server.id+'.tun.ply.gg':'legacy-helper.tun.ply.gg'})},{getVersion:()=> '0.6.1-alpha'},null,{status:()=>null});
  assert.deepEqual(result.servers.map(s=>s.publicJoinAddress?.address),['a.tun.ply.gg','b.tun.ply.gg']);
  assert.deepEqual(result.servers.map(s=>s.publicJoinAddress?.targetServerId),['a','b']);
 });

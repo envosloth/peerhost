@@ -7,7 +7,7 @@ import { SeedHostApplication } from '../dist/src/core/application.js';
 import { createIdentity } from '../dist/src/core/peer-transport.js';
 
 const progress = (name, changes = {}) => ({
-  step: 'friends', dismissed: false, completed: false, skipped: ['gateway'],
+  step: 'friends', dismissed: false, completed: false, skipped: [],
   draft: { name, loader: 'fabric', gameVersion: '1.21.1', memoryMiB: 4096 }, ...changes,
 });
 const readback = input => ({ version: 1, ...input, error: null });
@@ -34,7 +34,7 @@ test('two imported worlds retain independent guide steps, drafts, skips and comp
   await app.importExisting(alphaSource, true);
   const alpha = (await app.getState()).server;
   await app.saveProfile({ executable: process.execPath, args: [path.resolve('tools/fake-java-server.mjs')] });
-  const alphaProgress = progress('Alpha draft', { step: 'ready', dismissed: true, completed: true, skipped: ['friends', 'gateway'] });
+  const alphaProgress = progress('Alpha draft', { step: 'ready', dismissed: true, completed: true, skipped: ['friends'] });
   const stateBeforeSave = await readFile(path.join(profile, 'state.json'), 'utf8');
   const ledgerBeforeSave = await readFile(alpha.ledgerFile, 'utf8');
   await app.saveOnboarding(alphaProgress);
@@ -44,7 +44,7 @@ test('two imported worlds retain independent guide steps, drafts, skips and comp
   const bravo = (await app.getState()).server;
   assert.equal((await app.getState()).onboarding.completed, false, 'a new world must not inherit another world\'s completion');
   await assert.rejects(app.saveOnboarding(alphaProgress, undefined, bravo.id), /configure.*server/i);
-  const bravoProgress = progress('Bravo draft', { step: 'gateway', skipped: ['friends'] });
+  const bravoProgress = progress('Bravo draft', { step: 'ready', skipped: ['friends'] });
   await app.saveOnboarding(bravoProgress);
   await app.selectServer(alpha.id);
   assert.deepEqual((await app.getState()).onboarding, readback(alphaProgress));
@@ -70,12 +70,12 @@ test('explicit pending-new scope remains resumable while an existing world is se
   await app.importExisting(await source('existing'), true);
   const existing = (await app.getState()).server;
   await app.saveProfile({ executable: process.execPath, args: [path.resolve('tools/fake-java-server.mjs')] });
-  const completed = progress('Existing complete', { step: 'ready', dismissed: true, completed: true, skipped: ['friends', 'gateway'] });
+  const completed = progress('Existing complete', { step: 'ready', dismissed: true, completed: true, skipped: ['friends'] });
   await app.saveOnboarding(completed);
   await assert.rejects(app.saveOnboarding(completed, { enabled: true, error: null }, null), /configure.*server/i);
   assert.deepEqual((await app.getState()).onboarding, readback(completed));
   assert.deepEqual((await app.getState()).newServerOnboarding, readback(pending));
-  const updatedPending = progress('Next world', { step: 'gateway', skipped: ['friends'] });
+  const updatedPending = progress('Next world', { step: 'ready', skipped: ['friends'] });
   await app.saveOnboarding(updatedPending, undefined, null);
   assert.deepEqual((await app.getState()).onboarding, readback(completed));
   assert.deepEqual((await app.getState()).newServerOnboarding, readback(updatedPending));
@@ -124,7 +124,7 @@ test('legacy single-profile progress is preserved for only the initially selecte
   await app.importExisting(await source('bravo'), true); const bravo = (await app.getState()).server;
   await app.saveProfile({ executable: process.execPath, args: [path.resolve('tools/fake-java-server.mjs')] });
   await app.close();
-  const legacy = progress('Legacy Bravo', { step: 'ready', completed: true, dismissed: true, skipped: ['friends', 'gateway'] });
+  const legacy = progress('Legacy Bravo', { step: 'ready', completed: true, dismissed: true, skipped: ['friends'] });
   const legacyFile = path.join(profile, 'onboarding.json'); const legacyBytes = JSON.stringify({ version: 1, ...legacy });
   await writeFile(legacyFile, legacyBytes);
   const libraryBytes = await readFile(path.join(profile, 'state.json'), 'utf8');
@@ -156,7 +156,7 @@ test('legacy single-profile progress is preserved for only the initially selecte
 test('serverless legacy draft stays pending through import and reopen even if a deleted world left completion behind', async t => {
   const { app, profile, open, source } = await fixture(t);
   await app.close();
-  const legacy = progress('Legacy pending', { step: 'ready', completed: true, dismissed: true, skipped: ['friends', 'gateway'] });
+  const legacy = progress('Legacy pending', { step: 'ready', completed: true, dismissed: true, skipped: ['friends'] });
   const legacyFile = path.join(profile, 'onboarding.json'); const bytes = JSON.stringify({ version: 1, ...legacy });
   await writeFile(legacyFile, bytes);
   const expected = readback({ ...legacy, completed: false });
@@ -274,7 +274,7 @@ test('pre-library v1 state preserves its guide on repeated reopen without rewrit
   const first = await open(); assert.deepEqual((await first.getState()).onboarding, readback(legacy));
   await first.close();
   const second = await open(); assert.deepEqual((await second.getState()).onboarding, readback(legacy));
-  const updated = progress('Pre-library edited', { step: 'gateway', skipped: ['friends'] });
+  const updated = progress('Pre-library edited', { step: 'ready', skipped: ['friends'] });
   await second.saveOnboarding(updated, undefined, (await second.getState()).server.id);
   assert.equal(await readFile(stateFile, 'utf8'), stateBytes);
   assert.equal(await readFile(original.ledgerFile, 'utf8'), ledgerBytes);

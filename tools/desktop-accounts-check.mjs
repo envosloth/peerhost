@@ -41,9 +41,9 @@ async function enterMultiHost({app,page}){
     const source=path.join(root,'workspace-'+(workspaceSequence++));await mkdir(source,{recursive:true});await writeFile(path.join(source,'eula.txt'),'eula=true\n');
     await app.evaluate(({dialog},source)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[source]});},source);
     await page.locator('#import-server').click();
-    await page.waitForFunction(()=>document.querySelector('#server-list .is-current button[data-action="open"]'));
+    await page.waitForFunction(()=>document.querySelector('#server-list .is-current[data-action="open"]'));
   }
-  await page.locator('#server-list .is-current button[data-action="open"]').click();
+  await page.locator('#server-list .is-current[data-action="open"]').click();
   await page.waitForFunction(()=>!document.querySelector('#peers-tab').hidden);
   await page.locator('#peers-tab').click();
 }

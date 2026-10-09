@@ -2,7 +2,7 @@ import test from 'node:test';
 import { javaProbeFixture } from './java-probe-fixture.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { mkdtemp, mkdir, rm, readFile, readdir, lstat } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, readFile, writeFile, readdir, lstat, symlink, rename, link } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { SeedHostApplication } from '../dist/src/core/application.js';
@@ -10,7 +10,7 @@ import { ServerSetupClient } from '../dist/src/core/server-setup.js';
 import { createIdentity } from '../dist/src/core/peer-transport.js';
 import { readSnapshot, materializeSnapshot } from '../dist/src/core/snapshots.js';
 
-async function fixture(t, { tamper = false, delay = 0 } = {}) {
+async function fixture(t, { tamper = false, delay = 0, holdArtifact = false, chooseServerPort } = {}) {
   const dir = await mkdtemp(path.join(process.env.TMPDIR, 'ph-app-setup-'));
   const java = await javaProbeFixture(dir, { server: false });
   const jar = Buffer.from('Verified fixture bytes, NOT Minecraft');
@@ -18,6 +18,9 @@ async function fixture(t, { tamper = false, delay = 0 } = {}) {
   let origin;
   const metadata = () => JSON.stringify({ id: '1.21.1', javaVersion: { majorVersion: 21 }, downloads: { server: { url: origin + '/server.jar', size: jar.length, sha1: hash(jar) } } });
   const requests = [];
+  let releaseArtifact, artifactRequested;
+  const artifactGate = new Promise(resolve => { releaseArtifact = resolve; });
+  const artifactRequest = new Promise(resolve => { artifactRequested = resolve; });
   const http = createServer((req, res) => {
     requests.push(req.url);
     let body;
@@ -28,15 +31,74 @@ async function fixture(t, { tamper = false, delay = 0 } = {}) {
     else if (req.url.endsWith('/server/json')) body = JSON.stringify({ id: 'fabric-loader-0.19.5-1.21.1', inheritsFrom: '1.21.1', mainClass: 'net.fabricmc.loader.impl.launch.knot.KnotServer', libraries: ['net.fabricmc:fabric-loader:0.19.5', 'net.fabricmc:intermediary:1.21.1'].map(name => ({ name, url: origin + '/', sha256: hash(jar, 'sha256'), size: jar.length })) });
     else if (req.url.endsWith('.jar')) body = jar;
     else { res.statusCode = 404; body = 'missing'; }
-    setTimeout(() => res.end(body), delay);
+    if (holdArtifact && req.url === (holdArtifact === true ? '/server.jar' : holdArtifact)) { artifactRequested(); void artifactGate.then(() => res.end(body)); }
+    else setTimeout(() => res.end(body), delay);
   });
   await new Promise(resolve => http.listen(0, '127.0.0.1', resolve)); origin = `http://127.0.0.1:${http.address().port}`;
   const root = path.join(dir, 'app');
-  const app = new SeedHostApplication(root, await createIdentity(), { serverSetup: new ServerSetupClient({ testOnly: { origin } }) }); await app.open();
-  t.after(async () => { await app.close(); http.closeAllConnections(); await new Promise(resolve => http.close(resolve)); await rm(dir, { recursive: true, force: true }); });
-  return { app, dir, root, requests, jar, input: { name: 'Friends world', loader: 'vanilla', gameVersion: '1.21.1', javaExecutable: java, memoryMiB: 1024, eulaAccepted: true } };
+  const app = new SeedHostApplication(root, await createIdentity(), { serverSetup: new ServerSetupClient({ testOnly: { origin } }), chooseServerPort }); await app.open();
+  t.after(async () => { releaseArtifact(); await app.close(); http.closeAllConnections(); await new Promise(resolve => http.close(resolve)); await rm(dir, { recursive: true, force: true }); });
+  return { app, dir, root, requests, jar, artifactRequest, releaseArtifact, input: { name: 'Friends world', loader: 'vanilla', gameVersion: '1.21.1', javaExecutable: java, memoryMiB: 1024, eulaAccepted: true } };
 }
 
+test('download location rejects junctions and app storage before downloading anything',async t=>{
+ const f=await fixture(t);const downloads=path.join(f.dir,'downloads');await mkdir(downloads);const link=path.join(f.dir,'link');
+ await symlink(downloads,link,process.platform==='win32'?'junction':'dir');
+ for(const folder of ['relative',f.root,path.join(f.root,'managed'),f.dir,link])await assert.rejects(f.app.createServer(f.input,folder),/absolute|ordinary|link|storage|ENOENT/);
+ assert.deepEqual(f.requests,[]);assert.deepEqual(await readdir(downloads),[]);assert.equal((await f.app.getState()).server,null);
+});
+test('download publication refuses a replaced selected ancestor after the network await',async t=>{
+ const f=await fixture(t,{holdArtifact:true});const downloads=path.join(f.dir,'downloads'),outside=path.join(f.dir,'outside');await mkdir(downloads);await mkdir(outside);
+ const creating=f.app.createServer(f.input,downloads);creating.catch(()=>{});await f.artifactRequest;
+ const [staging]=await readdir(downloads);assert.match(staging,/^server-setup-/);
+ await rename(downloads,path.join(f.dir,'original-downloads'));await mkdir(path.join(outside,staging));await symlink(outside,downloads,process.platform==='win32'?'junction':'dir');
+ f.releaseArtifact();const error=await creating.then(()=>null,e=>e);
+ assert.deepEqual(await readdir(path.join(outside,staging)),[],'no official files or source directory may be published through the replacement junction');
+ assert.match(error?.message??'',/changed|link|junction|staging/i);assert.equal((await f.app.getState()).server,null);
+});
+test('Fabric library publication refuses a replaced download ancestor during its artifact await',async t=>{
+ const f=await fixture(t,{holdArtifact:'/net/fabricmc/fabric-loader/0.19.5/fabric-loader-0.19.5.jar'});const downloads=path.join(f.dir,'downloads'),outside=path.join(f.dir,'outside');await mkdir(downloads);await mkdir(outside);
+ const creating=f.app.createServer({...f.input,loader:'fabric'},downloads);creating.catch(()=>{});await f.artifactRequest;
+ const [staging]=await readdir(downloads),[source]=await readdir(path.join(downloads,staging));
+ await rename(downloads,path.join(f.dir,'original-downloads'));const target=path.join(outside,staging,source,'libraries');await mkdir(target,{recursive:true});await symlink(outside,downloads,process.platform==='win32'?'junction':'dir');
+ f.releaseArtifact();const error=await creating.then(()=>null,e=>e);
+ assert.deepEqual(await readdir(target),[],'Fabric artifacts must not be published through a replaced ancestor');
+ assert.match(error?.message??'',/changed|link|junction|staging/i);assert.equal((await f.app.getState()).server,null);
+});
+test('chosen download location retains verified source independently of the managed working copy', async t => {
+  const f = await fixture(t);const downloads=path.join(f.dir,'chosen-downloads');await mkdir(downloads);
+  await f.app.createServer(f.input,downloads);
+  const folders=await readdir(downloads);assert.equal(folders.length,1,'verified download kept in chosen folder');
+  const downloadedRoot=path.join(downloads,folders[0]);const children=await readdir(downloadedRoot);assert.equal(children.length,1);
+  const source=path.join(downloadedRoot,children[0]);assert.deepEqual(await readFile(path.join(source,'server.jar')),f.jar);
+  assert.notEqual((await f.app.getState()).server.serverDir,source);
+});
+test('post-download port selection refuses a replaced source without changing another world', async t => {
+ let release,admitted,creating;const gate=new Promise(r=>release=r),waiting=new Promise(r=>admitted=r);
+ t.after(async()=>{release();await creating?.catch(()=>{});});
+ const f=await fixture(t,{chooseServerPort:async()=>{admitted();await gate;return 25566;}});
+ const downloads=path.join(f.dir,'downloads'),outside=path.join(f.dir,'another-world');await mkdir(downloads);await mkdir(outside);
+ const original='motd=Untouched other world\nserver-port=25599\n';await writeFile(path.join(outside,'server.properties'),original);
+ creating=f.app.createServer(f.input,downloads);creating.catch(()=>{});await waiting;
+ const [staging]=await readdir(downloads),[source]=await readdir(path.join(downloads,staging)),sourceDir=path.join(downloads,staging,source);
+ await rename(sourceDir,sourceDir+'-original');await symlink(outside,sourceDir,process.platform==='win32'?'junction':'dir');
+ release();const error=await creating.then(()=>null,e=>e);
+ assert.equal(await readFile(path.join(outside,'server.properties'),'utf8'),original,'port editing must never follow a replaced download source into another world');
+ assert.match(error?.message??'',/changed|link|junction|source/i);assert.equal((await f.app.getState()).server,null);
+});
+test('new source port publication refuses an existing aliased properties file without overwriting it', async t => {
+ let release,admitted,creating;const gate=new Promise(r=>release=r),waiting=new Promise(r=>admitted=r);
+ t.after(async()=>{release();await creating?.catch(()=>{});});
+ const f=await fixture(t,{chooseServerPort:async()=>{admitted();await gate;return 25566;}});
+ const downloads=path.join(f.dir,'downloads');await mkdir(downloads);
+ const outside=path.join(f.dir,'other-server.properties'),original='server-port=25599\nmotd=untouched\n';await writeFile(outside,original);
+ creating=f.app.createServer(f.input,downloads);creating.catch(()=>{});await waiting;
+ const [staging]=await readdir(downloads),[source]=await readdir(path.join(downloads,staging));
+ await link(outside,path.join(downloads,staging,source,'server.properties'));
+ release();const error=await creating.then(()=>null,e=>e);
+ assert.equal(await readFile(outside,'utf8'),original,'creating a source config must never truncate an existing alias');
+ assert.match(error?.message??'',/exist|changed|source|link/i);assert.equal((await f.app.getState()).server,null);
+});
 test('application creation requires immutable explicit EULA consent before contacting sources', async t => {
   const f = await fixture(t);
   for (const eulaAccepted of [false, 'true', undefined]) await assert.rejects(f.app.createServer({ ...f.input, eulaAccepted }), /EULA/);
@@ -85,6 +147,7 @@ test('application creation locks preparation and adds a second server without di
   const library = await f.app.getState();
   assert.equal(library.servers.length, 2);
   assert.notEqual(library.server.id, before.id);
+  assert.notEqual(library.server.playerPort, 25565, 'a newly created world has a distinct port for its own public tunnel');
   // The first server keeps its own lineage entry, folder and revision (group: null = not bound to a hosting group yet).
   assert.deepEqual(library.servers.find(entry => entry.id === before.id), { id: before.id, name: before.name, active: false, state: 'offline', ownerName: 'this PC', configured: true, playerPort: 25565, group: null });
   assert.ok((await readdir(before.serverDir)).includes('server.jar'), 'the first server keeps its own managed copy');

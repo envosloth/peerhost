@@ -16,6 +16,8 @@
 .account-input-row { display:flex; gap:12px; align-items:center; margin:8px 0; }
 .account-input-row input { flex:1; min-width:0; }
 .account-request { padding:16px; border-radius:14px; border:1px solid var(--line-strong); background:var(--well); animation:account-enter .25s ease-out both; }
+/* Hosting groups are persistent cards, not animated incoming requests. */
+#hosting-group-list .account-request { animation:none; }
 .account-request p { margin:0 0 5px; font-weight:600; }
 .account-request .field-help { display:block; }
 .friend-remove { color:var(--danger); margin-left:auto; }

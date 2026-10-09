@@ -114,8 +114,8 @@ async function importDisposable(label) {
   await app.evaluate(({ dialog }, source) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [source] }); }, source);
   await page.bringToFront(); await page.locator('#home-tab').click();
   await click('#import-server');
-  await page.waitForFunction(() => document.querySelector('#server-list .is-current button[data-action="open"]'));
-  await click('#server-list .is-current button[data-action="open"]');
+  await page.waitForFunction(() => document.querySelector('#server-list .is-current[data-action="open"]'));
+  await click('#server-list .is-current[data-action="open"]');
   await page.waitForFunction(() => !document.getElementById('peers-tab').hidden);
 }
 async function inspectionHold() {
@@ -213,7 +213,7 @@ try {
   await page.evaluate(() => window.seedhost.call('saveModTarget', { loader: 'fabric', gameVersion: '1.21.1' }));
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await page.bringToFront(); await click('#server-list [data-action="open"]');
-  await reveal(page, '#mods-details'); await click('#mods-details > summary');
+  await reveal(page, '#mods-details'); await click('#mods-tab');
   await page.waitForFunction(() => document.querySelectorAll('#mod-results li').length === 20);
   assert.equal(await page.locator('#mod-sort').count(), 1);
   await select('#mod-sort', 'title-asc');

@@ -127,90 +127,24 @@
   settingsBody.append($('profile-details'));
   settingsBody.append(el('p', 'warning-copy', 'The launch profile (Java path and arguments) is unchanged and remains the only way to change how the server starts. Memory and Java are also reachable from the setup guide.'));
 
-  const filesBody = addPage('server-files', 'Server files', 'Browse & edit text', 'i-folder');
-  filesBody.insertAdjacentHTML('beforeend', '<section class="card dashboard-card"><div class="compact-heading"><h2 id="file-path">Server root</h2><div class="page-actions"><button id="file-up" type="button" class="button button-small">Up one folder</button><button id="file-refresh" type="button" class="button button-small">Refresh</button></div></div><p class="field-help">Directories and text files, listed from the managed copy of this server. Writes are refused while it runs or when another PC owns it, and a changed file is never overwritten silently: the guard hash from the last read is sent with every save.</p><ul id="file-list" class="dashboard-list" aria-label="Server files"></ul><section id="file-edit" hidden><div class="compact-heading"><h2 id="file-name">No file open</h2><span id="file-hash" class="subtle-label mono"></span></div><label class="sr-only" for="file-editor">File contents</label><textarea id="file-editor" class="mono" rows="14" spellcheck="false"></textarea><div class="page-actions"><button id="file-save" type="button" class="button button-primary">Save file</button><button id="file-reload" type="button" class="button">Reload from disk</button><button id="file-close" type="button" class="text-button">Close</button></div><p id="file-feedback" class="field-help" role="status"></p></section></section>');
-  // Folder/open failures must remain visible even while the editor is closed.
-  $('file-edit').after($('file-feedback'));
-  let filePath = '', fileList = null, fileOpen = null, filesToken = 0, filesBusy = false, filesAttempt = 0;
-  const filesWritable = () => !blocked && locallyOwned() && ['owned'].includes(state?.server?.ownership?.state) && ['offline', 'failed'].includes(state?.server?.state);
-  function resetFiles(clearFeedback = true) { filePath = ''; fileList = null; fileOpen = null; filesToken++; filesBusy = false; filesAttempt = 0; $('file-edit').hidden = true; $('file-list').replaceChildren(); $('file-path').textContent = 'Server root'; if (clearFeedback) $('file-feedback').textContent = ''; }
-  function renderFiles() {
-    $('file-refresh').disabled = blocked || !selectedId() || !dashboard || filesBusy;
-    $('file-up').hidden = !filePath;
-    $('file-up').disabled = blocked || filesBusy;
-    const save = $('file-save'); save.disabled = blocked || !fileOpen?.hash || fileOpen.editable === false || filesBusy || !filesWritable();
-    save.title = fileOpen?.editable === false ? 'This file is read-only here' : filesWritable() ? 'Save with the last-read guard hash' : 'Saving requires this PC to own the stopped server';
-    $('file-editor').disabled = blocked || !fileOpen?.hash || fileOpen.editable === false || !filesWritable();
-  }
-  async function listFiles(path = filePath) {
-    const id = selectedId(); if (!id || blocked) return false;
-    const token = ++filesToken; filesBusy = true; renderFiles(); $('file-feedback').textContent = 'Loading folder…';
-    const finishLoading = window.seedLoading?.begin('Loading server files…');
+  const filesBody = addPage('server-files', 'Server files', 'Open managed folder', 'i-folder');
+  filesBody.insertAdjacentHTML('beforeend', '<section class="card dashboard-card"><h2>Managed server folder</h2><p class="field-help">Server files opens this world’s managed working copy in your system file manager. Stop the server before editing files. Downloaded originals and backups are separate; edits here are not automatically backed up.</p><button id="file-open-folder" type="button" class="button">Open folder again</button><p id="file-feedback" class="field-help" role="status" aria-live="polite"></p></section>');
+  let filesToken = 0, filesBusy = false;
+  function resetFiles() { filesToken++; filesBusy = false; $('file-feedback').textContent = ''; }
+  function renderFiles() { $('file-open-folder').disabled = blocked || filesBusy || !selectedId(); }
+  async function openServerFolder() {
+    const id = selectedId(), generation = selectionGeneration;
+    if (!id || blocked || filesBusy) return;
+    const token = ++filesToken, current = () => token === filesToken && generation === selectionGeneration && selectedId() === id;
+    filesBusy = true; renderFiles(); $('file-feedback').textContent = 'Opening managed server folder…';
     try {
-      const listing = await window.seedhost.call('listServerFiles', { id, path });
-      if (token !== filesToken || selectedId() !== id) return false;
-      if (!listing || listing.serverId !== id || listing.path !== path || !Array.isArray(listing.entries)) throw new Error('The folder listing did not match this server. Refresh to try again.');
-      filePath = listing.path; fileList = listing.entries; $('file-path').textContent = listing.path ? `Server root / ${listing.path}` : 'Server root';
-      $('file-list').replaceChildren(...(listing.entries.length ? listing.entries.map(entry => {
-        const item = el('li', 'dashboard-list-row file-entry'); item.dataset.path = entry.path; item.dataset.kind = entry.kind; item.tabIndex = 0;
-        item.setAttribute('role', 'button'); item.setAttribute('aria-label', `${entry.kind === 'directory' ? 'Folder' : 'File'} ${entry.name}`);
-        const copy = el('div', 'dashboard-row-copy'); copy.append(el('strong', '', entry.name));
-        copy.append(el('p', 'field-help', `${entry.kind === 'directory' ? 'Folder' : 'File'}${Number.isSafeInteger(entry.bytes) ? ` · ${entry.bytes} bytes` : ''}${entry.kind === 'file' && entry.editable !== true ? ' · Read-only here' : ''}`));
-        item.append(copy); return item;
-      }) : [el('li', 'field-help', 'This folder is empty.')]));
-      $('file-feedback').textContent = ''; return true;
+      await window.seedhost.call('openServerFolder', { id });
+      if (current()) $('file-feedback').textContent = 'Opened the managed server folder in your system file manager.';
     } catch (error) {
-      if (token === filesToken) $('file-feedback').textContent = `Couldn’t list this folder: ${reason(error)}. Refresh to try again.`;
-      return false;
-    } finally { finishLoading?.(); if (token === filesToken) { filesBusy = false; filesAttempt = Date.now(); renderFiles(); } }
+      if (current()) $('file-feedback').textContent = `Couldn’t open this server’s folder: ${reason(error)}. Try again.`;
+    } finally { if (current()) { filesBusy = false; renderFiles(); } }
   }
-  async function openFile(path) {
-    const id = selectedId(); if (!id || blocked) return false;
-    const editable = fileList?.find(entry => entry.path === path)?.editable ?? (fileOpen?.path === path ? fileOpen.editable : true);
-    const token = ++filesToken; filesBusy = true; renderFiles(); $('file-feedback').textContent = 'Opening file…';
-    const finishLoading = window.seedLoading?.begin('Opening server file…');
-    try {
-      const file = await window.seedhost.call('readServerFile', { id, path });
-      if (token !== filesToken || selectedId() !== id) return false;
-      if (!file || file.serverId !== id || file.path !== path || typeof file.text !== 'string' || typeof file.hash !== 'string') throw new Error('The file read did not match this server. Refresh to try again.');
-      fileOpen = { path, hash: file.hash, bytes: file.bytes, editable }; $('file-edit').hidden = false; $('file-name').textContent = path; $('file-hash').textContent = `guard ${file.hash.slice(0, 12)}`; $('file-editor').value = file.text;
-      $('file-feedback').textContent = editable === false ? 'Read-only file: this path cannot be saved here.' : filesWritable() ? 'Loaded from disk. Saving sends this guard hash.' : 'Read-only right now: saving requires this PC to own the stopped server.';
-      renderFiles(); return true;
-    } catch (error) {
-      if (token === filesToken) $('file-feedback').textContent = `Couldn’t open this file: ${reason(error)}.`;
-      return false;
-    } finally { finishLoading?.(); if (token === filesToken) { filesBusy = false; renderFiles(); } }
-  }
-  async function saveFile() {
-    if (!fileOpen || $('file-save').disabled) return;
-    const id = selectedId(), open = { ...fileOpen }, text = $('file-editor').value;
-    const token = ++filesToken, generation = selectionGeneration;
-    const current = () => token === filesToken && generation === selectionGeneration && selectedId() === id;
-    filesBusy = true; renderFiles(); $('file-feedback').textContent = 'Saving…';
-    const finishLoading = window.seedLoading?.begin('Saving and checking the server file…');
-    try {
-      const result = await window.seedhost.call('writeServerFile', { id, path: open.path, text, expectedHash: open.hash });
-      if (!current()) return;
-      if (result === null) { $('file-feedback').textContent = 'Save cancelled. Your text is kept.'; return; }
-      const verify = await window.seedhost.call('readServerFile', { id, path: open.path });
-      if (!current()) return;
-      if (!verify || verify.serverId !== id || verify.path !== open.path || verify.text !== text || typeof verify.hash !== 'string') throw new Error('The saved file could not be confirmed on disk. Reload before editing again.');
-      fileOpen = { ...open, hash: verify.hash, bytes: verify.bytes }; $('file-hash').textContent = `guard ${verify.hash.slice(0, 12)}`;
-      $('file-feedback').textContent = 'Verified saved file against the disk read-back.';
-    } catch (error) {
-      if (current()) {
-        fileOpen.hash = null; $('file-hash').textContent = 'Unconfirmed guard — reload required';
-        $('file-feedback').textContent = `Couldn’t save this file: ${reason(error)}. Reload from disk and review before retrying.`;
-      }
-    } finally { finishLoading?.(); if (current()) { filesBusy = false; renderFiles(); } }
-  }
-  $('file-list').addEventListener('click', event => { const item = event.target.closest('[data-path]'); if (!item || filesBusy) return; if (item.dataset.kind === 'directory') void listFiles(item.dataset.path); else void openFile(item.dataset.path); });
-  $('file-list').addEventListener('keydown', event => { if (event.key === 'Enter' && event.target.closest?.('[data-path]')) event.target.click(); });
-  $('file-up').addEventListener('click', () => void listFiles(filePath.split('/').slice(0, -1).join('/')));
-  $('file-refresh').addEventListener('click', () => void listFiles());
-  $('file-save').addEventListener('click', () => void saveFile());
-  $('file-reload').addEventListener('click', () => { if (fileOpen) void openFile(fileOpen.path); });
-  $('file-close').addEventListener('click', () => { filesToken++; filesBusy = false; fileOpen = null; $('file-edit').hidden = true; $('file-feedback').textContent = ''; renderFiles(); });
+  $('file-open-folder').addEventListener('click', () => void openServerFolder());
 
   const modsBody = addPage('mods', 'Mods', 'Modrinth & client pack', 'i-puzzle'); modsBody.append($('mods-details'));
 
@@ -220,6 +154,9 @@
   $('settings-panel').querySelector('.page-inner').append($('advanced-peers'));
 
   const multiBody = $('peers-panel').querySelector('.page-inner');
+  // Legacy internal connection controls remain inert and hidden outside the guide.
+  // The supported optional role actions below are Multi-host-only, not setup stages.
+  multiBody.append($('setup-gateway'));
   $('peers-tab').querySelector('.nav-text').textContent = 'Multi-host'; $('peers-tab').querySelector('.nav-sub').textContent = 'Group & world handoff';
   multiBody.querySelector('h1').textContent = 'Multi-host';
   const multiScope = el('p', 'field-help multi-host-scope', 'The selected server’s hosting group is shown here. Membership, invitations and world handoffs use that group, not an unrelated server’s group. Account friendships and this PC’s optional always-on role are app-wide. Disband revokes the entire selected group, not just its local association.'); multiScope.id = 'multi-host-scope';
@@ -350,6 +287,8 @@
     } finally { finishLoading?.(); if (token === dashboardRequest) dashboardInFlight = false; }
   }
   dashboardRefresh.addEventListener('click', () => void refreshDashboard(true));
+  const dashboardPages = new Set(['operate', 'players', 'scheduler', 'server-settings']);
+  const DASHBOARD_SAMPLE_INTERVAL = 5000;
   function syncRoute() {
     const serverPage = !['home', 'friends', 'settings'].includes(currentPage);
     // Remembered backend selection is not an opened workspace. Home stays a library;
@@ -360,8 +299,8 @@
     serverHeader.hidden = !workspaceOpen;
     dashboardRefresh.disabled = blocked || !selectedId();
     renderPlayers(); renderSchedules(); renderProperties(); renderFiles();
-    if (currentPage === 'server-files' && !fileList && !filesBusy && selectedId() && !blocked && Date.now() - filesAttempt > 2000) { filesAttempt = Date.now(); void listFiles(); }
-    if (serverPage && !dashboard && !dashboardInFlight) void refreshDashboard();
+
+    if (dashboardPages.has(currentPage) && !dashboard && !dashboardInFlight) void refreshDashboard();
   }
 
   function selectPage(name, focus = false) {
@@ -387,7 +326,7 @@
   function bind(callbacks) {
     hooks = callbacks;
     for (const p of pages) {
-      $(p + '-tab').addEventListener('click', () => selectPage(p));
+      $(p + '-tab').addEventListener('click', () => { selectPage(p); if (p === 'server-files') void openServerFolder(); });
       $(p + '-tab').addEventListener('keydown', event => {
         const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[event.key];
         if (!step && !['Home', 'End'].includes(event.key)) return;
@@ -397,11 +336,15 @@
       });
     }
     $('server-list').addEventListener('click', async event => {
-      const b = event.target.closest('button[data-action="open"]'); if (!b || b.disabled || !hooks) return;
-      if (!state.servers.some(s => s.id === b.dataset.id && s.active)) {
-        if (!await hooks.runAction('selectServer', { id: b.dataset.id })) return;
+      if (!(event.target instanceof Element) || event.target.closest('button,a,input,select,textarea')) return;
+      const b = event.target.closest('.server-row'); if (!b || b.getAttribute('aria-disabled') === 'true' || !hooks) return;
+      if (!state.servers.some(s => s.id === b.dataset.serverId && s.active)) {
+        if (!await hooks.runAction('selectServer', { id: b.dataset.serverId })) return;
       }
       selectPage('operate');
+    });
+    $('server-list').addEventListener('keydown', event => {
+      if (event.target.matches('.server-row') && ['Enter', ' '].includes(event.key)) { event.preventDefault(); event.target.click(); }
     });
     // Copying an address is its own action: it must never select a server or disturb the current selection.
     $('server-list').addEventListener('click', event => {
@@ -467,18 +410,30 @@
     stopFirst.hidden = !active; stopFirst.disabled = busy || !['running', 'starting'].includes(state?.server?.state);
     // Sections that render one selected server are disabled until this PC actually has one.
     for (const name of ['operate', 'console', 'players', 'backups', 'scheduler', 'mods', 'tunnels', 'server-settings', 'server-files']) { const tab = $(name + '-tab'); if (tab) tab.disabled = !state?.server; }
-    const signature = JSON.stringify([servers, busy, active]); if ($('server-list').dataset.signature === signature) return;
+    const signature = JSON.stringify(servers.map(entry => [entry.id, entry.name, entry.active, entry.state, entry.ownerName, entry.configured, joinAddressFor(entry)]));
+    if ($('server-list').dataset.signature === signature) {
+      for (const row of $('server-list').querySelectorAll('.server-row')) {
+        const entry = servers.find(s => s.id === row.dataset.serverId);
+        row.setAttribute('aria-disabled', String(busy || (active && !entry?.active)));
+        row.title = active && !entry?.active ? `Stop ${state.server.name} before switching` : `Open ${entry?.name}`;
+        const remove = row.querySelector('button[data-action="delete"]'); if (remove) remove.disabled = busy || active;
+      }
+      return;
+    }
     $('server-list').dataset.signature = signature;
     $('server-list').replaceChildren(...servers.map(entry => {
-      const row = el('li', entry.active ? 'server-row is-current' : 'server-row'); row.dataset.serverId = entry.id;
+      const row = el('li', entry.active ? 'server-row is-current' : 'server-row'); row.dataset.serverId = entry.id; row.dataset.action = 'open'; row.dataset.id = entry.id;
       const art = el('span', 'server-card-art'); art.setAttribute('aria-hidden', 'true'); art.innerHTML = '<svg class="icon"><use href="#i-cube"/></svg>';
       const copy = el('div', 'server-card-copy'); copy.append(el('strong', 'server-row-name', entry.name || 'Untitled server'));
       copy.append(el('span', 'server-card-meta', `${processLabels[entry.state] || 'Unknown state'} · Owner: ${entry.ownerName || 'Unknown'}`));
       copy.append(el('span', 'field-help', entry.configured === true ? 'Launch profile configured' : entry.configured === false ? 'Launch profile needs setup' : 'Launch configuration unknown'));
       copy.append(joinAddressRow(entry));
-      const a = el('div', 'server-row-actions'); const open = button(entry.active ? 'Open server' : 'Select server', 'button button-primary button-small'); open.dataset.action = 'open'; open.dataset.id = entry.id; open.disabled = busy || (active && !entry.active); open.title = active && !entry.active ? `Stop ${state.server.name} before switching` : `Open ${entry.name}`;
+      const a = el('div', 'server-row-actions');
+      row.setAttribute('role', 'button'); row.tabIndex = 0; row.setAttribute('aria-label', `Open ${entry.name || 'Untitled server'}`);
+      row.setAttribute('aria-disabled', String(busy || (active && !entry.active)));
+      row.title = active && !entry.active ? `Stop ${state.server.name} before switching` : `Open ${entry.name}`;
       const remove = button('Delete…', 'button button-small button-danger'); remove.dataset.action = 'delete'; remove.dataset.id = entry.id; remove.disabled = busy || active;
-      a.append(open, remove); row.append(art, copy, a); return row;
+      a.append(remove); row.append(art, copy, a); return row;
     }));
   }
   function update(next, busy) {
@@ -489,7 +444,7 @@
     }
     syncRoute();
     renderGroupActions();
-    if (!['home', 'friends', 'settings'].includes(currentPage) && !blocked && !dashboardInFlight && Date.now() - requestedAt >= 1000) void refreshDashboard();
+    if (dashboardPages.has(currentPage) && !blocked && !dashboardInFlight && Date.now() - requestedAt >= DASHBOARD_SAMPLE_INTERVAL) void refreshDashboard();
     renderConsole();
   }
   window.seedDashboard = Object.freeze({ bind, update, renderServers, selectPage, logsFor });

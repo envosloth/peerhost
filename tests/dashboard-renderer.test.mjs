@@ -161,8 +161,8 @@ test('signed-in guide sends and accepts friends inline while preserving progress
   assert.equal(await page.locator('#setup-dialog').isVisible(),true);
   assert.equal((await fixture()).calls.some(c=>c.method==='accountSend'||c.method==='accountStartGroup'),false);
   await click('#setup-back');await settle();assert.equal(await page.locator('#setup-runtime').isVisible(),true);
-  await click('#setup-next');await settle();await click('#setup-skip');await settle();
-  assert.ok((await fixture()).state.onboarding.skipped.includes('friends'));
+  await click('#setup-next');await settle();await click('#setup-next');await settle();
+    assert.equal((await fixture()).state.onboarding.friendsConfigured,'accepted');
 });
 
 test('Hardcore and safe additional controls save only edited fields and verify readback', async () => {
@@ -580,7 +580,7 @@ test('Multi-host reuses group/relay controls, explicitly distinguishes app-wide 
 test('Mods retains Modrinth search and local JAR actions inside its per-server section', async () => {
   await reset(); await click('#server-list [data-action="open"][data-id="bravo"]');
   assert.equal(await page.locator('#mods-tab').count(), 1, 'Mods navigation exists'); await click('#mods-tab');
-  await click('#mods-details > summary');
+  assert.equal(await page.locator('#mods-details').evaluate(n => n.tagName), 'SECTION');
   assert.equal(await page.locator('#mods-panel #mod-browser').isVisible(), true);
   assert.equal(await page.locator('#mods-panel #add-server-mods').isEnabled(), true);
   await click('#add-server-mods'); await settle();
@@ -638,57 +638,28 @@ test('Server settings handles actual properties text values and preserves unsave
   assert.deepEqual(save.payload, { id: 'alpha', settings: { 'max-players': 12, pvp: false } }, 'only edited keys are submitted');
 });
 
-test('server file operations keep animated progress through folder, read, write and verified readback', async () => {
-  await reset();await click('#server-list [data-action="open"][data-id="alpha"]');await click('#server-files-tab');
-  await page.waitForFunction(()=>document.querySelector('#file-list').textContent.includes('server.properties'));
-  const hold=method=>page.evaluate(method=>window.dashboardFixture.set({holdCalls:[method]}),method);
-  const pending=method=>page.waitForFunction(method=>window.dashboardFixture.read().heldCalls?.[method],method);
-  const release=method=>page.evaluate(method=>{window.dashboardFixture.set({holdCalls:[]});window.dashboardFixture.releaseCall(method);},method);
-  try {
-    await hold('listServerFiles');await click('#file-refresh');await pending('listServerFiles');
-    assert.equal(await page.locator('#action-loading').isVisible(),true,'folder work is animated');
-    await release('listServerFiles');await page.waitForFunction(()=>!document.querySelector('#file-refresh').disabled);
-    await hold('readServerFile');await click('#file-list [data-path="server.properties"]');await pending('readServerFile');
-    assert.equal(await page.locator('#action-loading').isVisible(),true,'file read is animated');
-    await release('readServerFile');await page.waitForFunction(()=>document.querySelector('#file-editor').value.includes('motd=fixture'));
-    await hold('writeServerFile');await page.locator('#file-editor').fill('motd=loading proof\n');await click('#file-save');await pending('writeServerFile');
-    assert.equal(await page.locator('#action-loading').isVisible(),true,'file write is animated');
-    await page.evaluate(()=>{window.dashboardFixture.set({holdCalls:['readServerFile']});window.dashboardFixture.releaseCall('writeServerFile');});
-    await pending('readServerFile');assert.equal(await page.locator('#action-loading').isVisible(),true,'animation lasts until disk readback, not only write acknowledgment');
-    await release('readServerFile');await page.waitForFunction(()=>document.querySelector('#file-feedback').textContent.includes('Verified'));
-    await page.waitForFunction(()=>document.querySelector('#action-loading').hidden);
-  } finally {await page.evaluate(()=>{window.dashboardFixture.set({holdCalls:[]});for(const method of ['listServerFiles','readServerFile','writeServerFile'])window.dashboardFixture.releaseCall(method);});}
-});
-
-test('saving unchanged file content verifies the same hash without reporting a false failure', async () => {
+test('Server files opens the selected managed directory without in-app browsing', async () => {
   await reset(); await click('#server-list [data-action="open"][data-id="alpha"]'); await click('#server-files-tab');
-  await page.waitForFunction(() => document.querySelector('#file-list').textContent.includes('server.properties'));
-  await click('#file-list [data-path="server.properties"]');
-  await page.waitForFunction(() => document.querySelector('#file-editor').value.includes('motd=fixture'));
-  await click('#file-save');
-  await page.waitForFunction(() => !document.querySelector('#file-feedback').textContent.includes('Saving…'));
-  assert.doesNotMatch(await page.locator('#file-feedback').textContent(), /couldn.t|not.*confirm/i);
-  assert.match(await page.locator('#file-feedback').textContent(), /unchanged|verified/i);
+  await page.waitForFunction(() => window.dashboardFixture.read().calls.some(c => c.method === 'openServerFolder'));
+  assert.deepEqual((await fixture()).calls.find(c => c.method === 'openServerFolder').payload, { id: 'alpha' });
+  assert.equal(await page.locator('#file-editor, #file-list').count(), 0);
+  assert.equal((await fixture()).calls.some(c => c.method === 'listServerFiles'), false);
 });
-
-test('Server files explores, guards stale responses across switches, and saves only with a matching hash', async () => {
+test('Server files reports native folder refusal inline and offers retry', async () => {
   await reset(); await click('#server-list [data-action="open"][data-id="alpha"]');
-  assert.equal(await page.locator('#server-files-tab').count(), 1, 'Server files navigation exists'); await click('#server-files-tab');
-  await page.waitForFunction(() => document.querySelector('#file-list').textContent.includes('server.properties'));
-  assert.equal(await page.locator('#file-edit').isHidden(), true, 'editor stays closed until a file is opened');
-  await click('#file-list [data-path="server.properties"]');
-  await page.waitForFunction(() => document.querySelector('#file-editor').value.includes('motd=fixture'));
-  await page.bringToFront(); await page.locator('#file-editor').fill('motd=changed\n'); await click('#file-save');
-  await page.waitForFunction(() => document.querySelector('#file-feedback').textContent.includes('Verified'));
-  const write = (await fixture()).calls.find(c => c.method === 'writeServerFile');
-  assert.deepEqual(write.payload, { id: 'alpha', path: 'server.properties', text: 'motd=changed\n', expectedHash: 'h1' });
-  // A response that lands after the user switches worlds must never render into the new server.
-  const f = await fixture(); f.holdFiles = 'alpha'; await set(f);
-  await click('#file-list [data-path="config"]');
-  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 60)));
+  await set({fail:'openServerFolder'});
+  await click('#server-files-tab'); await page.waitForFunction(() => document.querySelector('#file-feedback').textContent.includes('TEST failure for openServerFolder'));
+  assert.equal(await page.locator('#file-feedback').isVisible(), true);
+  assert.equal(await page.locator('#file-open-folder').isEnabled(), true);
+});
+test('Server files ignores a delayed failure after switching to another server', async () => {
+  await reset(); await click('#server-list [data-action="open"][data-id="alpha"]');
+  await set({holdCalls:['openServerFolder']});
+  await click('#server-files-tab'); await page.waitForFunction(() => !!window.dashboardFixture.read().heldCalls?.openServerFolder);
+  await set({holdCalls:[]});
   await click('#home-tab'); await click('#server-list [data-action="open"][data-id="bravo"]'); await click('#server-files-tab');
-  await page.evaluate(() => window.dashboardFixture.release()); await settle();
-  await page.waitForFunction(() => document.querySelector('#file-list').textContent.includes('server.jar'));
-  assert.match(await page.locator('#file-path').textContent(), /Server root/i, 'late alpha listing did not replace bravo path');
-  assert.equal(await page.locator('#file-list [data-path="config/notes.txt"]').count(), 0, 'stale alpha listing did not render into bravo');
+  await page.waitForFunction(() => document.querySelector('#file-feedback').textContent.includes('Opened'));
+  await set({fail:'openServerFolder'}); await page.evaluate(() => window.dashboardFixture.releaseCall('openServerFolder'));
+  assert.doesNotMatch(await page.locator('#file-feedback').textContent(), /TEST failure/);
+  assert.equal(await page.locator('#file-open-folder').isEnabled(), true);
 });

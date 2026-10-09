@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.4-alpha
+
+Unsigned portable Windows alpha. Includes the previously local 0.6.3-alpha ownership/revocation fixes below; keep independent world backups.
+
+- World-scoped setup-guide progress completes friend actions in place and rejects stale workflow results; the optional always-on role is no longer a guide prerequisite.
+- Mods discovery, compatibility options and installed server/client lists are visible together.
+- Native download-folder selection supports quiet cancellation, retains the verified source and adopts a separate managed copy. Captured directory identity remains checked through adoption awaits; exclusive configuration creation refuses aliased existing files.
+- Routine actions explain consequences inline instead of warning popups. Incoming handoffs require request-scoped inline accept/decline with expiry to refusal; busy-operation and safe-stop quit guards remain. Server deletion retains a Cancel-default confirmation.
+- Accessible server cards open by click/Enter/Space, excluding nested copy/delete actions. Unchanged hosting-group cards retain their DOM, focus and opacity through polling.
+- Friends labels show each group's associated world or explicit pending/serverless membership. Ordinary friendship grants no world access.
+- Server files opens the validated managed OS folder through ID-only privileged IPC.
+- Dashboard status shares concurrent probes and bounds sample freshness by world/process/port; unavailable players remain unknown. This reduces duplicate polling, not a measured Minecraft TPS or internet-latency improvement.
+- New worlds initiate their own Playit setup using the exact created-world ID and distinct reserved ports. Provider approval, pending allocation and failure remain explicit; local/direct hosting works without a helper or public address.
+
 ## 0.6.3-alpha
 
 Local unsigned alpha for this PC, installed beside 0.6.2-alpha. Not published to GitHub.

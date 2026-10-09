@@ -40,11 +40,11 @@ async function enterWorkspace(page, app, tab) {
     await mkdir(source, { recursive: true }); await writeFile(path.join(source, 'eula.txt'), 'eula=true\n');
     await app.evaluate(({ dialog }, source) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [source] }); }, source);
     await click(page, '#import-server'); await idle(page);
-    await wait(page, () => document.querySelector('#server-list .is-current button[data-action="open"]'));
+    await wait(page, () => document.querySelector('#server-list .is-current[data-action="open"]'));
   }
   // A remembered selection is not an opened workspace: use the real library action.
   await assertLibraryNavigation(page);
-  await click(page, '#server-list .is-current button[data-action="open"]');
+  await click(page, '#server-list .is-current[data-action="open"]');
   for (const name of serverTabs) assert.equal(await page.locator('#' + name + '-tab').isVisible(), true);
   if (tab) await click(page, '#' + tab + '-tab');
 }

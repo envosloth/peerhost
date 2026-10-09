@@ -168,7 +168,7 @@ test('initial metadata failure prevents catalogue requests; failure also fences 
   failed.server.modsError = 'Unreadable mod directory';
   failed.server.modTarget = { loader: null, gameVersion: null, detected: true };
   const unavailable = await renderer(t, failed);
-  await unavailable.locator('#mods-details').evaluate(node => { node.open = true; });
+  await unavailable.locator('#mods-tab').click();
   assert.match(await unavailable.locator('#mod-target-feedback').textContent(), /Unreadable mod directory/);
   assert.equal(await unavailable.locator('#search-mods').isDisabled(), true);
   assert.equal(await unavailable.evaluate(() => window.fixture.calls.filter(call => call.method === 'searchMods').length), 0);
@@ -181,7 +181,7 @@ test('initial metadata failure prevents catalogue requests; failure also fences 
       return new Promise(resolve => { window.fixture.completeSearch = resolve; });
     };
   });
-  await page.locator('#mods-details').evaluate(node => { node.open = true; });
+  await page.locator('#mods-tab').click();
   await page.waitForFunction(() => typeof window.fixture.completeSearch === 'function');
   const broken = appState(); broken.server.modsError = 'Index failed during catalogue read';
   await update(page, broken);

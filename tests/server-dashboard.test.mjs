@@ -161,6 +161,20 @@ test('a scheduled command reaches only the selected owned running server console
   } finally { await app.stopServer(); }
 });
 
+test('concurrent dashboard reads share one Minecraft probe and reuse fresh status',async t=>{
+ const {app,server}=await fixture(t);let probes=0;
+ const listener=createServer(socket=>{probes++;socket.destroy();});
+ await new Promise((resolve,reject)=>{listener.once('error',reject);listener.listen(0,'127.0.0.1',resolve);});
+ t.after(()=>new Promise(resolve=>listener.close(resolve)));
+ await writeFile(path.join(server.serverDir,'server.properties'),`server-port=${listener.address().port}\n`);
+ await app.saveProfile({executable:process.execPath,args:[path.resolve('tools/fake-java-server.mjs'),'--lifetime-ms=30000']});await app.startServer(true);
+ try {
+   const batch=await Promise.all(Array.from({length:8},()=>app.getServerDashboard(server.id)));
+   assert.equal(probes,1,'coalesced status probe, not one socket per dashboard call');
+   for(const data of batch){assert.equal(data.players.online,null);assert.ok(data.players.error);}
+   await app.getServerDashboard(server.id);assert.equal(probes,1,'fresh unavailable sample is reused rather than hammering a starting server');
+ }finally{await app.stopServer();}
+});
 test('a running server reports measured process metrics and a real local status probe', async (t) => {
   const { app, server } = await fixture(t);
   // Own a rejecting loopback endpoint: never probe a user's real server on the conventional 25565 port.

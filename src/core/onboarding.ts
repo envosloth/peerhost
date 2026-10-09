@@ -5,13 +5,14 @@ import { randomUUID } from 'node:crypto';
 import { syncDirectory } from './snapshots.js';
 import { isServerId } from './saved-state.js';
 
-export const SETUP_STEPS = ['server', 'runtime', 'friends', 'gateway', 'ready'] as const;
+export const SETUP_STEPS = ['server', 'runtime', 'friends', 'ready'] as const;
 export interface OnboardingProgress {
   version: 1;
   step: typeof SETUP_STEPS[number];
   dismissed: boolean;
   completed: boolean;
-  skipped: Array<'friends' | 'gateway'>;
+  skipped: Array<'friends' | 'gateway'>; // Accept legacy callers; normalize gateway away on save/read.
+  friendsConfigured?: 'request-pending' | 'accepted';
   draft: { name: string; loader: 'vanilla' | 'fabric'; gameVersion: string; memoryMiB: number };
 }
 export type OnboardingInput = Omit<OnboardingProgress, 'version'>;
@@ -23,14 +24,12 @@ export interface SetupConfiguration {
   alwaysOn?: { enabled: boolean; error?: string | null } | null;
 }
 /** Configured is not proof of network reachability. Visits and draft values never count as completion. */
-export function onboardingChecks(progress: Pick<OnboardingInput, 'completed' | 'skipped'>, config: SetupConfiguration): Record<typeof SETUP_STEPS[number], SetupCheck> {
+export function onboardingChecks(progress: Pick<OnboardingInput, 'completed' | 'skipped' | 'friendsConfigured'>, config: SetupConfiguration): Record<typeof SETUP_STEPS[number], SetupCheck> {
   const server: SetupCheck = config.server ? 'complete' : 'pending';
   const runtime: SetupCheck = config.server?.modInstallError ? 'unavailable' : config.server?.profile.executable && config.server.profile.args.length ? 'complete' : 'pending';
-  const friends: SetupCheck = config.relay ? 'complete' : progress.skipped.includes('friends') ? 'skipped' : 'pending';
-  const configuredGateway = Boolean(config.alwaysOn?.enabled && !config.alwaysOn.error || config.gateway?.enabled && config.relay && !config.gateway.error);
-  const gateway: SetupCheck = configuredGateway ? 'complete' : progress.skipped.includes('gateway') ? 'skipped' : config.gateway?.error || config.alwaysOn?.error ? 'unavailable' : 'pending';
-  const resolved = [server, runtime].every(check => check === 'complete') && [friends, gateway].every(check => check === 'complete' || check === 'skipped');
-  return { server, runtime, friends, gateway, ready: progress.completed && resolved ? 'complete' : 'pending' };
+  const friends: SetupCheck = progress.friendsConfigured || config.relay ? 'complete' : progress.skipped.includes('friends') ? 'skipped' : 'pending';
+  const resolved = [server, runtime].every(check => check === 'complete') && (friends === 'complete' || friends === 'skipped');
+  return { server, runtime, friends, ready: progress.completed && resolved ? 'complete' : 'pending' };
 }
 export function defaultOnboarding(existingServer = false): OnboardingProgress {
   return { version: 1, step: existingServer ? 'runtime' : 'server', dismissed: existingServer, completed: false,
@@ -38,15 +37,15 @@ export function defaultOnboarding(existingServer = false): OnboardingProgress {
 }
 export function validateOnboarding(value: unknown): OnboardingInput {
   const p = value as Record<string, any>;
-  if (!p || typeof p !== 'object' || Array.isArray(p) || Object.keys(p).sort().join(',') !== 'completed,dismissed,draft,skipped,step' ||
-      !SETUP_STEPS.includes(p.step) || typeof p.dismissed !== 'boolean' || typeof p.completed !== 'boolean' ||
+  if (!p || typeof p !== 'object' || Array.isArray(p) || !['completed,dismissed,draft,skipped,step', 'completed,dismissed,draft,friendsConfigured,skipped,step'].includes(Object.keys(p).sort().join(',')) ||
+      !(SETUP_STEPS.includes(p.step) || p.step === 'gateway') || p.friendsConfigured !== undefined && !['request-pending', 'accepted'].includes(p.friendsConfigured) || typeof p.dismissed !== 'boolean' || typeof p.completed !== 'boolean' ||
       !Array.isArray(p.skipped) || p.skipped.length > 2 || new Set(p.skipped).size !== p.skipped.length || p.skipped.some((v: unknown) => v !== 'friends' && v !== 'gateway')) throw new Error('Invalid setup progress');
   const d = p.draft;
   if (!d || typeof d !== 'object' || Array.isArray(d) || Object.keys(d).sort().join(',') !== 'gameVersion,loader,memoryMiB,name' ||
       typeof d.name !== 'string' || !d.name.trim() || d.name.length > 80 || /[\x00-\x1f]/.test(d.name) ||
       (d.loader !== 'vanilla' && d.loader !== 'fabric') || typeof d.gameVersion !== 'string' || !/^[\w.+-]{0,32}$/.test(d.gameVersion) ||
       !Number.isInteger(d.memoryMiB) || d.memoryMiB < 512 || d.memoryMiB > 65536) throw new Error('Invalid non-secret setup draft');
-  return { step: p.step, dismissed: p.dismissed, completed: p.completed, skipped: [...p.skipped], draft: { ...d } };
+  return { step: p.step === 'gateway' ? 'ready' : p.step, dismissed: p.dismissed, completed: p.completed, skipped: p.skipped.filter((v: string) => v !== 'gateway'), ...(p.friendsConfigured ? { friendsConfigured: p.friendsConfigured } : {}), draft: { ...d } };
 }
 function onboardingFile(root: string, serverId?: string | null): string {
   if (serverId !== undefined && serverId !== null && !isServerId(serverId)) throw new Error('Invalid server id');

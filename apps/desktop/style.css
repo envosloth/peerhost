@@ -363,6 +363,22 @@ details.card[open] > summary { border-bottom: 1px solid var(--line); border-bott
 .timeout-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }
 
 /* ---------- Mods ---------- */
+.mods-workspace .select-bridge, #setup-mod-sort { display: none !important; }
+.app-notices { padding: 0 24px; flex: 0 0 auto; }
+.app-notices:has(> [hidden]):not(:has(> :not([hidden]))) { display: none; }
+.app-notices #incoming-handoff { padding: 14px; margin-bottom: 12px; }
+.mods-workspace-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px; }
+.mods-workspace .mod-target-form, .mods-workspace .mod-search-form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
+.mods-workspace .mod-target-form > div:first-child, .mods-workspace .mod-sort-field { flex-basis: 100%; }
+.mods-workspace #mod-query { flex: 1 1 260px; font-size: 16px; }
+.mod-choice-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.mod-choice-options .chip-option { min-width: 0; padding: 8px 12px; }
+.mod-placement-controls { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; margin: 16px 0; }
+.mod-placement-controls legend { font-weight: 600; }
+.mod-placement-controls .chip-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.server-row[role="button"] { cursor: pointer; }
+.server-row[role="button"]:focus-visible { outline: 2px solid var(--a-ink); outline-offset: 3px; }
+.server-row[aria-disabled="true"] { cursor: default; }
 .mod-browser { padding: 16px 18px; border-bottom: 1px solid var(--line); }
 .mod-browser > .field-help { margin-top: 6px; }
 .mod-target-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: end; gap: 12px; margin-top: 14px; }

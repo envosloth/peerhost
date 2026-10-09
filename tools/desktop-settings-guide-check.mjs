@@ -28,7 +28,7 @@ try{
  await call('importServer');let state=await call('getState');const selected=state.server;
  const patch={motd:'Verified','server-port':25567,'max-players':12,difficulty:'hard',gamemode:'adventure',pvp:false,'white-list':true,'view-distance':8,'simulation-distance':6,hardcore:true,'spawn-protection':0,'allow-flight':true};
  await answer(0);assert.equal(await call('saveServerSettings',{id:selected.id,settings:patch}),null);assert.equal((await call('getServerDashboard',{id:selected.id})).settings.motd,'Before');
- await answer(1);await page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));await page.locator('#server-list .is-current [data-action="open"]').click();await page.locator('#server-settings-tab').click();await page.waitForFunction(()=>!document.querySelector('#property-motd').disabled);
+ await answer(1);await page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));await page.locator('#server-list .is-current[data-action="open"]').click();await page.locator('#server-settings-tab').click();await page.waitForFunction(()=>!document.querySelector('#property-motd').disabled);
  for(const [key,value] of Object.entries(patch)){const input=page.locator('#property-'+key);if(typeof value==='boolean'){await input.check();if(!value)await input.uncheck();}else if(['difficulty','gamemode'].includes(key))await input.selectOption(value);else await input.fill(String(value));}
  await page.locator('#properties-save').click();await page.waitForFunction(()=>document.querySelector('#properties-feedback').textContent.includes('Verified'));
  const dashboard=await call('getServerDashboard',{id:selected.id});for(const [k,v] of Object.entries(patch))assert.equal(dashboard.settings[k],String(v));

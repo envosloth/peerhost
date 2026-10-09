@@ -67,19 +67,13 @@ test('real desktop IPC holds start preflight lock without a Run popup and reject
     const replacement=await page.evaluate(profile=>(window as any).seedhost.call('saveProfile',profile).then(()=>null,(e:Error)=>String(e)),{executable:process.execPath,args:[profile.args[0]!,'unapproved replacement']});
     assert.match(replacement!,/operation|progress/i);
     console.log('DESKTOP STEP 3: Actual safe-quit remains blocked during start preflight.');
-    const quitBlocked=await app.evaluate(async({app})=>{
-      app.quit();
-      for(let i=0;i<200;i++){
-        if((globalThis as any).__reviewDialogs.some((d:any)=>d.message==='An operation is still in progress.'))return true;
-        await new Promise(r=>setTimeout(r,10));
-      }
-      return false;
-    });
-    assert.equal(quitBlocked,true);assert.equal(page.isClosed(),false);
+    await app.evaluate(({app})=>app.quit());
+    await page.waitForFunction(async()=>/operation.*progress/i.test((await (window as any).seedhost.call('getState')).appNotice??''));
+    assert.equal((await page.evaluate(()=>(window as any).seedhost.call('getState'))).busy,'startServer');
+    assert.equal(page.isClosed(),false);
     await page.screenshot({path:path.join(root,'pending-preflight.png')});
     const dialogs=await app.evaluate(()=>(globalThis as any).__reviewDialogs);
-    assert.equal(dialogs.some((d:any)=>d.message==='Run this server on this PC?'),false);
-    assert.ok(dialogs.some((d:any)=>d.message==='An operation is still in progress.' && d.type==='warning'));
+    assert.deepEqual(dialogs,[], 'busy quit refuses inline, without a Run or warning popup');
     console.log('DESKTOP STEP 4: Release preflight and verify captured fixture arguments and execution directory.');
     await app.evaluate(()=>(globalThis as any).__reviewDecision());
     assert.deepEqual(await page.evaluate(()=>(window as any).__reviewStart),{ok:true});

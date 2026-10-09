@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, lstat, open, rename, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, lstat, realpath, open, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { TLSSocket } from 'node:tls';
@@ -23,10 +23,10 @@ import { readGameGateway, saveGameGatewayConfig, validateGameGateway } from './g
 import { gatewayStatus, startHostGameGateway } from './game-gateway.js';
 import { privateLanAddresses, readServerPort } from './network-info.js';
 import { hostname } from 'node:os';
-import { listManagedFiles, readManagedText, writeManagedText } from './server-files.js';
+import { listManagedFiles, readManagedText, writeManagedText, resolveServerPath } from './server-files.js';
 import { assertServerFileTransactionsComplete } from './server-file-recovery.js';
 import { ServerMetrics } from './server-metrics.js';
-import { queryLocalMinecraft } from './minecraft-status.js';
+import { queryLocalMinecraft, type MinecraftStatusResult } from './minecraft-status.js';
 import { createSchedule, readScheduleSnapshot, writeSchedules, validateScheduleInput, type ServerSchedule } from './server-scheduler.js';
 import { patchServerProperties, readServerProperties, validateServerProperties } from './server-properties.js';
 import {
@@ -57,6 +57,8 @@ interface ApplicationOptions {
   /** Fail-closed route ownership check, inside the ordinary launch operation lock. */
   beforeServerStart?: (server: { id: string; playerPort: number }) => Promise<void>;
   serverSetup?: ServerSetupClient;
+  /** Optional provider-retirement guard; called under the create operation lock. */
+  chooseServerPort?: (id: string, occupied: number[]) => Promise<number>;
   modrinth?: ModrinthClient;
   confirmIncomingHandoff?: (source: string, snapshot: SnapshotManifest, offer: TransferOffer) => Promise<boolean>;
 }
@@ -73,6 +75,7 @@ export class SeedHostApplication {
   private gatewayState: {state: 'off' | 'connecting' | 'ready' | 'error'; detail: string} = { state: 'off', detail: 'No local host tunnel is active' };
   private logs: string[] = [];
   private modVerificationCache: ModVerificationCache = new Map();
+  private playerSamples = new Map<string, { identity: string; at: number; pending: Promise<MinecraftStatusResult> }>();
   private busy: string | null = null;
   private operationToken?: symbol;
   private legacyOnboardingScope: { id: string; ledgerKey: string } | null = null;
@@ -525,6 +528,16 @@ export class SeedHostApplication {
     return this.requireActive();
   }
 
+  private samplePlayers(serverId: string, port: number, pid: number): Promise<MinecraftStatusResult> {
+    const identity = `${pid}:${port}`, existing = this.playerSamples.get(serverId);
+    if (existing?.identity === identity && Date.now() - existing.at < 5000) return existing.pending;
+    // Bounded cache; process stop/start explicitly invalidates it. No remote/public probes.
+    if (this.playerSamples.size > this.saved.servers.length) this.playerSamples.clear();
+    const entry = { identity, at: Date.now(), pending: queryLocalMinecraft(port) };
+    this.playerSamples.set(serverId, entry);
+    return entry.pending;
+  }
+
   async getServerDashboard(id: string) {
     const server = this.selectedServer(id);
     const sampledProcess = this.process;
@@ -540,16 +553,16 @@ export class SeedHostApplication {
     catch (error) { settingsError = String((error as Error).message).slice(0, 300); }
     assertCurrent();
     if (sampledState === 'running' && sampledPid !== undefined) {
-      const performance = await this.metrics.sample(sampledPid);
-      assertCurrent();
+      const performancePending = this.metrics.sample(sampledPid);
       let players: { online: number | null; max: number | null; sample: Array<{ name: string; id?: string }>; error: string | null };
       try {
         const port = await readServerPort(server.serverDir);
         assertCurrent();
-        players = await queryLocalMinecraft(port);
+        players = await this.samplePlayers(server.id, port, sampledPid);
       }
       catch { players = { online: null, max: null, sample: [], error: 'Minecraft server status unavailable' }; }
       if (players.online === 0 && players.max === null && players.error === null) players = { online: null, max: null, sample: [], error: 'Minecraft status is unavailable: the running process is not accepting loopback status requests.' };
+      const performance = await performancePending;
       assertCurrent();
       return { serverId: id, state: sampledState, performance, players,
         settings, settingsError, schedules: this.schedules.filter(job => job.serverId === id).map(job => ({ ...job })), scheduleError: this.scheduleError, logs: this.serverLogs(id) };
@@ -558,6 +571,13 @@ export class SeedHostApplication {
       performance: { pid: null, cpuPercent: null, memoryMiB: null, uptimeSeconds: null, sampledAt: Date.now(), error: 'Server is not running' },
       players: { online: null, max: null, sample: [], error: 'Server is not running' },
       settings, settingsError, schedules: this.schedules.filter(job => job.serverId === id).map(job => ({ ...job })), scheduleError: this.scheduleError, logs: this.serverLogs(id) };
+  }
+
+  async resolveServerFolder(id: string): Promise<string> {
+    const server = this.selectedServer(id);
+    const folder = await resolveServerPath(this.root, server.serverDir, '', true);
+    if (this.selectedServer(id) !== server) throw new Error('The selected server changed. Refresh before continuing.');
+    return folder;
   }
 
   async listServerFiles(id: string, relative: string) {
@@ -738,28 +758,59 @@ export class SeedHostApplication {
 
   // ---------------------------------------------------------------- server lifecycle
 
-  async createServer(input: CreateServerInput): Promise<void> {
+  async createServer(input: CreateServerInput, downloadParent?: string): Promise<{ serverId: string }> {
     this.assertStopped();
     if (!input || input.eulaAccepted !== true) throw new Error('Explicit Minecraft EULA acceptance is required before creating a server');
     input = { ...input }; // Capture consent before the lock's first asynchronous fence.
-    await this.operation('createServer', async () => {
-      const staging = await mkdtemp(path.join(this.root, 'server-setup-'));
+    return this.operation('createServer', async () => {
+      let parent = this.root;
+      if (downloadParent !== undefined) {
+        if (typeof downloadParent !== 'string' || !path.isAbsolute(downloadParent)) throw new Error('Choose an absolute download folder');
+        const selected = path.resolve(downloadParent), stat = await lstat(selected);
+        if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Download location must be an ordinary folder, not a link');
+        const actual = await realpath(selected);
+        const folded = (value: string) => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value);
+        if (folded(actual) !== folded(selected)) throw new Error('Download location must not pass through links or junctions');
+        const profile = folded(await realpath(this.root)), destination = folded(actual);
+        if (destination === profile || destination.startsWith(profile + path.sep) || profile.startsWith(destination + path.sep)) throw new Error('Download location must be separate from app-owned storage');
+        parent = actual;
+      }
+      const staging = await mkdtemp(path.join(parent, 'server-setup-'));
       const prepared = await (this.options.serverSetup ?? new ServerSetupClient()).prepare(staging, input, { runtimeRoot: path.join(this.root, 'runtimes') });
       if (prepared.loader === 'fabric') {
+        await prepared.assertSource();
         const index = await readModIndex(prepared.sourceDir);
+        await prepared.assertSource();
         await writeModIndex(prepared.sourceDir, { ...index, target: { loader: 'fabric', gameVersion: prepared.gameVersion } });
       }
+      const serverId = newServerId();
+      const occupied = await Promise.all(this.saved.servers.map(server => readServerPort(server.serverDir)));
+      let port = 25565;
+      if (this.options.chooseServerPort) port = await this.options.chooseServerPort(serverId, occupied);
+      else while (occupied.includes(port) && port < 65535) port++;
+      if (!Number.isInteger(port) || port < 1 || port > 65535 || occupied.includes(port)) throw new Error('No distinct Minecraft port is available for this server');
+      await prepared.assertSource();
+      if (port !== await readServerPort(prepared.sourceDir)) {
+        // Only our new, verified stopped source is changed; no existing world or external route is touched.
+        const file = path.join(prepared.sourceDir, 'server.properties');
+        const previous = await readFile(file, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
+        await prepared.assertSource();
+        const handle = await open(file, 'wx');
+        try { await handle.writeFile(patchServerProperties(previous, { 'server-port': port })); await handle.sync(); } finally { await handle.close(); }
+      }
+      await prepared.assertSource();
       const result = await importServer(prepared.sourceDir, path.join(this.root, 'managed'));
       const ledgerFile = path.join(this.root, `ownership-${randomUUID()}.sqlite`);
       await new OwnershipLedger(ledgerFile, this.identity.fingerprint).initialize(result.snapshot.id);
       this.addServer({
-        id: newServerId(), name: input.name, serverDir: result.serverDir, storeDir: result.storeDir, snapshotId: result.snapshot.id,
+        id: serverId, name: input.name, serverDir: result.serverDir, storeDir: result.storeDir, snapshotId: result.snapshot.id,
         profile: validateLaunchProfile(prepared.profile), ledgerFile, group: null,
       });
       try { await this.persist(); }
       catch (error) { await new OwnershipLedger(ledgerFile, this.identity.fingerprint).markUncertain(); throw error; }
-      await rm(staging, { recursive: true, force: true });
-      this.log('Created a verified managed server. Nothing was started.');
+      if (downloadParent === undefined) await rm(staging, { recursive: true, force: true });
+      this.log(downloadParent === undefined ? 'Created a verified managed server. Nothing was started.' : 'Downloaded verified server files into the selected folder and created a separate managed working copy. Nothing was started.');
+      return { serverId };
     });
   }
 
@@ -886,6 +937,7 @@ export class SeedHostApplication {
   async startServerWithApproval(confirm: (approval: LaunchApproval) => Promise<boolean>): Promise<void> {
     this.assertStopped();
     await this.operation('startServer', async () => {
+      this.playerSamples.clear();
       const server = this.activeServer();
       if (!server?.profile.executable) throw new Error('Configure a launch profile first');
       await assertServerFileTransactionsComplete(server.serverDir);
@@ -956,6 +1008,7 @@ export class SeedHostApplication {
   }
 
   private async stopServerInsideOperation(): Promise<void> {
+      this.playerSamples.clear();
       const server = this.activeServer();
       if (!server || !this.process?.pid) throw new Error('No owned process is running');
       await this.closeGameGateway();

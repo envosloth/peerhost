@@ -65,7 +65,7 @@ async function source(name){
  const dir=path.join(root,name);await mkdir(dir);await writeFile(path.join(dir,'eula.txt'),'eula=true\n');await writeFile(path.join(dir,'world-marker.txt'),name+'\n');
  await writeFile(path.join(dir,'server.properties'),`server-port=${rejecting.address().port}\nserver-ip=127.0.0.1\nonline-mode=false\n`);return dir;
 }
-async function select(id){await click('#home-tab');await click(`#server-list button[data-action="open"][data-id="${id}"]`);await wait(id=>document.querySelector('#server-list .is-current button')?.dataset.id===id,id);}
+async function select(id){await click('#home-tab');await click(`#server-list [data-action="open"][data-id="${id}"]`);await wait(id=>document.querySelector('#server-list .is-current button')?.dataset.id===id,id);}
 let result={passed:false,executable:executable??'development Electron',root,profile,steps,errors};
 try{
  note('Launch isolated real app; dismiss first-run guide through Save for later');await launch();await wait(()=>document.querySelector('#setup-dialog').open);await click('#setup-later');await wait(()=>!document.querySelector('#setup-dialog').open);

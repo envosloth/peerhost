@@ -14,6 +14,49 @@ async function reset(){await page?.close();page=await app.newPage();page.setDefa
 
 async function signed(){await page.evaluate(()=>{window.dashboardFixture.set({accountStatus:{configured:true,signedIn:true,online:true,username:'alice',detail:'Signed in'},accountRequests:[{id:'invite-1',from:'owner',group:'Shared world',controlEndpoint:{host:'192.168.1.5',port:8443}}]});window.dispatchEvent(new Event('seedhost-account-changed'));});await page.waitForFunction(()=>document.querySelector('#account-heading').textContent==='@alice');}
 async function groups(){await page.evaluate(()=>{const call=window.seedhost.call;window.__groups=[{fingerprint:'c'.repeat(64),name:'Waiting world',serverId:null,serverName:null,pending:true,localAuthority:false},{fingerprint:'d'.repeat(64),name:'Created group',serverId:'alpha',serverName:'Mossy Hollow',pending:false,localAuthority:true}];window.seedhost={...window.seedhost,call:async(method,payload)=>method==='listHostingGroups'?window.__groups:call(method,payload)};window.dispatchEvent(new Event('seedhost-account-changed'));});}
+test('unchanged hosting-group updates preserve the card and focused action',async()=>{
+ console.log('STEP hosting-card stability: unchanged state reads and account refresh');
+ await reset();await signed();await groups();await page.bringToFront();await page.locator('#friends-tab').click();
+ const selector='[data-hosting-group="'+'d'.repeat(64)+'"]';
+ await page.locator(selector).waitFor({state:'visible'});await page.locator(selector+' .button').focus();
+ await page.evaluate(selector=>{
+   window.stableCard=document.querySelector(selector);window.stableButton=window.stableCard.querySelector('.button');
+   window.groupReplacements=0;window.groupObserver=new MutationObserver(records=>{window.groupReplacements+=records.filter(r=>r.target===document.querySelector('#hosting-group-list')).length;});
+   window.groupObserver.observe(document.querySelector('#hosting-group-list'),{childList:true});
+   for(let i=0;i<4;i++)window.dispatchEvent(new CustomEvent('seedhost-state-read',{detail:structuredClone(window.fixture.state)}));
+ },selector);
+ const result=await page.evaluate(()=>({cardRetained:window.stableCard.isConnected,buttonRetained:document.activeElement===window.stableButton,replacements:window.groupReplacements}));
+ console.log('OBSERVED '+JSON.stringify(result));
+ assert.deepEqual(result,{cardRetained:true,buttonRetained:true,replacements:0});
+ await page.locator('#hosting-requests-refresh').click();
+ await page.waitForFunction(()=>document.querySelector('#action-loading').hidden);
+ assert.equal(await page.evaluate(selector=>document.querySelector(selector)===window.stableCard,selector),true,'unchanged directory refresh must not replace the card');
+ await page.locator(selector+' .button').focus();
+ await page.screenshot({path:path.join(process.env.TMPDIR,'seedhost-hosting-card-stability.png')});
+ // The retained controls must still respect the existing mutation lock.
+ await page.evaluate(()=>{const call=window.seedhost.call;window.seedhost.call=async(method,payload)=>{if(method==='accountDecline'){window.declineHeld=true;await new Promise(resolve=>window.releaseDecline=resolve);}return call(method,payload);};});
+ await page.locator('#hosting-request-list [data-account-decline]').click();await page.waitForFunction(()=>window.declineHeld);
+ assert.equal(await page.evaluate(()=>window.stableCard.isConnected),true);
+ assert.equal(await page.locator(selector+' .button').isDisabled(),true);
+ assert.equal(await page.locator(selector+' [data-control-route]').isDisabled(),true);
+ await page.evaluate(()=>window.releaseDecline());await page.waitForFunction(()=>!document.querySelector('[data-hosting-group="'+'d'.repeat(64)+'"] .button').disabled);
+ assert.equal(await page.evaluate(()=>window.stableCard.isConnected),true);
+ assert.equal(await page.locator(selector+' [data-control-route]').isEnabled(),true);
+ await page.locator('#account-signout').click();await page.waitForFunction(()=>document.querySelector('#account-signout').hidden);
+ assert.equal(await page.locator('#hosting-group-list [data-hosting-group]').count(),0);
+});
+test('hosting-group cards stay solid even when group metadata changes',async()=>{
+ console.log('STEP hosting-card presentation: full motion must not fade group cards');
+ await reset();await signed();await groups();await page.bringToFront();await page.locator('#friends-tab').click();
+ await page.locator('[data-hosting-group="'+'d'.repeat(64)+'"]').waitFor({state:'visible'});
+ const presentation=await page.locator('#hosting-group-list [data-hosting-group]').evaluateAll(cards=>cards.map(card=>({animation:getComputedStyle(card).animationName,opacity:getComputedStyle(card).opacity,transform:getComputedStyle(card).transform})));
+ console.log('OBSERVED '+JSON.stringify(presentation));
+ assert.deepEqual(presentation,[{animation:'none',opacity:'1',transform:'none'},{animation:'none',opacity:'1',transform:'none'}]);
+ await page.evaluate(()=>{window.__groups[1].name='Renamed group';window.__groups[0]={...window.__groups[0],pending:false,serverId:'alpha',serverName:'Mossy Hollow'};});
+ await page.locator('#hosting-requests-refresh').click();await page.waitForFunction(()=>document.querySelector('#hosting-group-list').textContent.includes('Renamed group'));
+ assert.equal(await page.locator('[data-hosting-group="'+'c'.repeat(64)+'"] .button').textContent(),'Open server Multi-host');
+ assert.deepEqual(await page.locator('#hosting-group-list [data-hosting-group]').evaluateAll(cards=>cards.map(card=>getComputedStyle(card).animationName)),['none','none']);
+});
 test('Friends overview includes pending and bound groups with explicit safe destinations',async()=>{await reset();await signed();await groups();await page.locator('#friends-tab').click();await page.waitForFunction(()=>document.querySelector('#hosting-group-list [data-hosting-group]'));assert.match(await page.locator('#hosting-group-list').textContent(),/Waiting world.*not on this PC/s);assert.match(await page.locator('#hosting-group-list').textContent(),/Created group.*Mossy Hollow/s);await page.locator('[data-hosting-group="'+ 'd'.repeat(64)+'"]').getByRole('button',{name:'Open server Multi-host'}).click();await page.waitForFunction(()=>document.querySelector('#peers-tab').getAttribute('aria-selected')==='true');assert.equal(await page.locator('#server-name').textContent(),'Mossy Hollow');});
 test('notification inbox deduplicates polling without marking unread, persists, and isolates signout',async()=>{await reset();await page.evaluate(()=>localStorage.clear());await signed();await page.locator('#notifications-open').click();await page.waitForFunction(()=>document.querySelector('#notifications-list').textContent.includes('@owner'));assert.equal(await page.locator('#notifications-count').textContent(),'1');await page.evaluate(()=>window.dispatchEvent(new Event('seedhost-account-changed')));await page.waitForTimeout(100);assert.equal(await page.locator('#notifications-list [data-notification]').count(),1);await page.locator('#notifications-mark-read').click();assert.equal(await page.locator('#notifications-count').textContent(),'0');await page.locator('#notifications-close').click();await page.reload();await signed();assert.equal(await page.locator('#notifications-count').textContent(),'0');await page.locator('#notifications-open').click();assert.equal(await page.locator('#notifications-list [data-notification]').count(),1);await page.locator('#notifications-close').click();await page.locator('#friends-tab').click();await page.locator('#account-signout').click();await page.locator('#notifications-open').click();assert.equal(await page.locator('#notifications-list [data-notification]').count(),0);assert.doesNotMatch(await page.evaluate(()=>JSON.stringify({...localStorage})),/password|invitationCode|serverDir/);});
 for(const pending of [true,false])test(`acceptance confirms exact ${pending?'pending':'bound'} group without requiring auto-park`,async()=>{await reset();await signed();await page.evaluate(pending=>{const pin='c'.repeat(64);const group={fingerprint:pin,name:'Shared world',parkOnStop:false,endpoint:{host:'192.168.1.5',port:8443}};window.fixture.acceptResult={joined:true,group:'Shared world',fingerprint:pin,serverId:pending?null:'alpha',requestId:'invite-1'};window.fixture.acceptState=pending?{pendingGroups:[group],peers:[]}:{relay:group,peers:[{fingerprint:pin,host:'192.168.1.5',port:8443}]};if(!pending){window.fixture.state.server.group=group;window.fixture.state.servers[0].group=group;}},pending);await page.locator('#friends-tab').click();await page.locator('#hosting-request-list [data-account-accept]').click();await page.waitForFunction(()=>document.querySelector('#hosting-request-feedback').textContent.startsWith('Joined Shared world'));assert.doesNotMatch(await page.locator('#hosting-request-feedback').textContent(),/Settings.*group/);});

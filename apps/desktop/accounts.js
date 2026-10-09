@@ -10,17 +10,24 @@
     hostingGroups=Array.isArray(groups)?groups.filter(validGroup):[];
     renderGroups();
   }
+  let renderedGroupsKey=null;
   function renderGroups(){
-    const nodes=status?.signedIn?hostingGroups.map(g=>{
+    const signedIn=Boolean(status?.signedIn),groups=signedIn?hostingGroups:[];
+    // Ordinary state polls must not replace cards, restart entry effects, or steal focus.
+    // Busy state changes only the existing controls, not the group's presentation.
+    const key=JSON.stringify([signedIn,groups.map(g=>[g.fingerprint,g.name,g.serverId,g.serverName,g.pending,g.localAuthority])]);
+    if(key===renderedGroupsKey){for(const button of $('hosting-group-list').querySelectorAll('button'))button.disabled=working;return;}
+    const nodes=groups.map(g=>{
       const li=element('li','account-request');li.dataset.hostingGroup=g.fingerprint;
-      li.append(element('p','friend-name',g.name),element('p','field-help',g.pending?'World not on this PC yet. Download only when the owner has handed it to the group.':`${g.serverName} · ${g.localAuthority?'Created on this PC':'Joined group'} · open Multi-host to check members and custody.`));
+      li.append(element('p','friend-name',g.pending?`Remote group: ${g.name}`:g.name),element('p','field-help',g.pending?'No local server bound · World not on this PC yet. Download only when the owner has handed it to the group.':`Server: ${g.serverName} · ${g.localAuthority?'Created on this PC':'Joined group'} · open Multi-host to check members and custody.`));
       const button=element('button','button button-small',g.pending?'Download as a new server':'Open server Multi-host');button.type='button';button.disabled=working;
       button.addEventListener('click',()=>{if(!button.disabled)window.dispatchEvent(new CustomEvent('seedhost-group-action',{detail:{fingerprint:g.fingerprint,serverId:g.serverId,pending:g.pending}}));});
       li.append(button);
       if(g.localAuthority){const routeButton=element('button','text-button','Configure hosting connection');routeButton.type='button';routeButton.dataset.controlRoute=g.fingerprint;routeButton.disabled=working;routeButton.addEventListener('click',()=>{if(!routeButton.disabled)void openControlRoute(g.fingerprint);});li.append(routeButton);}
       return li;
-    }):[];
+    });
     $('hosting-group-list').replaceChildren(...(nodes.length?nodes:[friendEmpty(status?.signedIn?'No hosting groups yet. Open a server’s Multi-host page to create one, or accept an invitation here.':'Sign in to see your hosting groups.')]));
+    renderedGroupsKey=key;
   }
   // context bumps whenever the signed-in identity/context changes; opToken makes the newest async operation win.
   let context=0, opToken=0, worldContext=0, worldKey=null;
@@ -215,7 +222,7 @@
   // Every mutation runs with a context + token guard: a sign-out, newer operation, or stale reply never renders.
   async function withOp(feedbackId, work){
     if(working) return;
-    const worldGeneration=worldContext,worldScoped=feedbackId==='hosting-friend-feedback';
+    const worldGeneration=worldContext,worldScoped=feedbackId==='hosting-friend-feedback'||feedbackId==='setup-friend-feedback';
     working=true; render();
     const finishLoading=window.seedLoading?.begin('Updating your account / friend connection…');
     const token=++opToken, generation=context;
@@ -233,6 +240,7 @@
     return true;
   }
   async function acceptFriendRequest(r,feedbackId='account-friends-feedback'){
+    const recordGuide=feedbackId==='setup-friend-feedback'?window.seedGuideFriends?.capture():null;
     await withOp(feedbackId, async current=>{
       const result=await window.seedhost.call('accountFriendAccept',{id:r.id});
       if(!current())return;
@@ -240,6 +248,8 @@
       const friendsList=await window.seedhost.call('accountFriends');
       if(!current())return;
       if(!Array.isArray(friendsList)||!friendsList.some(f=>f?.username===result.username))throw new Error('The account directory did not confirm this friend. Refresh and check before retrying.');
+      if(recordGuide && !await recordGuide('accepted',current))return;
+      if(!current())return;
       friends=friendsList.filter(validFriend); friendRequests=friendRequests.filter(q=>q.id!==r.id);
       renderFriendLists();
       $(feedbackId).textContent=`You and @${result.username} are now friends. This grants no hosting or world-file access; invite them to host from a server’s Multi-host page when you want to share.`;
@@ -277,11 +287,14 @@
       const username=$(inputId).value.trim().toLowerCase();
       if(!validUsername(username)){$(feedbackId).textContent='Enter a username: 3–24 letters, numbers or underscores.';return;}
       if(status?.username===username){$(feedbackId).textContent='That is your own username. Sign in as a different account to add friends by username.';return;}
+      const recordGuide=feedbackId==='setup-friend-feedback'?window.seedGuideFriends?.capture():null;
       void withOp(feedbackId, async current=>{
         const result=await window.seedhost.call('accountFriendSend',{username});
         if(!current())return;
         if(result?.sent!==true||result.username!==username||!validText(result.id))throw new Error('The friend request could not be confirmed. Refresh and check before retrying.');
         if(!await readLists(current))return;
+        if(recordGuide && !await recordGuide('request-pending',current))return;
+        if(!current())return;
         $(inputId).value=''; renderFriendLists();
         $(feedbackId).textContent=`Friend request sent to @${username}. They accept it in their app.`;
       });

@@ -18,17 +18,17 @@ test('group creation starts group control without forcing always-on opt-in or to
  const helpers={create:async()=>({root:'fresh',fingerprint:'c'.repeat(64),host:role}),list:()=>[],runningGamePorts:async()=>[]};
  const invoke=await harness(backend,helpers);assert.deepEqual(await invoke('accountStartGroup'),{created:true});assert.equal(calls.some(c=>c[0]==='FORCED'),false);assert.ok(calls.some(c=>c[0]==='startGroup'));
 });
-test('disband IPC validates exact selected-server/group payload and cancellation never mutates',async()=>{
+test('explicit disband validates the exact selected-server/group payload without a warning popup',async()=>{
  const fp='c'.repeat(64),calls=[];const state={server:{id,name:'QA'},relay:{fingerprint:fp}};
  const backend={getState:async()=>state,checkGroupDisband:async(...a)=>calls.push(['check',a]),disbandGroup:async(...a)=>calls.push(['disband',a])};
- const invoke=await harness(backend,{},async()=>false);assert.equal(await invoke('disbandGroup',{id,fingerprint:fp}),null);assert.equal(calls.some(c=>c[0]==='disband'),false);
+ const invoke=await harness(backend,{},async()=>{throw Error('No disband warning popup');});await invoke('disbandGroup',{id,fingerprint:fp});assert.deepEqual(calls,[['check',[id,fp]],['disband',[id,fp]]]);
  for(const payload of [{id,fingerprint:'bad'},{id:'bad',fingerprint:fp},{id,fingerprint:fp,extra:true}])await assert.rejects(invoke('disbandGroup',payload),/invalid/i);
  await assert.rejects(invoke('disbandGroup',{id:'d'.repeat(32),fingerprint:fp}),/selected|changed/i);
 });
-test('disband rechecks selection generation after native confirmation including A-B-A',async()=>{
+test('disband rechecks selection generation after backend preflight including A-B-A',async()=>{
  const fp='c'.repeat(64),other='d'.repeat(32),calls=[];const state={server:{id,name:'QA'},relay:{fingerprint:fp}};let invoke;
- const backend={getState:async()=>state,checkGroupDisband:async()=>{},selectServer:async selected=>{state.server.id=selected;},disbandGroup:async()=>calls.push('disband')};
- invoke=await harness(backend,{},async()=>{await invoke('selectServer',{id:other});await invoke('selectServer',{id});return true;});
+ const backend={getState:async()=>state,checkGroupDisband:async()=>{await invoke('selectServer',{id:other});await invoke('selectServer',{id});},selectServer:async selected=>{state.server.id=selected;},disbandGroup:async()=>calls.push('disband')};
+ invoke=await harness(backend,{},async()=>{throw Error('No disband warning popup');});
  await assert.rejects(invoke('disbandGroup',{id,fingerprint:fp}),/selected|changed/i);assert.deepEqual(calls,[]);
 });
 

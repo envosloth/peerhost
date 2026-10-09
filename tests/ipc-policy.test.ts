@@ -3,6 +3,14 @@ import assert from 'node:assert/strict';
 const mod:any=await import('../src/core/'+'ipc-policy.js').catch(()=>({}));
 const renderer='file:///C:/seedhost/index.html';
 const trusted={senderId:7,expectedSenderId:7,isMainFrame:true};
+test('inline handoff and OS folder actions accept only exact bounded payloads from the trusted main frame',()=>{
+  const id='3f66d8cb-99ce-4b40-9ca8-1e6f1a80a45a',serverId='a'.repeat(32);
+  assert.deepEqual(mod.validateCall('respondIncomingHandoff',{id,accepted:true},renderer,renderer,trusted),{id,accepted:true});
+  for(const p of [{id,accepted:'true'},{id,accepted:true,source:'untrusted'},{id:'short',accepted:false},{accepted:true}])assert.throws(()=>mod.validateCall('respondIncomingHandoff',p,renderer,renderer,trusted));
+  assert.deepEqual(mod.validateCall('openServerFolder',{id:serverId},renderer,renderer,trusted),{id:serverId});
+  for(const p of [{id:serverId,path:'C:/outside'},{id:'../outside'},{id:serverId,open:true}])assert.throws(()=>mod.validateCall('openServerFolder',p,renderer,renderer,trusted));
+  for(const method of ['respondIncomingHandoff','openServerFolder'])assert.throws(()=>mod.validateCall(method,method==='openServerFolder'?{id:serverId}:{id,accepted:true},renderer,renderer,{...trusted,isMainFrame:false}),/sender/);
+});
 test('account profile updates are bounded, exact-key and trusted-main-frame only',()=>{
   const input={username:'new_user',currentPassword:'test-current',newPassword:'test-new'};
   assert.deepEqual(mod.validateCall('accountUpdateProfile',input,renderer,renderer,trusted),input);
