@@ -44,7 +44,7 @@ async function revokeInOtherProcess(relay, fingerprint) {
 import { createIdentity } from '../dist/src/core/peer-transport.js';
 import { SeedHostApplication } from '../dist/src/core/application.js';
 import { RelayNode } from '../dist/src/core/relay.js';
-import { relayHostState } from '../dist/src/core/relay-client.js';
+import { relayHostState, relayStatus } from '../dist/src/core/relay-client.js';
 import { randomUUID } from 'node:crypto';
 
 async function fixture(t) {
@@ -539,15 +539,102 @@ test('initial group Start refuses a live-writing owner and never snapshots or st
   assert.equal((await relay.custody()).state, 'owned');
 });
 
-test('Start bootstraps an empty group through its running enrolled owner application', async t => {
+test('Start bootstraps an empty group after stopped initial publication exceeds five seconds', { timeout: 20000 }, async t => {
   const { owner, member, relay, pin } = await fixture(t);
   await editStopped(owner, 'initial-shared'); const expected = await bytes(owner);
-  relay.publishStoppedInitial = () => owner.publishStoppedInitialGroup(pin);
-  await member.startGroup(pin, true);
-  assert.equal((await member.getState()).server.state, 'running');
-  assert.deepEqual(await bytes(member), expected);
-  assert.equal((await owner.getState()).server.ownership.state, 'transferred');
-  await member.stopServer();
+  let entered, release, publication;
+  const reached = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  relay.publishStoppedInitial = (group, device) => {
+    publication = (async () => {
+      entered();
+      await gate;
+      await owner.publishStoppedInitialGroup(group, device);
+    })();
+    return publication;
+  };
+  // Observe rejection immediately: the baseline times out while the callback is gated.
+  const outcome = member.startGroup(pin, true).then(() => ({ ok: true }), error => ({ error }));
+  try {
+    await reached;
+    await new Promise(resolve => setTimeout(resolve, 5500));
+    assert.equal(member.process, undefined, 'no launch before durable publication or after a timeout');
+    assert.equal(owner.process, undefined, 'publication never launches the stopped owner');
+    assert.equal(await relay.custody(), null);
+    release();
+    const result = await outcome;
+    if (result.error) {
+      assert.equal(member.process, undefined, 'a timed-out Start must not spawn');
+      console.log('INITIAL PUBLICATION START ERROR: ' + result.error.message);
+      throw result.error;
+    }
+    assert.equal((await member.getState()).server.state, 'running');
+    assert.deepEqual(await bytes(member), expected);
+    assert.equal((await owner.getState()).server.ownership.state, 'transferred');
+    assert.equal(owner.process, undefined, 'exactly one host');
+    assert.equal((await relay.custody()).owner, member.identity.fingerprint);
+    await member.stopServer();
+  } finally {
+    release();
+    await outcome;
+    await publication; // Socket timeout does not cancel the real owner callback.
+    await relay.settled();
+  }
+});
+
+test('ordinary relay status still times out after five seconds', { timeout: 15000 }, async t => {
+  const { member, relay, pin } = await fixture(t);
+  const handle = relay.handle.bind(relay);
+  relay.handle = (socket, source) => {
+    const write = socket.write.bind(socket);
+    socket.write = (packet, ...args) => {
+      if (Buffer.isBuffer(packet) && packet.subarray(4).toString().startsWith('{"type":"relay-status"')) return true;
+      return write(packet, ...args);
+    };
+    return handle(socket, source);
+  };
+  const started = performance.now();
+  await assert.rejects(relayStatus(member.identity, { fingerprint: pin, ...relay.endpoint }), error =>
+    error.code === 'PEER_FRAME_TIMEOUT' && error.message === 'Frame read timed out');
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed >= 4900 && elapsed < 8000, `ordinary status deadline: ${elapsed}ms`);
+});
+
+test('nonresponding initial publication has a bounded deadline and never launches after timeout', { timeout: 15000 }, async t => {
+  const { owner, member, relay, pin } = await fixture(t);
+  let release, publication;
+  const gate = new Promise(resolve => { release = resolve; });
+  relay.publishStoppedInitial = (group, device) => {
+    publication = (async () => { await gate; await owner.publishStoppedInitialGroup(group, device); })();
+    return publication;
+  };
+  const realSetTimeout = globalThis.setTimeout;
+  const deadlines = [];
+  // Accelerate only the operation-specific timer, not TLS, status, or publication.
+  // No production timeout knob or wire change is introduced for this test.
+  const timer = t.mock.method(globalThis, 'setTimeout', (callback, ms, ...args) => {
+    if (ms > 5000) {
+      deadlines.push(ms);
+      return realSetTimeout(callback, 100, ...args);
+    }
+    return realSetTimeout(callback, ms, ...args);
+  });
+  try {
+    await assert.rejects(member.startGroup(pin, true), error =>
+      error.code === 'PEER_FRAME_TIMEOUT' && error.message === 'Frame read timed out');
+    assert.deepEqual(deadlines, [120000], 'publication is bounded at the transport maximum, not unbounded');
+    assert.equal(member.process, undefined);
+    assert.equal((await member.getState()).servers.length, 0);
+    assert.equal(await relay.custody(), null);
+  } finally {
+    timer.mock.restore();
+    release();
+    await publication;
+    await relay.settled();
+  }
+  assert.equal(member.process, undefined, 'late publication is not permission for an automatic launch');
+  assert.equal(owner.process, undefined);
+  assert.equal((await relay.custody()).owner, pin, 'late callback safely parks, never transfers to timed-out member');
 });
 
 // Opt-in unmet acceptance: intentionally RED, not a fake GREEN report.

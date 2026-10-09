@@ -17,14 +17,15 @@ function vault() {
     decrypt(d) { const c = createDecipheriv('aes-256-gcm', key, d.subarray(0, 12)); c.setAuthTag(d.subarray(-16)); return c.update(d.subarray(12, -16), undefined, 'utf8') + c.final('utf8'); } };
 }
 
-test('a paired gaming PC turns on the always-on PC’s public address with one call; non-members cannot', async t => {
+async function memberPublicAddress(t, gateCreate = false) {
   const root = await mkdtemp(path.join(process.env.TMPDIR, 'public-member-'));
   const relay = new RelayNode(path.join(root, 'relay'), await createIdentity(), { log: () => {} });
   const app = new SeedHostApplication(path.join(root, 'gaming'), await createIdentity());
   const stranger = new SeedHostApplication(path.join(root, 'stranger'), await createIdentity());
   t.after(async () => { await app.close(); await stranger.close(); await relay.close(); await rm(root, { recursive: true, force: true }); });
   await relay.open(); await relay.listen({ host: '127.0.0.1', port: 0 }); await relay.listenGame({ host: '127.0.0.1', port: 0 });
-  let tunnels = [], opened = 0;
+  let tunnels = [], opened = 0, creates = 0;
+  const entered = Promise.withResolvers(), createGate = Promise.withResolvers();
   const secretFile = path.join(root, 'existing-playit-secret.txt'); await writeFile(secretFile, KEY + '\n');
   relay.publicAddress = new PublicAddress(path.join(root, 'relay'), {
     vault: vault(), externalAgent: true, target: () => ({ host: '127.0.0.1', port: relay.gameEndpoint.port }),
@@ -36,6 +37,8 @@ test('a paired gaming PC turns on the always-on PC’s public address with one c
       if (route === '/v1/agents/rundata') return { agent_id: AGENT };
       if (route === '/v1/tunnels/list') return { tunnels };
       if (route === '/tunnels/create') {
+        creates++;
+        if (gateCreate) { entered.resolve(); await createGate.promise; }
         tunnels = [{ id: '493875ca-042a-49ea-87ce-0734209d40f8', name: payload.name, tunnel_type: 'minecraft-java', origin: { type: 'agent', details: { agent_id: AGENT, config_data: { fields: [{ name: 'local_ip', value: payload.origin.data.local_ip }, { name: 'local_port', value: String(payload.origin.data.local_port) }] } } }, offline_reasons: null, connect_addresses: [{ value: { address: 'friends-world.tun.ply.gg' } }] }];
         return {};
       }
@@ -47,6 +50,16 @@ test('a paired gaming PC turns on the always-on PC’s public address with one c
   await app.joinWithInvite({ code: (await relay.createInvite({ hours: 1 })).code, name: 'Angel' });
   assert.equal((await app.publicAddress('public-status')).state, 'off');
   let status = await app.publicAddress('public-enable');
+  if (gateCreate) {
+    await entered.promise;
+    try {
+      assert.equal(relay.publicAddress.status().state, 'creating');
+      const pending = await app.publicAddress('public-status');
+      assert.equal(pending.state, 'creating', pending.detail);
+      assert.equal(pending.address, null, 'no address is advertised before tunnel creation completes');
+      assert.equal((await relay.publicAddress.refresh(true)).state, 'creating', 'forced checks cannot validate an unfinished reservation either');
+    } finally { createGate.resolve(); await relay.publicAddress.settled(); }
+  }
   for (let i = 0; i < 200 && status.state !== 'reachable'; i++) { await new Promise(r => setTimeout(r, 20)); status = await app.publicAddress('public-status'); if (status.state === 'error') break; }
   assert.equal(status.state, 'reachable', status.detail);
   assert.equal(status.address, 'friends-world.tun.ply.gg');
@@ -57,5 +70,17 @@ test('a paired gaming PC turns on the always-on PC’s public address with one c
   await stranger.saveRelay({ fingerprint: relay.identity.fingerprint, parkOnStop: false });
   await assert.rejects(stranger.publicAddress('public-disable'));
   assert.equal((await app.publicAddress('public-status')).state, 'reachable');
+  assert.equal(creates, 1, 'status checks do not create replacement or duplicate tunnels');
+  if (gateCreate) {
+    tunnels[0].origin.details.config_data.fields.find(f => f.name === 'local_port').value = '0';
+    const changed = await relay.publicAddress.refresh(true);
+    assert.equal(changed.state, 'error', 'a completed binding with a changed provider route still fails closed');
+    assert.equal(changed.address, null);
+    assert.match(changed.detail, /missing or its route changed/);
+    assert.equal(creates, 1, 'a changed route is never replaced or rebound');
+  }
   assert.equal((await app.publicAddress('public-disable')).state, 'off');
-});
+}
+
+test('a paired gaming PC turns on the always-on PC’s public address with one call; non-members cannot', t => memberPublicAddress(t));
+test('a member status poll during tunnel creation preserves setup progress until the binding is published', t => memberPublicAddress(t, true));

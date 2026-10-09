@@ -225,6 +225,8 @@ export class PublicAddress {
     }
     await this.ensureTunnel(key, saved, epoch);
     this.guard(epoch);
+    // Status polls must not validate the intermediate reservation without a tunnel ID.
+    this.progress = { ...this.progress, state: 'pending' };
     await this.refresh(true);
   }
 
@@ -371,7 +373,7 @@ export class PublicAddress {
   /** Re-check the tunnel and whether Minecraft answers through it. Cheap enough to call from a 15 s UI poll. */
   async refresh(force = false): Promise<PublicStatus> {
     if (!force && Date.now() - this.lastCheck < 10_000) return this.status();
-    if (!['creating', 'pending', 'reserved', 'reachable'].includes(this.progress.state)) return this.status();
+    if (!['pending', 'reserved', 'reachable'].includes(this.progress.state)) return this.status();
     this.lastCheck = Date.now();
     const epoch = this.epoch, check = ++this.checkGeneration;
     const saved = await this.read();

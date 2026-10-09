@@ -33,11 +33,11 @@ export interface RelayFriends {
 }
 type RelayPeer = TransferPeer & { name?: string };
 
-async function friendRequest(identity: PeerIdentity, relay: RelayPeer, request: unknown): Promise<Record<string, unknown>> {
+async function friendRequest(identity: PeerIdentity, relay: RelayPeer, request: unknown, replyTimeoutMs?: number): Promise<Record<string, unknown>> {
   const socket = await connectPeer(identity, relay.fingerprint, relay.host, relay.port);
   try {
     await writeFrame(socket, request);
-    const frame: unknown = await readFrame(socket, 262144);
+    const frame: unknown = await readFrame(socket, 262144, replyTimeoutMs);
     if (!frame || typeof frame !== 'object' || Array.isArray(frame)) throw new Error('Invalid relay reply');
     const reply = frame as Record<string, unknown>;
     if (reply.type === 'error') throw new Error(`Relay refused: ${String(reply.message).slice(0, 512)}`);
@@ -174,7 +174,11 @@ export async function openRelayHostSession(identity: PeerIdentity, relay: RelayP
 
 /** A member's Start may request ONLY the enrolled owner's bound, safely stopped initial revision. */
 export async function relayInitialPublish(identity: PeerIdentity, relay: RelayPeer): Promise<void> {
-  const reply = await friendRequest(identity, relay, relayRequest('initial-publish'));
+  // This reply includes snapshot creation and local park, not just a control lookup.
+  // Give stopped large worlds up to two minutes (the transport's maximum), without
+  // extending status/admission deadlines. Expiry closes only this request socket;
+  // it does not cancel publication or authorize a claim/launch on uncertain state.
+  const reply = await friendRequest(identity, relay, relayRequest('initial-publish'), 120000);
   if (Object.keys(reply).sort().join(',') !== 'type' || reply.type !== 'relay-initial-published') throw new Error('Initial publication could not be verified');
 }
 

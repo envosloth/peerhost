@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.6-alpha
+
+Unsigned portable Windows alpha. Update both hosting PCs and retain independent world backups.
+
+- Initial group publication now allows up to two minutes for the owner's stopped-world snapshot and park instead of expiring after five seconds. Ordinary control-request deadlines stay unchanged; timeout still does not authorize takeover or launch on uncertain custody.
+- Playit status polling no longer reports a missing tunnel while its first creation is still in progress. Saved-route validation resumes only after the tunnel binding is persisted; genuinely missing or changed routes still refuse.
+- Real isolated pinned-TLS regressions reproduce both failures and cover delayed publication, bounded expiry without a late launch, concurrent setup polling and changed-route rejection. This is not different-network Minecraft gameplay certification.
+
 ## 0.6.5-alpha
 
 Unsigned portable Windows alpha for one-click group hosting. Both hosts should update; keep independent world backups before testing.
