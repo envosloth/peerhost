@@ -220,9 +220,11 @@ function serialize<T>(queues: WeakMap<TLSSocket, Promise<void>>, socket: TLSSock
   return result;
 }
 
-export async function writeFrame(socket: TLSSocket, value: unknown): Promise<void> {
+/** Whole-frame completion deadline (not inactivity); ordinary controls retain the 5 s default. */
+export async function writeFrame(socket: TLSSocket, value: unknown, timeoutMs = FRAME_TIMEOUT_MS): Promise<void> {
   requireVerified(socket);
-  return writeCheckedFrame(socket, value);
+  validateFrameTimeout(timeoutMs);
+  return writeCheckedFrame(socket, value, timeoutMs);
 }
 
 export async function writeInviteFrame(socket: TLSSocket, value: unknown): Promise<void> {
@@ -231,16 +233,16 @@ export async function writeInviteFrame(socket: TLSSocket, value: unknown): Promi
   return writeCheckedFrame(socket, value);
 }
 
-function writeCheckedFrame(socket: TLSSocket, value: unknown): Promise<void> {
+function writeCheckedFrame(socket: TLSSocket, value: unknown, timeoutMs = FRAME_TIMEOUT_MS): Promise<void> {
   const body = Buffer.from(JSON.stringify(value), "utf8");
   if (body.length > MAX_FRAME_BYTES) throw new Error("Frame exceeds the one-MiB byte limit");
   const packet = Buffer.allocUnsafe(4 + body.length);
   packet.writeUInt32BE(body.length, 0);
   body.copy(packet, 4);
-  return serialize(writeQueues, socket, () => writePacket(socket, packet));
+  return serialize(writeQueues, socket, () => writePacket(socket, packet, timeoutMs));
 }
 
-function writePacket(socket: TLSSocket, packet: Buffer): Promise<void> {
+function writePacket(socket: TLSSocket, packet: Buffer, timeoutMs: number): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     let settled = false;
     const cleanup = () => {
@@ -256,7 +258,7 @@ function writePacket(socket: TLSSocket, packet: Buffer): Promise<void> {
       reject(error);
     };
     const disconnected = () => fail(new PeerTransportError('PEER_DISCONNECTED', "Peer disconnected during a frame write"));
-    const timer = setTimeout(() => fail(new PeerTransportError('PEER_FRAME_TIMEOUT', "Frame write timed out")), FRAME_TIMEOUT_MS);
+    const timer = setTimeout(() => fail(new PeerTransportError('PEER_FRAME_TIMEOUT', "Frame write timed out")), timeoutMs);
     socket.once("error", fail);
     socket.once("close", disconnected);
     if (socket.destroyed || !socket.writable || socket.writableEnded) { disconnected(); return; }
@@ -283,13 +285,17 @@ export async function readInviteFrame(socket: TLSSocket, maxBytes = 4096, timeou
   return readCheckedFrame(socket, maxBytes, timeoutMs);
 }
 
+function validateFrameTimeout(timeoutMs: number): void {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 120000) {
+    throw new RangeError("timeoutMs must be finite, positive, and at most 120000");
+  }
+}
+
 function readCheckedFrame(socket: TLSSocket, maxBytes: number, timeoutMs: number): Promise<any> {
   if (!Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_FRAME_BYTES) {
     throw new RangeError("maxBytes must be an integer between 1 and 1048576");
   }
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 120000) {
-    throw new RangeError("timeoutMs must be finite, positive, and at most 120000");
-  }
+  validateFrameTimeout(timeoutMs);
   return serialize(readQueues, socket, () => readOneFrame(socket, maxBytes, timeoutMs));
 }
 

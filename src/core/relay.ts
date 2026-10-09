@@ -6,7 +6,7 @@ import { createIdentity, isVerifiedPeerSocket, listenPeer, readInviteFrame, writ
 import { OwnershipLedger, canAcceptOffer } from './ownership.js';
 import { receiveSnapshot, sendSnapshot } from './transfers.js';
 import { pruneStore, syncDirectory } from './snapshots.js';
-import { RELAY_PROTOCOL_VERSION, type RelayCustody } from './relay-client.js';
+import { RELAY_PROTOCOL_VERSION, validHostEndpoint, type HostEndpoint, type RelayCustody } from './relay-client.js';
 import { encodeInvite, type CreatedInvite } from './invites.js';
 import { RelayGameGateway, type GameRoute, type GameGatewayOptions } from './game-gateway.js';
 import type { PublicAddress } from './public-address.js';
@@ -43,7 +43,7 @@ export class RelayNode {
   /** Running same-PC owner application binding only; no file paths or remote commands on the wire. */
   publishStoppedInitial?: (group: string, owner: string) => Promise<void>;
   private initialPublication?: Promise<void>;
-  private hostSessions = new Map<string, { socket: TLSSocket; generation: number; snapshotId: string }>();
+  private hostSessions = new Map<string, { socket: TLSSocket; generation: number; snapshotId: string; endpoint: HostEndpoint | null }>();
   private readonly keepRevisions: number;
   private readonly log: (line: string) => void;
   private readonly defaultName: string;
@@ -391,13 +391,47 @@ export class RelayNode {
     return this.config.trusted.find((host) => host.fingerprint === fingerprint)?.name ?? 'an untrusted device';
   }
 
+  /** Incremental length-prefixed (4-byte BE, 1..4096) frame reader for the retained host telemetry socket. */
+  private attachHostEndpointParser(session: { socket: TLSSocket; endpoint: HostEndpoint | null }, owner: string): void {
+    let buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+    session.socket.on('data', (chunk: Buffer) => {
+      if (session.socket.destroyed) return;
+      buffer = buffer.length === 0 ? chunk : Buffer.concat([buffer, chunk]);
+      if (buffer.length > 65536) { session.socket.destroy(); return; }
+      let offset = 0;
+      while (buffer.length - offset >= 4) {
+        const length = buffer.readUInt32BE(offset);
+        if (length < 1 || length > 4096) { session.socket.destroy(); return; }
+        if (buffer.length - offset < 4 + length) break;
+        this.acceptHostEndpointFrame(session, owner, buffer.subarray(offset + 4, offset + 4 + length));
+        offset += 4 + length;
+      }
+      if (offset > 0) buffer = buffer.subarray(offset);
+    });
+  }
+
+  /** Accepts ONLY the exact three-key host-endpoint frame from the authenticated holder; anything else is ignored. */
+  private acceptHostEndpointFrame(session: { endpoint: HostEndpoint | null }, who: string, body: Buffer): void {
+    let frame: unknown;
+    try { frame = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(body)); }
+    catch { this.log(`Relay ${who}: ignored malformed join-address frame.`); return; }
+    const record = frame as Record<string, unknown>;
+    if (!record || typeof frame !== 'object' || Array.isArray(frame) ||
+        Object.keys(record).sort().join(',') !== 'address,type,verifiedAt' || record.type !== 'host-endpoint') {
+      this.log(`Relay ${who}: ignored malformed join-address frame.`); return;
+    }
+    if (record.address === null && record.verifiedAt === null) { session.endpoint = null; return; }
+    if (!validHostEndpoint(record)) { this.log(`Relay ${who}: ignored malformed join-address frame.`); return; }
+    session.endpoint = { address: record.address, verifiedAt: record.verifiedAt };
+  }
+
   private async handle(socket: TLSSocket, source: string): Promise<void> {
     const who = this.nameOf(source)!;
     let retained = false;
     try {
       const request = await readInviteFrame(socket, 4096, REQUEST_TIMEOUT_MS) as Record<string, unknown>;
-      if (!request || request.type !== 'relay' || request.version !== RELAY_PROTOCOL_VERSION || !['status', 'park', 'claim', 'join', 'invite', 'friends', 'gateway-status', 'game-tunnel', 'public-status', 'public-enable', 'public-disable', 'remove-friend', 'invite-for', 'disband', 'disband-status', 'initial-publish', 'host-start', 'host-running', 'host-cancel', 'host-stopped'].includes(request.op as string) ||
-          Object.keys(request).length !== (['host-start', 'host-running', 'host-cancel', 'host-stopped'].includes(request.op as string) ? 7 : request.op === 'join' || request.op === 'game-tunnel' ? 5 : request.op === 'remove-friend' || request.op === 'invite-for' ? 4 : 3)) {
+      if (!request || request.type !== 'relay' || request.version !== RELAY_PROTOCOL_VERSION || !['withdraw-offer', 'recovery-status', 'status', 'park', 'claim', 'join', 'invite', 'friends', 'gateway-status', 'game-tunnel', 'public-status', 'public-enable', 'public-disable', 'remove-friend', 'invite-for', 'disband', 'disband-status', 'initial-publish', 'host-start', 'host-running', 'host-cancel', 'host-stopped'].includes(request.op as string) ||
+          Object.keys(request).length !== (['host-start', 'host-running', 'host-cancel', 'host-stopped'].includes(request.op as string) ? 7 : request.op === 'join' || request.op === 'game-tunnel' ? 5 : request.op === 'withdraw-offer' || request.op === 'remove-friend' || request.op === 'invite-for' ? 4 : 3)) {
         throw new Error('Unsupported relay request; both ends must run the same SeedHost alpha');
       }
       if (request.op === 'join') {
@@ -414,6 +448,26 @@ export class RelayNode {
         return;
       }
       this.requireMember(source);
+      if (request.op === 'withdraw-offer') {
+        const result = await withRelayLock(this.root, async () => {
+          await this.reload(); this.requireMember(source);
+          return this.ledger().withdrawIncoming(request.offer as import('./ownership.js').TransferOffer, source);
+        });
+        await writeFrame(socket, {type:'relay-withdrawal', offer:request.offer, ...result});
+        return;
+      }
+      if (request.op === 'recovery-status') {
+        const recovered = await withRelayLock(this.root, async () => {
+          await this.reload(); this.requireMember(source);
+          const custody = await this.ledger().status();
+          if (custody.state !== 'transferred' || custody.owner !== source) throw new Error('Only the exact current holder can inspect recovery status');
+          const observation = await this.hostObservation();
+          if (observation && (observation.owner !== source || observation.generation !== custody.generation || observation.snapshotId !== custody.snapshotId || observation.lineage !== custody.lineage)) throw new Error('Recovery observation does not match exact custody');
+          return { custody, observation };
+        });
+        await writeFrame(socket, { type: 'relay-recovery-status', ...recovered });
+        return;
+      }
       if (['host-start', 'host-running', 'host-cancel', 'host-stopped'].includes(request.op as string)) {
         const run = this.queue.then(() => withRelayLock(this.root, async () => {
           await this.reload(); this.requireMember(source);
@@ -437,10 +491,13 @@ export class RelayNode {
         await run;
         if (request.op === 'host-running') {
           this.hostSessions.get(source)?.socket.destroy();
-          const session = { socket, generation: request.generation as number, snapshotId: request.snapshotId as string };
+          const session = { socket, generation: request.generation as number, snapshotId: request.snapshotId as string, endpoint: null as HostEndpoint | null };
           this.hostSessions.set(source, session);
           const clear = () => { if (this.hostSessions.get(source) === session) this.hostSessions.delete(source); };
           socket.once('close', clear); socket.once('end', clear); socket.on('error', clear);
+          // Incremental telemetry reader on the retained socket: idle sessions have no finite deadline, so the
+          // request/readFrame loop (which validates a finite deadline <= 120 s) must never be used here.
+          this.attachHostEndpointParser(session, source);
           retained = true;
         }
         await writeFrame(socket, { type: 'relay-host-accepted' });
@@ -529,8 +586,12 @@ export class RelayNode {
           return { custody: await this.custody(), pendingStart: await this.pendingStart() };
         });
         const session = custody ? this.hostSessions.get(custody.owner) : undefined;
-        const hosting = custody?.state === 'transferred' && session && !session.socket.destroyed && session.generation === custody.generation && session.snapshotId === custody.snapshotId && this.config.trusted.some(member => member.fingerprint === custody.owner) ? true : null;
-        await writeFrame(socket, { type: 'relay-status', custody, hosting, pendingStart,
+        // The SAME predicate gates `hosting` and the published endpoint: a transferred custody with a live,
+        // generation/snapshot-matching session from a trusted member.
+        const current = custody?.state === 'transferred' && session && !session.socket.destroyed && session.generation === custody.generation && session.snapshotId === custody.snapshotId && this.config.trusted.some(member => member.fingerprint === custody.owner) ? session : null;
+        const hosting: true | null = current ? true : null;
+        const holderEndpoint = current?.endpoint ? { address: current.endpoint.address, verifiedAt: current.endpoint.verifiedAt } : null;
+        await writeFrame(socket, { type: 'relay-status', custody, hosting, pendingStart, holderEndpoint,
           ownerName: this.nameOf(custody?.owner ?? null), pendingName: this.nameOf(custody?.pendingTarget ?? null) });
         socket.end();
         return;
@@ -554,8 +615,8 @@ export class RelayNode {
     const ledger = this.ledger();
     await receiveSnapshot(socket, source, this.store, async (snapshot, authenticated, offer) => {
       if (!offer) return false;
-      if (await ledger.hasAccepted(offer.id)) return true; // retried park: re-acknowledge, never re-apply
-      // The membership, lineage and custody decision commits under the cross-process lock shared with revocation
+      // The membership, lineage and custody decision — including whether an already-accepted offer may be
+      // re-acknowledged — commits under the cross-process lock shared with revocation
       // (`untrust`, CLI included) and with claim preparation: a device revoked while its park streamed, or a
       // member answering before the owner, can never still receive the group's authority.
       const accepted = await withRelayLock(this.root, async () => {
@@ -563,6 +624,24 @@ export class RelayNode {
         if (this.config.disbandedBy || !this.config.trusted.some((member) => member.fingerprint === authenticated)) {
           this.log(`Declined park from ${who}: the device is not a trusted member of this group.`);
           return false;
+        }
+        if (await ledger.hasWithdrawn(offer.id)) return false;
+        if (await ledger.hasAccepted(offer.id)) {
+          // Re-acknowledge ONLY the exact durable acceptance, verified under this same cross-process lock:
+          // the device must still be an authenticated member, and the complete offer metadata (source, target,
+          // lineage, generation, snapshot) must match both the stored acceptance and this ledger's lineage.
+          // A replayed park never re-applies custody, even after it advanced to another holder. Records
+          // accepted before the details table existed fail closed (explicit operator recovery required).
+          const detail = await ledger.acceptedOfferDetails(offer.id);
+          const verified = detail?.durable && detail.custody.lineage !== undefined && detail.custody.lineage === offer.lineage &&
+            detail.custody.generation >= offer.generation &&
+            detail.offer.id === offer.id && detail.offer.source === offer.source && detail.offer.target === offer.target &&
+            detail.offer.lineage === offer.lineage && detail.offer.generation === offer.generation && detail.offer.snapshotId === offer.snapshotId;
+          if (!verified) {
+            this.log(`Declined replayed park from ${who}: it does not match the durable acceptance record; explicit operator recovery required.`);
+            return false;
+          }
+          return true;
         }
         await this.requireNoPendingStart();
         if ((await this.hostObservation())?.state === 'hosting') throw new Error('Hosting is unresolved; verified Stop must resolve the exact admission before handoff.');

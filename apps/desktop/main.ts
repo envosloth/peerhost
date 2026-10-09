@@ -3,7 +3,7 @@ import path from 'node:path';
 import { loadAccountServiceConfig } from '../../src/core/account-service-config.js';
 import { AccountIntegration } from '../../src/core/account-integration.js';
 import { PlayitIntegration } from '../../src/core/playit.js';
-import { playitApi, probeMinecraft } from '../../src/core/playit-network.js';
+import { playitApi, probeMinecraft, probeMinecraftDetailed } from '../../src/core/playit-network.js';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { SeedHostApplication, groupJavaLaunchArgs } from '../../src/core/application.js';
 import { readServerPort } from '../../src/core/network-info.js';
@@ -28,6 +28,7 @@ const setupLinks: Record<string,string> = Object.freeze({
 });
 let window:BrowserWindow;let tray:Tray;let backend:SeedHostApplication;let helpers:GroupHelpers;let publicAddress:PerServerPublicAddresses;let quitAllowed=false;let quitting=false;
 let appNotice:string|null=null;const incomingHandoff=new InlineHandoffConsent();
+let holderEndpointPublished:{serverId:string;address:string;verifiedAt:number}|null=null;
 // Display name; the profile folder below is SeedHost (or --profile-root).
 app.setName('Seed Hosting');
 const profileArgument=process.argv.find(a=>a.startsWith('--profile-root='));
@@ -99,14 +100,43 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
     }
     // Independent local-server addresses use one approved agent, not the shared-hosting helper gateway.
     publicAddress=new PerServerPublicAddresses(root,{vault,
-      api:playitApi,claim:playitClaim,probe:probeMinecraft,openBrowser:url=>shell.openExternal(url),
+      api:playitApi,claim:playitClaim,probe:probeMinecraftDetailed,openBrowser:url=>shell.openExternal(url),
       servers:async()=>(await backend.getState()).servers,
       reservedPorts:async()=>helpers.runningGamePorts()});
     await publicAddress.restore((await backend.getState()).servers);
+    // Join-address telemetry: mirror the ACTIVE running hosted world's verified public address to this group's
+    // relay, best-effort, at the same world-captured polling boundary that computes the UI projection. A failed
+    // publish is logged quietly: it never pops up, never retries a launch and never undoes a start.
+    function activeHostedJoin(state:any,helperPorts:number[]):{serverId:string;address:string;verifiedAt:number}|null{
+      const entry=state.servers.find((server:any)=>server.state==='running'&&server.group)??null;
+      if(!entry)return null;
+      const pub=publicAddress.status(entry);
+      const collision=state.servers.some((other:any)=>other.id!==entry.id&&other.playerPort===entry.playerPort)||helperPorts.includes(entry.playerPort);
+      if(collision||typeof pub.joinAddress!=='string'||!pub.joinAddress||typeof pub.verifiedAt!=='number'||!Number.isSafeInteger(pub.verifiedAt)||pub.verifiedAt<=0)return null;
+      return {serverId:entry.id,address:pub.joinAddress,verifiedAt:pub.verifiedAt};
+    }
+    function publishHolderEndpoint(endpoint:{serverId:string;address:string;verifiedAt:number}|null):void{
+      holderEndpointPublished=endpoint;
+      void backend.publishHostEndpoint(endpoint?{address:endpoint.address,verifiedAt:endpoint.verifiedAt}:null).catch(error=>{
+        console.log('Join address telemetry: '+String((error as Error)?.message??error).replace(/[a-fA-F0-9]{32,}/g,'[redacted]').slice(0,300));
+      });
+    }
+    function syncHolderEndpoint(state:any,helperPorts:number[]):void{
+      const next=activeHostedJoin(state,helperPorts);
+      const same=holderEndpointPublished===null?next===null:Boolean(next&&holderEndpointPublished.serverId===next.serverId&&holderEndpointPublished.address===next.address&&holderEndpointPublished.verifiedAt===next.verifiedAt);
+      if(!same)publishHolderEndpoint(next);
+    }
+    // Called immediately after a host session opens: the relay's new session record is empty, so publish the
+    // currently known state even when it matches the previous local projection.
+    async function publishHolderEndpointNow():Promise<void>{
+      const state=await backend.getState();const helperPorts=await helpers.runningGamePorts();
+      publishHolderEndpoint(activeHostedJoin(state,helperPorts));
+    }
     // In-app updates: checks the official GitHub releases, downloads and verifies the Windows package,
     // and stages the swap that runs after this app exits. SEEDHOST_UPDATE_ORIGIN redirects it for tests.
     const updater=new Updater({root:path.join(root,'updates'),currentVersion:app.getVersion(),packaged:app.isPackaged,platform:process.platform,arch:process.arch,apiOrigin:process.env.SEEDHOST_UPDATE_ORIGIN||undefined});
     let publicSelectionEpoch=0;
+    const selectionEpochNow=()=>publicSelectionEpoch;
     const image=nativeImage.createFromPath(fileURLToPath(new URL('../../../apps/desktop/icon.png',import.meta.url)));
     if(image.isEmpty())throw new Error('App icon could not be loaded');
     window=new BrowserWindow({width:1240,height:860,minWidth:1000,minHeight:700,title:'Seed Hosting',icon:image,frame:false,fullscreen:true,fullscreenable:true,backgroundColor:'#0f1116',show:true,webPreferences:{preload:fileURLToPath(new URL('./preload.cjs',import.meta.url)),nodeIntegration:false,contextIsolation:true,sandbox:true}});
@@ -141,11 +171,30 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
           return host.setControlRoute({host:p.host,port:p.port});
         }
         case 'listHostingGroups':return backend.listHostingGroups(helpers.list().flatMap(entry=>entry.host.localGroupFingerprints()));
-        case 'startGroup':return backend.startGroupWithApproval(p.fingerprint,async approval=>{
-          const helperPorts=await helpers.runningGamePorts(),minecraftPort=await readServerPort(approval.serverDir);
-          if(helperPorts.includes(minecraftPort))throw new Error('Minecraft port is used by the player gateway. Choose a different port in Server settings; no process was launched.');
-          return true;
-        });
+        case 'startGroup':{
+          let captured:{id:string;dir:string}|null=null;
+          const result=await backend.startGroupWithApproval(p.fingerprint,async approval=>{
+            const helperPorts=await helpers.runningGamePorts(),minecraftPort=await readServerPort(approval.serverDir);
+            if(helperPorts.includes(minecraftPort))throw new Error('Minecraft port is used by the player gateway. Choose a different port in Server settings; no process was launched.');
+            const snapshot=await backend.getState(),selected=snapshot.server;
+            if(selected&&selected.serverDir===approval.serverDir){captured={id:selected.id,dir:approval.serverDir};publicAddress.invalidateVerification(selected.id);}
+            return true;
+          });
+          if(captured&&process.env.SEEDHOST_TEST_LOOPBACK!=='1'){
+            const world=captured as {id:string;dir:string};
+            try{
+              const latest=await backend.getState();
+              const entry=latest.servers.find(server=>server.id===world.id)??(latest.server?.id===world.id?latest.server:null);
+              if(!entry)throw new Error('The started world is no longer in the library; its public address was not changed.');
+              if(latest.server?.id===world.id&&latest.server.serverDir!==world.dir)throw new Error('The selected server changed while starting; its public address was not changed.');
+              await publicAddress.enable(entry,latest.servers);
+            }catch(error){
+              appNotice='The group start succeeded, but its public address could not be set up: '+String((error as Error)?.message??error).replace(/[a-fA-F0-9]{32,}/g,'[redacted]').slice(0,300);
+            }
+          }
+          void publishHolderEndpointNow();
+          return result;
+        }
         case 'claimPendingGroup':return backend.claimPendingGroup(p.fingerprint);
         case 'respondIncomingHandoff':incomingHandoff.respond(p.id,p.accepted);return {responded:true};
         case 'accountStatus':return accounts.status();
@@ -222,14 +271,19 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
           const state=await backend.getState();
           const alwaysStatus=await (await helperForSelected()).status();
           const helperPorts=await helpers.runningGamePorts();
+          syncHolderEndpoint(state,helperPorts);
           const checks=onboardingChecks(state.onboarding,{...state,alwaysOn:alwaysStatus});
           const publicJoin=(entry:typeof state.servers[number])=>{
             const pub=publicAddress.status(entry);
             const collision=state.servers.some(other=>other.id!==entry.id&&other.playerPort===entry.playerPort)||helperPorts.includes(entry.playerPort);
-            return !collision&&pub.address&&['reachable','reserved','pending'].includes(pub.state)
-              ?{address:pub.address,reachability:(pub.state==='reachable'?'verified':'unverified') as 'verified'|'unverified',source:'playit' as const,targetServerId:entry.id}:null;
+            // Only a fresh verified join address is a join address; reserved/local routes stay explicit
+            // secondary data and are never projected as something a friend could copy.
+            const verified=!collision&&entry.state==='running'&&typeof pub.joinAddress==='string'&&pub.joinAddress
+              ?{address:pub.joinAddress,reachability:'verified',source:'playit',targetServerId:entry.id} as const:null;
+            const reserved=!verified&&!collision&&typeof pub.reservedAddress==='string'&&pub.reservedAddress?pub.reservedAddress:null;
+            return {publicJoinAddress:verified,publicReservedAddress:reserved};
           };
-          return {...state,appNotice,incomingHandoff:incomingHandoff.status(),version:app.getVersion(),servers:state.servers.map(entry=>({...entry,publicJoinAddress:publicJoin(entry)})),
+          return {...state,appNotice,incomingHandoff:incomingHandoff.status(),version:app.getVersion(),servers:state.servers.map(entry=>({...entry,...publicJoin(entry)})),
             onboarding:{...state.onboarding,checks,completed:checks.ready==='complete'}};
         }
         case 'alwaysOnStatus':return (await helperForSelected()).status();
@@ -256,9 +310,19 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
             if(method==='publicAddressEnable')throw new Error(detail);
             return {state:'error',address:null,approveUrl:null,detail};
           }
-          if(method==='publicAddressEnable')return publicAddress.enable(selected,latest.servers);
+          if(method==='publicAddressEnable'){
+            let status=await publicAddress.enable(selected,latest.servers);
+            // First-use provider approval is inline in this one action: give the background flow a bounded
+            // moment to surface its approval URL, open it once, and keep the second button as a fallback.
+            for(let attempt=0;attempt<10&&!status.approveUrl&&['starting','downloading'].includes(status.state);attempt++){
+              await new Promise(resolve=>setTimeout(resolve,250));
+              status=await publicAddress.refresh(selected,false);
+            }
+            if(status.state==='approve'&&status.approveUrl&&/^https:\/\/playit\.gg\/claim\/[a-f0-9]{10}$/.test(status.approveUrl))await shell.openExternal(status.approveUrl);
+            return status;
+          }
           if(method==='publicAddressDisable')return publicAddress.disable(selected);
-          if(method==='publicAddressStatus')return publicAddress.refresh(selected);
+          if(method==='publicAddressStatus'){const status=await publicAddress.refresh(selected);syncHolderEndpoint(latest,helperPorts);return status;}
           const status=publicAddress.status(selected),url=status.approveUrl;
           if(url&&/^https:\/\/playit\.gg\/claim\/[a-f0-9]{10}$/.test(url))await shell.openExternal(url);
           return status;
@@ -315,16 +379,45 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
           return backend.importExisting(selected.filePaths[0],true);
         }
         case 'saveProfile':return backend.saveProfile(p as {executable:string;args:string[]});
-        case 'startServer':return backend.startServerWithApproval(async approval=>{
-          // Check the captured server under the backend approval lock, before any hosting ledger mutation.
-          const helperPorts=await helpers.runningGamePorts(),minecraftPort=await readServerPort(approval.serverDir);
-          if(helperPorts.includes(minecraftPort))throw new Error('Minecraft port '+minecraftPort+' is used by Seed Hosting’s player gateway. Choose a different Minecraft port in Server settings before starting. No server process was launched and ownership was not changed.');
-          // The explicit Start server action approves the captured local launch profile.
-          // Receiving a world never calls this handler or starts code automatically.
-          // Backend still revalidates the captured profile, snapshots and ownership before spawn.
-          return true;
-        });
-        case 'stopServer':return backend.stopServer();
+        case 'startServer':{
+          let captured:{id:string;dir:string}|null=null;
+          const result=await backend.startServerWithApproval(async approval=>{
+            // Check the captured server under the backend approval lock, before any hosting ledger mutation.
+            const helperPorts=await helpers.runningGamePorts(),minecraftPort=await readServerPort(approval.serverDir);
+            if(helperPorts.includes(minecraftPort))throw new Error('Minecraft port '+minecraftPort+' is used by Seed Hosting’s player gateway. Choose a different Minecraft port in Server settings before starting. No server process was launched and ownership was not changed.');
+            // Bind the exact world id to the approved server directory now, under the approval gate. A later
+            // selection change is never resolved as the started world, and its cached verification is stale.
+            const snapshot=await backend.getState(),selected=snapshot.server;
+            if(selected&&selected.serverDir===approval.serverDir){captured={id:selected.id,dir:approval.serverDir};publicAddress.invalidateVerification(selected.id);}
+            // The explicit Start server action approves the captured local launch profile.
+            // Receiving a world never calls this handler or starts code automatically.
+            // Backend still revalidates the captured profile, snapshots and ownership before spawn.
+            return true;
+          });
+          if(captured&&process.env.SEEDHOST_TEST_LOOPBACK!=='1'){
+            const world=captured as {id:string;dir:string};
+            try{
+              const latest=await backend.getState();
+              const entry=latest.servers.find(server=>server.id===world.id)??(latest.server?.id===world.id?latest.server:null);
+              if(!entry)throw new Error('The started world is no longer in the library; its public address was not changed.');
+              if(latest.server?.id===world.id&&latest.server.serverDir!==world.dir)throw new Error('The selected server changed while starting; its public address was not changed.');
+              await publicAddress.enable(entry,latest.servers);
+            }catch(error){
+              appNotice='Server started, but its public address could not be set up: '+String((error as Error)?.message??error).replace(/[a-fA-F0-9]{32,}/g,'[redacted]').slice(0,300);
+            }
+          }
+          void publishHolderEndpointNow();
+          return result;
+        }
+        case 'stopServer':{
+          const before=await backend.getState(),world=before.server;
+          const result=await backend.stopServer();
+          // Stop is the lifecycle boundary: cached verification for the captured world is stale now, and
+          // the renderer drops the copy action at once instead of waiting for the provider poll.
+          if(world)publicAddress.invalidateVerification(world.id);
+          publishHolderEndpoint(null);
+          return result;
+        }
         case 'createSnapshot':return backend.createSnapshot();
         case 'sendCommand':return backend.sendCommand(p.command);
         case 'saveSettings':return backend.saveSettings(p as any);
@@ -391,9 +484,24 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
         case 'windowToggleFullscreen':window.setFullScreen(!window.isFullScreen());return windowState();
         case 'windowClose':window.close();return;
         case 'quitApp':void quit();return;
-        // The explicitly labelled recovery button supplies confirmed:true; the IPC policy
-        // rejects false/missing confirmation and the backend retains every stopped/ownership fence.
-        case 'recoverStopped':return backend.recoverStopped(p.confirmed as boolean);
+        // Recovery consent is scoped to the captured world and this selection epoch. The check runs here,
+        // in the privileged path, before the core method sees any recovery request.
+        case 'recoverStopped':{
+          const target=typeof p.id==='string'?p.id:null,epoch=selectionEpochNow();
+          const confirmRecoveryContext=async():Promise<void>=>{
+            const current=await backend.getState();
+            if(!current.server||epoch!==selectionEpochNow())throw new Error('The selected server changed. Refresh before recovering.');
+            if(target!==null){if(current.server.id!==target)throw new Error('The selected server changed. Refresh before recovering.');}
+            // A group-bound world is recovered only for its exact captured id: the legacy id-less path must
+            // never authorize custody recovery of a hosting-group world.
+            else if(Boolean((current.server as unknown as {group?:unknown}).group))throw new Error('This hosting group world requires its captured world id. Refresh before recovering.');
+          };
+          await confirmRecoveryContext();
+          await confirmRecoveryContext();
+          return backend.recoverStopped(p.confirmed as boolean);
+        }
+        // Read-only, authenticated recovery evidence for the active group world; never mutates custody.
+        case 'groupRecoveryStatus':return backend.groupRecoveryStatus();
         default:throw new Error('This operation is not available in this build');
       }
     });

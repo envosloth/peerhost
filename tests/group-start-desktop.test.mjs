@@ -22,7 +22,10 @@ test('desktop sources expose cohesive group Start instead of pending Download', 
   const accounts = await readFile('apps/desktop/accounts.js', 'utf8');
   assert.ok(accounts.includes("g.pending?'Start server'"), 'pending group exposes execution action');
   assert.ok(!accounts.includes('Download as a new server'));
-  assert.match(main, /case 'startGroup':return backend\.startGroupWithApproval/);
+  // The ordinary Start action is one IPC that renders through the backend acquisition (never a pending Download).
+  // The case body grew a captured-world public-address gate; pin the routing + validated fingerprint, not the literal shape.
+  assert.match(main, /case 'startGroup':\{/);
+  assert.match(main, /backend\.startGroupWithApproval\(p\.fingerprint,/);
   assert.match(preload, /'startGroup'/);
   assert.match(renderer, /runAction\('startGroup', \{ fingerprint: group\.fingerprint \}/);
   assert.match(main, /publishStoppedInitial:.*backend\.publishStoppedInitialGroup/);

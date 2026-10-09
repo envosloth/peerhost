@@ -23,7 +23,9 @@ const MAX_FILE_ENTRIES = 65536;
 const MAX_OBJECT_BYTES = 16 * 1024 ** 3;
 const MAX_TOTAL_BYTES = 128 * 1024 ** 3;
 const DEFAULT_RESERVE_BYTES = 1024 ** 3;
-/** Phases that include receiver hashing, publication or human approval. Every other frame keeps the 5 s default. */
+/** Transfer-only whole-frame deadlines include disk/backpressure waits. Never reset on trickle traffic.
+ * Each awaited write/read is bounded; no whole-world deadline (worlds may be 128 GiB).
+ * Relay prefaces, initial admission and error replies keep the ordinary 5 s control budget. */
 const SLOW_PHASE_TIMEOUT_MS = 120000;
 const FILES_FRAME_OVERHEAD = Buffer.byteLength(JSON.stringify({ type: 'files', files: [] }));
 
@@ -48,7 +50,10 @@ function validateOffer(value: unknown, snapshotId: string): TransferOffer | unde
   return { id: value.id as string, lineage: value.lineage as string, source: value.source as string, target: value.target as string,
     generation: value.generation, snapshotId: value.snapshotId };
 }
-async function frame(socket: TLSSocket, timeoutMs?: number): Promise<Record<string, unknown>> {
+async function writeTransferFrame(socket: TLSSocket, value: unknown): Promise<void> {
+  await writeFrame(socket, value, SLOW_PHASE_TIMEOUT_MS);
+}
+async function frame(socket: TLSSocket, timeoutMs = SLOW_PHASE_TIMEOUT_MS): Promise<Record<string, unknown>> {
   const value: unknown = await readFrame(socket, undefined, timeoutMs);
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid transfer frame');
   const message = value as Record<string, unknown>;
@@ -173,9 +178,9 @@ async function prepareSend(storeDir: string, snapshotId: string, offer?: Transfe
 
 async function sendPrepared(socket: TLSSocket, { storeDir, snapshotId, snapshot, offer, batches, objects }: Awaited<ReturnType<typeof prepareSend>>): Promise<SendResult> {
   {
-    await writeFrame(socket, { type: 'snapshot', version: PROTOCOL_VERSION, snapshotId, parentId: snapshot.parentId,
+    await writeTransferFrame(socket, { type: 'snapshot', version: PROTOCOL_VERSION, snapshotId, parentId: snapshot.parentId,
       fileCount: snapshot.files.length, offer: offer ?? null });
-    for (const files of batches) await writeFrame(socket, { type: 'files', files });
+    for (const files of batches) await writeTransferFrame(socket, { type: 'files', files });
     // The receiver re-verifies objects it already holds before answering, which can take a while on large stores.
     const request = await frame(socket, SLOW_PHASE_TIMEOUT_MS);
     fields(request, ['type', 'hashes']);
@@ -192,22 +197,22 @@ async function sendPrepared(socket: TLSSocket, { storeDir, snapshotId, snapshot,
       const object = objects.get(hash)!;
       const handle = await safeOpen(path.join(storeDir, 'objects', hash));
       try {
-        await writeFrame(socket, { type: 'object', hash, size: object.size });
+        await writeTransferFrame(socket, { type: 'object', hash, size: object.size });
         const digest = createHash('sha256');
         let size = 0;
         for await (const chunk of handle.createReadStream({ highWaterMark: CHUNK_BYTES, autoClose: false })) {
           size += chunk.length;
           if (size > object.size) throw new Error('Source object integrity length mismatch');
           digest.update(chunk);
-          await writeFrame(socket, { type: 'chunk', data: chunk.toString('base64') });
+          await writeTransferFrame(socket, { type: 'chunk', data: chunk.toString('base64') });
         }
         if (size !== object.size || digest.digest('hex') !== hash) throw new Error('Source object integrity hash/length mismatch');
-        await writeFrame(socket, { type: 'object-end', hash });
+        await writeTransferFrame(socket, { type: 'object-end', hash });
         filesSent++;
         bytesSent += size;
       } finally { await handle.close(); }
     }
-    await writeFrame(socket, { type: 'complete', snapshotId, filesSent, bytesSent });
+    await writeTransferFrame(socket, { type: 'complete', snapshotId, filesSent, bytesSent });
     const ack = await frame(socket, SLOW_PHASE_TIMEOUT_MS);
     fields(ack, ['type', 'snapshotId', 'filesSent', 'bytesSent', 'ownershipAccepted']);
     if (ack.type !== 'ack' || ack.snapshotId !== snapshotId || ack.filesSent !== filesSent || ack.bytesSent !== bytesSent ||
@@ -228,7 +233,7 @@ export async function receiveSnapshot(socket: TLSSocket, authenticatedFingerprin
     const raw = socket.getPeerCertificate().raw;
     if (!raw || createHash('sha256').update(raw).digest('hex') !== authenticatedFingerprint) throw new Error('Authenticated source fingerprint mismatch');
     // All metadata is validated in memory before any filesystem write.
-    const hello = await frame(socket); // The transport gate refuses unpinned TLS before any application frame.
+    const hello = await frame(socket, 5000); // The transport gate refuses unpinned TLS before any application frame.
     fields(hello, ['type', 'version', 'snapshotId', 'parentId', 'fileCount', 'offer']);
     if (hello.type !== 'snapshot') throw new Error('Invalid snapshot transfer metadata');
     if (hello.version !== PROTOCOL_VERSION) {
@@ -258,7 +263,7 @@ export async function receiveSnapshot(socket: TLSSocket, authenticatedFingerprin
     if (neededBytes > 0) await requireFreeSpace(storeDir, neededBytes, reserveBytes);
     staging = await mkdtemp(path.join(storeDir, '.transfer-'));
     await mkdir(path.join(staging, 'objects'));
-    await writeFrame(socket, { type: 'need', hashes });
+    await writeTransferFrame(socket, { type: 'need', hashes });
     let filesSent = 0, bytesSent = 0;
     for (const hash of hashes) {
       const object = objects.get(hash)!;
@@ -336,7 +341,7 @@ export async function receiveSnapshot(socket: TLSSocket, authenticatedFingerprin
     // A callback that *returns* (rather than throws or times out) has given a definitive answer. `false` means it
     // committed nothing, which is what lets the sender safely cancel its offer.
     const ownershipAccepted = offer !== undefined && decision === true;
-    await writeFrame(socket, { type: 'ack', snapshotId: snapshot.id, filesSent, bytesSent, ownershipAccepted });
+    await writeTransferFrame(socket, { type: 'ack', snapshotId: snapshot.id, filesSent, bytesSent, ownershipAccepted });
     socket.end();
   } catch (error) {
     if (!socket.destroyed) await writeFrame(socket, { type: 'error', message: error instanceof Error ? error.message.slice(0, 512) : 'Snapshot transfer failed' }).catch(() => {});

@@ -5,6 +5,8 @@ import type { TLSSocket } from 'node:tls';
 import { defaultSettings, validateSettings, type Settings } from './settings.js';
 import { importServer, createSnapshot, materializeSnapshot, readSnapshot, pruneStore, syncDirectory, type SnapshotManifest } from './snapshots.js';
 import { ServerProcess } from './launcher.js';
+import { preflightMinecraftPort } from './port-preflight.js';
+import { readAdmission, saveAdmission, type AdmissionJournal } from './recovery-journal.js';
 import { OwnershipLedger, canAcceptOffer, type TransferOffer } from './ownership.js';
 import { receiveSnapshot, sendSnapshotToPeer } from './transfers.js';
 import { listenPeer, type PeerIdentity } from './peer-transport.js';
@@ -12,7 +14,7 @@ import { addMods, exportClientPack, modsDirectory, ordinaryDirectory, removeMod,
 import { ModrinthClient, assertModTarget, isGameVersion, isModLoader, isProjectKey, type ModSort } from './modrinth.js';
 import { indexedMods, modTarget, readModIndex, writeModIndex, type ModVerificationCache } from './mod-index.js';
 import { installMod, assertModInstallComplete, type InstallModInput } from './mod-install.js';
-import { openRelayOperation, relayRequest, relayStatus, relayInitialPublish, relayHostState, openRelayHostSession, relayInvite, relayInviteFor, relayRemoveFriend, relayFriends, relayDisbandGroup, relayDisbandStatus, joinRelayInvite, type RelayStatus, relayPublic } from './relay-client.js';
+import { openRelayOperation, relayRequest, relayStatus, relayInitialPublish, relayHostState, relayWithdrawOffer, relayRecoveryStatus, openRelayHostSession, relayInvite, relayInviteFor, relayRemoveFriend, relayFriends, relayDisbandGroup, relayDisbandStatus, joinRelayInvite, validHostEndpoint, type RelayStatus, relayPublic, type RelayHostSession } from './relay-client.js';
 import { decodeInvite, type Invite } from './invites.js';
 import { friendName, fingerprintOK } from './relay-friends-store.js';
 import { initializeOnboardingScope, readOnboarding, saveOnboarding, validateOnboarding, onboardingChecks, type SetupConfiguration } from './onboarding.js';
@@ -89,8 +91,8 @@ const isStoppedState = (state: string | undefined) => state === undefined || sta
 export class SeedHostApplication {
   private opened = false;
   private saved: SavedState = { version: 2, settings: defaultSettings(), servers: [], activeServerId: null, peers: [], pendingGroups: [], activation: null };
-  private groupHostSession?: { close(): void };
-  private groupHostReservation?: { serverId: string; revision: { generation: number; snapshotId: string; lineage: string; reservation: string }; stopped: boolean };
+  private groupHostSession?: RelayHostSession;
+  private groupHostReservation?: AdmissionJournal;
   private gatewayTunnel?: { close: () => Promise<void> };
   private gatewayEpoch = 0;
   private gatewayState: {state: 'off' | 'connecting' | 'ready' | 'error'; detail: string} = { state: 'off', detail: 'No local host tunnel is active' };
@@ -978,8 +980,13 @@ export class SeedHostApplication {
       if (bound.length > 1) throw new Error('Ambiguous hosting group binding');
       if (pending && bound.length) throw new Error('Conflicting hosting group binding');
       if (!pending && !bound[0]) throw new Error('This PC has not joined that hosting group');
+      // Refuse a replacement start BEFORE any custody work: an unresolved admitted start (including a final
+      // snapshot whose Stop acknowledgment was lost) still holds the exact reservation the relay can resolve.
+      if (bound[0]) await this.assertNoUnresolvedAdmission(bound[0].id);
       const peer = this.saved.peers.find(peer => peer.fingerprint === fingerprint);
       if (!peer) throw new Error('Missing pinned hosting group endpoint');
+      // Reject a known local conflict before publishing or cycling this holder's custody.
+      if (bound[0]) await preflightMinecraftPort(bound[0].serverDir);
       const initial = await this.reachRelay(peer, 'Hosting status is unknown; nothing was started.');
       if (!initial) {
         this.busy = 'startGroup: publishing initial stopped server';
@@ -1020,6 +1027,7 @@ export class SeedHostApplication {
       this.playerSamples.clear();
       const server = this.activeServer();
       if (!server?.profile.executable) throw new Error('Configure a launch profile first');
+      if (server.group) await this.assertNoUnresolvedAdmission(server.id);
       await assertServerFileTransactionsComplete(server.serverDir);
       await assertModInstallComplete(server.serverDir);
       const original = JSON.stringify(server);
@@ -1047,6 +1055,8 @@ export class SeedHostApplication {
       await assertServerFileTransactionsComplete(server.serverDir);
       await this.options.beforeServerStart?.({ id: server.id, playerPort: await readServerPort(server.serverDir) });
       revalidate();
+      await preflightMinecraftPort(server.serverDir);
+      revalidate();
       await ledger.startHosting();
       let admissionAttempted = false;
       let admitted = false;
@@ -1061,12 +1071,18 @@ export class SeedHostApplication {
           const authority = await ledger.status();
           if (!authority.lineage) throw new Error('Group hosting requires verified lineage');
           revision = { generation: authority.generation, snapshotId: authority.snapshotId, lineage: authority.lineage, reservation: randomUUID() };
+          this.groupHostReservation = { version: 1, serverId: server.id, deviceId: this.identity.fingerprint, relayFingerprint: this.requireRelay().fingerprint, revision, attempted: true, acknowledged: false, stopped: false, recoverySnapshot: null, phase: 'attempted' };
+          await saveAdmission(this.root, this.groupHostReservation);
           admissionAttempted = true;
           await relayHostState(this.identity, this.requireRelay(), 'host-start', revision);
           admitted = true;
-          this.groupHostReservation = { serverId: server.id, revision, stopped: false };
+          this.groupHostReservation.acknowledged = true;
+          this.groupHostReservation.phase = 'acknowledged';
+          await saveAdmission(this.root, this.groupHostReservation);
           revalidate();
         }
+        await preflightMinecraftPort(server.serverDir);
+        revalidate();
         const launched = new ServerProcess({
           executable: approval.profile.executable, args: [...approval.profile.args], cwd: approval.serverDir,
           startTimeoutMs: server.profile.startTimeoutSeconds * 1000, stopTimeoutMs: server.profile.stopTimeoutSeconds * 1000,
@@ -1104,6 +1120,7 @@ export class SeedHostApplication {
             // A lost host-start acknowledgment remains fenced even on this still-running PC.
             if (admitted) await relayHostState(this.identity, this.requireRelay(), 'host-cancel', revision!);
             await ledger.stopHosting(approval.snapshotId);
+            if (this.groupHostReservation) { this.groupHostReservation.phase = 'cancelled'; await saveAdmission(this.root, this.groupHostReservation); }
             this.groupHostReservation = undefined;
           } catch (cancelError) {
             await ledger.markUncertain();
@@ -1116,12 +1133,32 @@ export class SeedHostApplication {
       }
   }
 
-  /** Called only after graceful stop AND durable final snapshot, never after a crash/timeout. */
+  /**
+   * An unresolved admitted start is not replaceable by a new Start: the durable journal holds the exact
+   * reservation the relay can still resolve, so a replacement would orphan it. Explicit Stop (`stopServer`)
+   * or confirmed stopped-process recovery finishes it first. A resolved journal never blocks later starts.
+   */
+  private async assertNoUnresolvedAdmission(serverId: string): Promise<void> {
+    const reservation = this.groupHostReservation ?? await readAdmission(this.root, serverId);
+    if (!reservation || reservation.serverId !== serverId || !reservation.attempted) return;
+    if (reservation.phase === 'stopped' || reservation.phase === 'cancelled') return;
+    throw new Error('A previous hosting admission for this server is unresolved; finish it with explicit Stop or confirmed stopped-process recovery before starting again');
+  }
+
+  /** Called only after graceful Stop or explicit stopped-process confirmation AND durable final snapshot. */
   private async finishGroupHostReservation(serverId: string): Promise<void> {
-    const reservation = this.groupHostReservation;
-    if (!reservation || reservation.serverId !== serverId || !reservation.stopped) return;
-    try { await relayHostState(this.identity, this.requireRelay(), 'host-stopped', reservation.revision); }
+    const reservation = this.groupHostReservation ?? await readAdmission(this.root, serverId);
+    if (!reservation || reservation.serverId !== serverId || !reservation.stopped || reservation.phase === 'stopped' || reservation.phase === 'cancelled') return;
+    if (reservation.deviceId !== this.identity.fingerprint) throw new Error('Admission device mismatch');
+    this.groupHostReservation = reservation;
+    try {
+      const peer = this.requireRelay();
+      if (peer.fingerprint !== reservation.relayFingerprint) throw new Error('Hosting admission relay mismatch');
+      await relayHostState(this.identity, peer, 'host-stopped', reservation.revision);
+    }
     catch (error) { throw new Error('Group relay unreachable or stopped admission unresolved; final snapshot is retained. Retry Stop to resolve the exact reservation and publish.', { cause: error }); }
+    reservation.phase = 'stopped';
+    await saveAdmission(this.root, reservation);
     this.groupHostReservation = undefined;
   }
 
@@ -1156,10 +1193,13 @@ export class SeedHostApplication {
         // so the ledger never points at a revision that a power cut could lose.
         await assertServerFileTransactionsComplete(server.serverDir);
         const snapshot = await createSnapshot(server.serverDir, server.storeDir, server.snapshotId);
+        if (this.groupHostReservation?.serverId === server.id) {
+          this.groupHostReservation.stopped = true; this.groupHostReservation.recoverySnapshot = snapshot.id; this.groupHostReservation.phase = 'snapshot-retained';
+          await saveAdmission(this.root, this.groupHostReservation);
+        }
         await this.ledger().stopHosting(snapshot.id);
         server.snapshotId = snapshot.id;
         await this.persist();
-        if (this.groupHostReservation?.serverId === server.id) this.groupHostReservation.stopped = true;
         this.log('Stopped cleanly and committed final snapshot ' + snapshot.id);
       } catch (error) {
         await this.ledger().markUncertain();
@@ -1252,23 +1292,88 @@ export class SeedHostApplication {
     });
   }
 
+  /** Read-only, authenticated exact evidence. Unreachable authorities throw: unknown is not idle. */
+  async groupRecoveryStatus() {
+    const server = this.requireActive();
+    if (!server.group) throw new Error('No hosting group is bound to this world');
+    const admission = await readAdmission(this.root, server.id);
+    if (admission && (admission.deviceId !== this.identity.fingerprint || admission.relayFingerprint !== server.group.fingerprint)) throw new Error('Recovery journal binding mismatch');
+    const remote = await relayRecoveryStatus(this.identity, this.requireRelay());
+    return { serverId: server.id, groupFingerprint: server.group.fingerprint, admission, remote };
+  }
+
   async recoverStopped(confirmedStopped: boolean): Promise<void> {
     this.assertStopped();
     if (!confirmedStopped) throw new Error('Confirm all previous server processes are stopped');
     await this.operation('recoverStopped', async () => {
       const server = this.activeServer();
       if (!server) throw new Error('No server imported');
-      const ledger = this.ledger(), state = await ledger.status();
+      const ledger = this.ledger(); let state = await ledger.status();
+      if (server.group && state.owner === this.identity.fingerprint && ['offered', 'uncertain'].includes(state.state) && state.offer?.target === this.requireRelay().fingerprint) {
+        const receipt = await relayWithdrawOffer(this.identity, this.requireRelay(), state.offer);
+        await ledger.reconcileRecoveryOffer(state.offer, this.requireRelay().fingerprint, receipt.disposition);
+        state = await ledger.status();
+        if (receipt.disposition === 'accepted') { this.log('The relay had already accepted the exact offer. Transfer reconciled; this PC was not restored or started.'); return; }
+      }
       if (state.owner !== this.identity.fingerprint || state.state !== 'uncertain' || state.offer) {
         throw new Error('Cannot recover transferred or pending-offer authority. Reconcile with the peer.');
+      }
+      const reservation = this.groupHostReservation ?? await readAdmission(this.root, server.id);
+      if (server.group && (!reservation || reservation.serverId !== server.id ||
+          reservation.deviceId !== this.identity.fingerprint || !reservation.attempted ||
+          reservation.relayFingerprint !== this.requireRelay().fingerprint ||
+          reservation.revision.generation !== state.generation || reservation.revision.lineage !== state.lineage ||
+          (!reservation.stopped && reservation.recoverySnapshot !== state.snapshotId && reservation.revision.snapshotId !== state.snapshotId))) {
+        // Only this acknowledged admission is recoverable. Restart/lost Start acknowledgment
+        // requires a separate authenticated durable recovery handshake, not a guessed UUID.
+        throw new Error('Exact acknowledged local hosting reservation is unavailable; group admission recovery is blocked.');
+      }
+      let cancelledObservation = false;
+      if (server.group) {
+        const remote = await relayRecoveryStatus(this.identity, this.requireRelay());
+        const observation = remote.observation;
+        if (!observation || observation.reservation !== reservation!.revision.reservation || observation.generation !== reservation!.revision.generation ||
+            observation.snapshotId !== reservation!.revision.snapshotId || observation.lineage !== reservation!.revision.lineage) throw new Error('Exact group admission recovery evidence is unavailable');
+        // A durable 'cancelled' observation is authenticated exact evidence that this reservation was
+        // explicitly released after its acknowledgment was lost. It is recoverable — but only through
+        // the cancellation itself: the protocol refuses host-stopped from a cancelled reservation, so a
+        // recovery must never fabricate a stopped state.
+        cancelledObservation = observation.state === 'cancelled';
       }
       await assertModInstallComplete(server.serverDir);
       await assertServerFileTransactionsComplete(server.serverDir);
       const snapshot = await createSnapshot(server.serverDir, server.storeDir, state.snapshotId);
       server.snapshotId = snapshot.id;
       await this.persist();
+      if (server.group) {
+        if (cancelledObservation) { reservation!.recoverySnapshot = snapshot.id; reservation!.phase = 'cancelled'; }
+        else { reservation!.stopped = true; reservation!.recoverySnapshot = snapshot.id; reservation!.phase = 'snapshot-retained'; }
+        await saveAdmission(this.root, reservation!); this.groupHostReservation = reservation!;
+      }
       await ledger.recoverStopped(true);
       await ledger.updateSnapshot(snapshot.id);
+      if (server.group) {
+        if (cancelledObservation) {
+          // Re-acknowledge the exact cancellation (idempotent for the relay's allowed starting/cancelled
+          // states) instead of a fabricated 'stopped' the protocol refuses. Local authority returns to this
+          // device with the exact verified snapshot; no foreign recovery is attempted or permitted.
+          try { await relayHostState(this.identity, this.requireRelay(), 'host-cancel', reservation!.revision); }
+          catch (error) {
+            await ledger.markUncertain();
+            throw new Error('Exact group cancellation acknowledgment is unresolved; the final snapshot is retained. Retry explicit stopped-process recovery.', { cause: error });
+          }
+          this.groupHostReservation = undefined;
+        } else {
+          // The original admitted revision remains the protocol target, not the new snapshot.
+          // Preserve its UUID for idempotent retry if the stopped acknowledgment is lost.
+          reservation!.stopped = true;
+          try { await this.finishGroupHostReservation(server.id); }
+          catch (error) {
+            await ledger.markUncertain();
+            throw new Error('Exact group stopped admission unresolved; final snapshot is retained. Retry explicit stopped-process recovery with confirmation.', { cause: error });
+          }
+        }
+      }
       this.log('Explicit stopped-process recovery completed with verified snapshot ' + snapshot.id + '. No uncertain remote takeover was performed.');
     });
   }
@@ -1775,6 +1880,21 @@ export class SeedHostApplication {
     });
   }
 
+  /**
+   * Best-effort join-address telemetry for the ACTIVE host session: the verified public address (or null to
+   * clear). Never fails hosting — a missing session is a quiet no-op and any transport failure is logged.
+   */
+  async publishHostEndpoint(endpoint: { address: string; verifiedAt: number } | null): Promise<void> {
+    const session = this.groupHostSession;
+    if (!session) return;
+    try {
+      if (endpoint !== null && !validHostEndpoint(endpoint)) throw new Error('Invalid join address');
+      await session.sendEndpoint(endpoint);
+    } catch (error) {
+      this.log('Join address telemetry could not be published: ' + String((error as Error)?.message ?? error).slice(0, 300));
+    }
+  }
+
   private async park(): Promise<void> {
     await this.transferOwnership(this.requireRelay());
   }
@@ -1808,7 +1928,10 @@ export class SeedHostApplication {
       if (state.state !== 'owned' || state.owner !== this.identity.fingerprint) throw new Error('Handoff requires safely held ownership');
       await assertModInstallComplete(server.serverDir);
       // Fencing is only worth it if the relay can actually take the server right now.
-      if (relay) await this.reachRelay(peer, 'The server stays on this PC; nothing was changed.');
+      if (relay) {
+        const status = await this.reachRelay(peer, 'The server stays on this PC; nothing was changed.');
+        if (status && status.pendingStart !== false) throw new Error('Group hosting Start admission is pending or unknown; resolve the exact reservation before Park. Nothing was changed.');
+      }
       await assertServerFileTransactionsComplete(server.serverDir);
       const snapshot = await createSnapshot(server.serverDir, server.storeDir, server.snapshotId);
       await ledger.updateSnapshot(snapshot.id);

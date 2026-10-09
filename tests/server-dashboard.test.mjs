@@ -161,13 +161,31 @@ test('a scheduled command reaches only the selected owned running server console
   } finally { await app.stopServer(); }
 });
 
+async function listenLoopback(t, port, handler) {
+  // The launch preflight refuses a configured port that is already bound, so tests bind their probe
+  // endpoint AFTER start. Rebinding the same free port is immediate on Windows; tolerate a brief handoff race.
+  for (let attempt = 0; ; attempt++) {
+    const listener = createServer(handler);
+    try { await new Promise((resolve, reject) => { listener.once('error', reject); listener.listen(port, '127.0.0.1', resolve); }); }
+    catch (error) { listener.close(); if (attempt >= 20 || error.code !== 'EADDRINUSE') throw error; await new Promise(resolve => setTimeout(resolve, 50)); continue; }
+    t.after(() => new Promise(resolve => listener.close(resolve)));
+    return listener;
+  }
+}
+async function freeLoopbackPort() {
+  const reservation = createServer();
+  await new Promise((resolve, reject) => { reservation.once('error', reject); reservation.listen(0, '127.0.0.1', resolve); });
+  const port = reservation.address().port;
+  await new Promise(resolve => reservation.close(resolve));
+  return port;
+}
+
 test('concurrent dashboard reads share one Minecraft probe and reuse fresh status',async t=>{
  const {app,server}=await fixture(t);let probes=0;
- const listener=createServer(socket=>{probes++;socket.destroy();});
- await new Promise((resolve,reject)=>{listener.once('error',reject);listener.listen(0,'127.0.0.1',resolve);});
- t.after(()=>new Promise(resolve=>listener.close(resolve)));
- await writeFile(path.join(server.serverDir,'server.properties'),`server-port=${listener.address().port}\n`);
+ const port=await freeLoopbackPort();
+ await writeFile(path.join(server.serverDir,'server.properties'),`server-port=${port}\n`);
  await app.saveProfile({executable:process.execPath,args:[path.resolve('tools/fake-java-server.mjs'),'--lifetime-ms=30000']});await app.startServer(true);
+ const listener=await listenLoopback(t,port,socket=>{probes++;socket.destroy();});
  try {
    const batch=await Promise.all(Array.from({length:8},()=>app.getServerDashboard(server.id)));
    assert.equal(probes,1,'coalesced status probe, not one socket per dashboard call');
@@ -178,12 +196,12 @@ test('concurrent dashboard reads share one Minecraft probe and reuse fresh statu
 test('a running server reports measured process metrics and a real local status probe', async (t) => {
   const { app, server } = await fixture(t);
   // Own a rejecting loopback endpoint: never probe a user's real server on the conventional 25565 port.
-  const refusingStatus = createServer(socket => socket.destroy());
-  await new Promise((resolve, reject) => { refusingStatus.once('error', reject); refusingStatus.listen(0, '127.0.0.1', resolve); });
-  t.after(() => new Promise((resolve, reject) => refusingStatus.close(error => error ? reject(error) : resolve())));
-  await writeFile(path.join(server.serverDir, 'server.properties'), `server-port=${refusingStatus.address().port}\nmax-players=20\n`);
+  // The launch preflight refuses a configured port bound before start, so bind it only once the world is running.
+  const port = await freeLoopbackPort();
+  await writeFile(path.join(server.serverDir, 'server.properties'), `server-port=${port}\nmax-players=20\n`);
   await app.saveProfile({ executable: process.execPath, args: [path.resolve('tools/fake-java-server.mjs'), '--lifetime-ms=30000'] });
   await app.startServer(true);
+  await listenLoopback(t, port, socket => socket.destroy());
   try {
     const first = await app.getServerDashboard(server.id);
     assert.equal(first.state, 'running');

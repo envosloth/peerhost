@@ -10,10 +10,14 @@ test('desktop library projects each server binding instead of repeating the help
  const begin=source.indexOf("case 'getState':"),end=source.indexOf("case 'alwaysOnStatus':",begin);
  const state={servers:[{id:'a',playerPort:25565,state:'running',group:null},{id:'b',playerPort:25567,state:'offline',group:null}],onboarding:{}};
  const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
- const run=new AsyncFunction('backend','helperForSelected','helpers','onboardingChecks','publicAddress','app','appNotice','incomingHandoff',`switch('getState'){${source.slice(begin,end)}}`);
- const result=await run({getState:async()=>state},async()=>({status:async()=>({running:true,fingerprint:'helper'})}),{runningGamePorts:async()=>[]},()=>({ready:'incomplete'}),{status:server=>({state:server?.id==='a'?'reachable':'reserved',address:server?.id?server.id+'.tun.ply.gg':'legacy-helper.tun.ply.gg'})},{getVersion:()=> '0.6.1-alpha'},null,{status:()=>null});
- assert.deepEqual(result.servers.map(s=>s.publicJoinAddress?.address),['a.tun.ply.gg','b.tun.ply.gg']);
- assert.deepEqual(result.servers.map(s=>s.publicJoinAddress?.targetServerId),['a','b']);
+ const run=new AsyncFunction('backend','helperForSelected','helpers','onboardingChecks','publicAddress','app','appNotice','incomingHandoff',`const syncHolderEndpoint=()=>{};switch('getState'){${source.slice(begin,end)}}`);
+ // Deliberate fixture update (public state workflow): only a fresh verified joinAddress is projected for
+ // copying; a reserved address stays explicit secondary data and is never a join address on Home.
+ const result=await run({getState:async()=>state},async()=>({status:async()=>({running:true,fingerprint:'helper'})}),{runningGamePorts:async()=>[]},()=>({ready:'incomplete'}),{status:server=>server?.id==='a'?{state:'reachable',address:'a.tun.ply.gg',joinAddress:'a.tun.ply.gg',reservedAddress:'a.tun.ply.gg',verifiedAt:123,readiness:'verified',approveUrl:null}:{state:'reserved',address:'b.tun.ply.gg',joinAddress:null,reservedAddress:'b.tun.ply.gg',verifiedAt:null,readiness:'game-failure',approveUrl:null}},{getVersion:()=> '0.6.1-alpha'},null,{status:()=>null});
+ assert.deepEqual(result.servers.map(s=>s.publicJoinAddress?.address),['a.tun.ply.gg',undefined]);
+ assert.deepEqual(result.servers.map(s=>s.publicJoinAddress?.targetServerId),['a',undefined]);
+ assert.equal(result.servers[1].publicJoinAddress,null);
+ assert.equal(result.servers[1].publicReservedAddress,'b.tun.ply.gg');
 });
 test('public address IPC requires an explicit captured server id',()=>{
  for(const method of methods){
@@ -28,7 +32,7 @@ test('desktop enable rechecks captured selection after helper status await',asyn
  const a={id:'a',playerPort:25565,state:'running'},b={id:'b',playerPort:25567,state:'offline'};let selected=a,mutations=0;
  const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
  // The awaited preflight now reads the per-group helper ports; the captured selection must still be rechecked after it.
- const run=new AsyncFunction('method','p','backend','helpers','publicAddress','shell',`let publicSelectionEpoch=0;switch(method){${source.slice(begin,end)}}`);
+ const run=new AsyncFunction('method','p','backend','helpers','publicAddress','shell',`const syncHolderEndpoint=()=>{};let publicSelectionEpoch=0;switch(method){${source.slice(begin,end)}}`);
  await assert.rejects(run('publicAddressEnable',{id:'a'},{getState:async()=>({server:selected,servers:[a,b]})},{runningGamePorts:async()=>{selected=b;return [];}},{enable:async()=>{mutations++;}},{}),/selected server changed/i);
  assert.equal(mutations,0);
 });

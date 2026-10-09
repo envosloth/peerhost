@@ -235,7 +235,7 @@
 
   // One header is shared by every server section; Home and App settings are renderer-only destinations.
   const serverHeader = el('section', 'server-workspace-header'); serverHeader.id = 'server-workspace-header';
-  home.before(serverHeader); serverHeader.append(document.querySelector('.server-identity'), $('server-toolbar'), $('server-start-trust'), $('server-recovery-reminder'), $('server-action-hint'));
+  home.before(serverHeader); serverHeader.append(document.querySelector('.server-identity'), $('server-toolbar'), $('server-start-trust'), $('server-recovery-reminder'), $('group-recovery-status'), $('group-recovery-actions'), $('server-action-hint'));
   const dashboardBar = el('div', 'dashboard-bar');
   const dashboardStatus = el('p', 'field-help'); dashboardStatus.id = 'dashboard-status'; dashboardStatus.setAttribute('role', 'status');
   const dashboardRefresh = button('Refresh data'); dashboardRefresh.id = 'dashboard-refresh'; dashboardBar.append(dashboardStatus, dashboardRefresh); serverHeader.append(dashboardBar);
@@ -358,19 +358,36 @@
   // A card only offers a public playit address that the core explicitly attributed to that exact server.
   // No localhost/LAN/global address is ever fabricated here; a missing or mismatched record stays "not set".
   const validJoinAddress = value => typeof value === 'string' && value.trim().length > 0 && !/[\u0000-\u001f\u007f]/.test(value);
-  function joinAddressFor(entry) {
+  function joinAddressRecord(entry) {
     const record = entry?.publicJoinAddress;
     if (!record || typeof record !== 'object' || Array.isArray(record)) return null;
     if (record.source !== 'playit' || record.targetServerId !== entry.id) return null;
     if (!validJoinAddress(record.address)) return null;
     return { address: record.address.trim(), reachability: record.reachability === 'verified' ? 'verified' : 'unverified' };
   }
+  // The copy path is stricter than the display path: joining is only ever offered for an address the core still
+  // reports verified for this exact server. Unverified text stays visible as secondary info, never copyable.
+  function joinAddressFor(entry) {
+    const record = joinAddressRecord(entry);
+    return record && record.reachability === 'verified' ? record : null;
+  }
   function joinAddressRow(entry) {
     const row = el('div', 'server-card-address'); row.dataset.addressFor = entry.id;
-    const record = joinAddressFor(entry);
-    if (!record) { row.append(el('span', 'field-help server-address-missing', 'Playit address not set')); return row; }
+    const record = joinAddressRecord(entry);
+    if (!record) {
+      // The current host's endpoint is not available to this PC yet. Never relabel this PC's old reserved
+      // address as a join address: local reserved data stays secondary and is never copyable here.
+      const remote = entry?.group && entry?.ownership && entry.ownership.owner && entry.ownership.owner !== state?.deviceId;
+      if (remote) {
+        row.append(el('span', 'field-help server-address-missing', 'Playit address not set — this world is hosted on another PC; its current endpoint is not available to this PC yet.'));
+        if (validJoinAddress(entry.publicReservedAddress)) row.append(el('span', 'field-help', `Reserved local address (secondary, may not be current): ${entry.publicReservedAddress.trim()}`));
+        return row;
+      }
+      row.append(el('span', 'field-help server-address-missing', 'Playit address not set')); return row;
+    }
     row.append(el('span', 'subtle-label', 'PLAYIT ADDRESS'), el('code', 'mono server-address-value', record.address));
     row.append(el('span', 'field-help', record.reachability === 'verified' ? 'Reachability verified.' : 'Reachability unverified.'));
+    if (record.reachability !== 'verified') return row;
     const copy = button('Copy', 'text-button server-address-copy'); copy.dataset.copyAddress = entry.id;
     copy.setAttribute('aria-label', `Copy Playit address for ${entry.name || 'this server'}`);
     const status = el('span', 'field-help server-address-status'); status.setAttribute('role', 'status');
@@ -381,14 +398,17 @@
     const id = copy.dataset.copyAddress;
     const status = copy.closest('.server-card-address')?.querySelector('.server-address-status') ?? null;
     const label = text => { if (status) status.textContent = text; };
-    const record = joinAddressFor(state?.servers?.find(s => s.id === id));
-    if (!record) { label('This address is no longer available. Refresh data.'); return; }
     const token = ++addressCopyToken;
     copy.disabled = true;
     try {
+      // Re-read live state: the polled card may be stale, and a copy is only allowed while the core still
+      // reports this exact address as the verified join address of this exact server.
+      const record = joinAddressFor((await window.seedhost.call('getState').catch(() => null))?.servers?.find(s => s.id === id));
+      if (token !== addressCopyToken) return;
+      if (!record) { label('This address is no longer available. Refresh data.'); return; }
       await navigator.clipboard.writeText(record.address);
-      // Completion is only claimed for the address that is still on this card: stale or cross-server addresses never report success.
-      const current = joinAddressFor(state?.servers?.find(s => s.id === id));
+      // The completion claim is based on this live verdict again: a reading that changed during the write never claims success.
+      const current = joinAddressFor((await window.seedhost.call('getState').catch(() => null))?.servers?.find(s => s.id === id));
       if (token !== addressCopyToken || !current || current.address !== record.address) return;
       let verified = null;
       try { verified = (await navigator.clipboard.readText()) === record.address; } catch { verified = null; }
@@ -410,7 +430,8 @@
     stopFirst.hidden = !active; stopFirst.disabled = busy || !['running', 'starting'].includes(state?.server?.state);
     // Sections that render one selected server are disabled until this PC actually has one.
     for (const name of ['operate', 'console', 'players', 'backups', 'scheduler', 'mods', 'tunnels', 'server-settings', 'server-files']) { const tab = $(name + '-tab'); if (tab) tab.disabled = !state?.server; }
-    const signature = JSON.stringify(servers.map(entry => [entry.id, entry.name, entry.active, entry.state, entry.ownerName, entry.configured, joinAddressFor(entry)]));
+    // The signature follows the display record: every visible address/reachability change must redraw the row.
+    const signature = JSON.stringify(servers.map(entry => [entry.id, entry.name, entry.active, entry.state, entry.ownerName, entry.configured, joinAddressRecord(entry)]));
     if ($('server-list').dataset.signature === signature) {
       for (const row of $('server-list').querySelectorAll('.server-row')) {
         const entry = servers.find(s => s.id === row.dataset.serverId);

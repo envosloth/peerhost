@@ -222,6 +222,8 @@ test('server cards show only the playit address attributed to that card; missing
   f.state.servers[1].publicJoinAddress = { address: 'sky-islands.playit.gg:25566', reachability: 'unverified', source: 'playit', targetServerId: 'bravo' };
   await set({ state: f.state });
   assert.match(await page.locator('#server-list [data-address-for="alpha"]').textContent(), /Reachability verified/);
+  assert.match(await page.locator('#server-list [data-address-for="bravo"]').textContent(), /Reachability unverified/);
+  assert.equal(await page.locator('#server-list [data-copy-address="bravo"]').count(), 0, 'an unverified address renders no copy control');
   await click('#server-list [data-copy-address="alpha"]');
   await page.waitForFunction(() => document.querySelector('[data-address-for="alpha"] .server-address-status').textContent.includes('Copied'));
   assert.match(await page.locator('[data-address-for="alpha"] .server-address-status').textContent(), /Copied and verified/);
@@ -229,7 +231,9 @@ test('server cards show only the playit address attributed to that card; missing
   const afterCopy = await fixture();
   assert.equal(afterCopy.calls.some(c => c.method === 'selectServer'), false, 'copy never selects or switches a server');
   assert.equal(afterCopy.state.servers.find(s => s.active).id, 'alpha');
-  // Copying bravo's address must not change the active server either.
+  // A verified bravo address copies without changing the active server either.
+  f.state.servers[1].publicJoinAddress.reachability = 'verified';
+  await set({ state: f.state });
   await click('#server-list [data-copy-address="bravo"]');
   await page.waitForFunction(() => document.querySelector('[data-address-for="bravo"] .server-address-status').textContent.includes('Copied'));
   assert.equal(await page.evaluate(() => window.dashboardFixture.clipboardText()), 'sky-islands.playit.gg:25566');

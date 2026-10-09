@@ -170,6 +170,7 @@
                     <ol><li data-step="download">Getting ready</li><li data-step="approve">Click <strong>Approve</strong> on playit.gg</li><li data-step="address">Making your address</li></ol>
                   </div>
                   <div id="public-live" class="public-live" hidden><code id="public-value"></code><button id="public-copy" type="button" class="button button-primary">Copy</button></div>
+                  <div id="public-reserved" class="field-help" hidden><span class="subtle-label">RESERVED (SECONDARY)</span> <code id="public-reserved-value" class="mono"></code></div>
                   <div class="public-actions">
                     <button id="public-go" type="button" class="button button-primary button-large">Get my address</button>
                     <button id="public-approve" type="button" class="button" hidden>Open playit.gg again</button>
@@ -197,12 +198,19 @@
               </div>
               <p id="server-start-trust" class="field-help">Clicking Start executes your configured Java command, server software and mods on this PC. Only use files and launch settings you trust.</p>
               <p id="server-recovery-reminder" class="field-help" hidden>Before recovering, check that all previous Java / server processes are stopped. Recovery restores local ownership; it does not stop orphaned processes.</p>
+              <p id="group-recovery-status" class="field-help" role="status" hidden></p>
+              <div id="group-recovery-actions" class="server-toolbar" hidden>
+                <button id="recovery-stop" type="button" class="button button-stop">Try Stop again</button>
+                <button id="recovery-park" type="button" class="button">Hand off (Park) to always-on PC</button>
+              </div>
               <p id="server-action-hint" class="action-hint" hidden></p>
               <div id="console-peek" class="console-peek well" hidden><span class="console-peek-prompt" aria-hidden="true">›_</span><p id="console-peek-line" class="console-peek-line mono">No process output yet.</p><button id="open-console" type="button" class="text-button">Open console</button></div>
               <div id="player-gateway" class="player-gateway well" hidden><div class="compact-heading"><h3>Always-on PC address</h3><button id="open-gateway-setup" type="button" class="text-button">Set up / check</button></div><p id="player-gateway-status" class="field-help" role="status">Reading tunnel state…</p><p id="player-address" class="field-help"></p></div>
               <div id="relay-card" class="relay-card well" hidden>
                 <div class="compact-heading"><h3>Always-on PC <span id="relay-name" class="section-caption"></span></h3><span id="relay-holder" class="subtle-label">NOT CHECKED</span></div>
                 <p id="relay-help" class="field-help">Your always-on PC stores the world between hosts, so a friend can pick it up even when this PC is off.</p>
+                <p id="relay-join" class="field-help" hidden>Join at <code id="relay-join-value" class="mono"></code><button id="relay-join-copy" type="button" class="button button-small" hidden>Copy</button></p>
+                <p id="relay-join-note" class="field-help" hidden></p>
                 <div class="relay-actions">
                   <button id="park-relay" type="button" class="button button-small" disabled>Hand off to always-on PC</button>
                   <button id="claim-relay" type="button" class="button button-small" disabled>Take over hosting</button>

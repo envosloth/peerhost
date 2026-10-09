@@ -492,6 +492,177 @@ test('settled hosting cannot be handed off after an unverified child stop and lo
   assert.deepEqual(await relay.custody(), before);
 });
 
+test('confirmed recovery snapshots actual spawned exit0 before resolving exact admission and permits next Start', async t => {
+  const { root, owner, member, relay, pin } = await fixture(t);
+  await owner.parkAtRelay();
+  const resolver = member.options.resolveGroupLaunchProfile;
+  const marker = path.join(root, 'exit0-spawn-evidence.txt');
+  member.options.resolveGroupLaunchProfile = async () => ({ executable: process.execPath, args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'spawned'); require('node:fs').writeFileSync('world.bin', 'child-final'); process.exit(0)`] });
+  await assert.rejects(member.startGroup(pin, true), /before stdout readiness/);
+  assert.equal(await readFile(marker, 'utf8'), 'spawned');
+  assert.equal(member.process.pid, undefined);
+  assert.equal((await member.getState()).server.ownership.state, 'uncertain');
+  const pending = JSON.parse(await readFile(path.join(relay.root, 'host-observation.json'), 'utf8'));
+  const custody = await relay.custody();
+  await assert.rejects(member.recoverStopped(false), /Confirm/);
+  await assert.rejects(member.stopServer(), /ownership|uncertain|pending/i);
+  assert.deepEqual(await relay.custody(), custody);
+  assert.deepEqual(JSON.parse(await readFile(path.join(relay.root, 'host-observation.json'), 'utf8')), pending);
+  // Observe durable local snapshot at the actual host-stopped reply boundary.
+  const handle = relay.handle.bind(relay);
+  let stoppedReplies = 0, beforeReply;
+  relay.handle = (socket, source) => {
+    const write = socket.write.bind(socket);
+    socket.write = (packet, ...args) => {
+      if (Buffer.isBuffer(packet) && packet.subarray(4).toString() === '{"type":"relay-host-accepted"}') {
+        stoppedReplies++;
+        beforeReply = (async () => {
+          const saved = JSON.parse(await readFile(path.join(member.root, 'state.json'), 'utf8'));
+          const local = saved.servers.find(server => server.id === saved.activeServerId);
+          const ownership = await member.ledger().status();
+          assert.notEqual(local.snapshotId, pending.snapshotId);
+          assert.equal(ownership.snapshotId, local.snapshotId);
+          assert.equal(ownership.state, 'owned');
+          const { readSnapshot } = await import('../dist/src/core/snapshots.js');
+          const manifest = await readSnapshot(local.storeDir, local.snapshotId);
+          assert.equal(manifest.parentId, pending.snapshotId);
+          assert.ok(manifest.files.some(file => file.path === 'world.bin'));
+          write(packet, ...args);
+        })();
+        void beforeReply.catch(() => socket.destroy());
+        return true;
+      }
+      return write(packet, ...args);
+    };
+    return handle(socket, source);
+  };
+  try { await member.recoverStopped(true); }
+  finally { await beforeReply; relay.handle = handle; }
+  assert.equal(stoppedReplies, 1, 'explicit recovery must resolve admission, not just local ownership');
+  const recovered = (await member.getState()).server;
+  const saved = JSON.parse(await readFile(path.join(member.root, 'state.json'), 'utf8')).servers.find(server => server.id === recovered.id);
+  assert.equal(saved.snapshotId, recovered.snapshotId);
+  assert.equal(recovered.ownership.snapshotId, recovered.snapshotId);
+  assert.equal(recovered.ownership.state, 'owned');
+  assert.deepEqual(JSON.parse(await readFile(path.join(relay.root, 'host-observation.json'), 'utf8')), { ...pending, state: 'stopped' });
+  await member.parkAtRelay(); await relay.settled();
+  assert.equal((await relay.custody()).state, 'owned');
+  member.options.resolveGroupLaunchProfile = resolver;
+  await member.startGroup(pin, true);
+  assert.equal(await readFile(path.join((await member.getState()).server.serverDir, 'world.bin'), 'utf8'), 'child-final');
+  await member.stopServer();
+});
+
+test('authenticated journal recovery requires confirmation and exact local and remote evidence', async t => {
+  for (const kind of ['lost-start-ack', 'restart', 'wrong-revision', 'missing-journal', 'remote-holder']) {
+    await t.test(kind, async t => {
+      const { owner, member, relay, pin } = await fixture(t);
+      await owner.parkAtRelay();
+      if (kind === 'lost-start-ack') {
+        const gate = pauseHostAcknowledgment(relay);
+        const failed = assert.rejects(member.startGroup(pin, true));
+        try { (await gate.admitted).destroy(); } finally { gate.release(); }
+        await failed;
+      } else {
+        member.options.resolveGroupLaunchProfile = async () => ({ executable: process.execPath, args: ['-e', 'process.exit(0)'] });
+        await assert.rejects(member.startGroup(pin, true), /before stdout readiness/);
+      }
+      let app = member;
+      if (kind === 'restart' || kind === 'missing-journal') {
+        await member.close();
+        if (kind === 'missing-journal') {
+          const id = (await member.getState()).server.id;
+          await rm(path.join(member.root, 'admissions', id + '.json'));
+        }
+        app = new SeedHostApplication(member.root, member.identity);
+        await app.open(); t.after(() => app.close());
+      }
+      if (kind === 'wrong-revision') member.groupHostReservation.revision.generation++;
+      if (kind === 'remote-holder') {
+        const file = path.join(relay.root, 'host-observation.json');
+        const remote = JSON.parse(await readFile(file, 'utf8'));
+        await writeFile(file, JSON.stringify({ ...remote, owner: owner.identity.fingerprint }));
+      }
+      const before = (await app.getState()).server;
+      const observation = await readFile(path.join(relay.root, 'host-observation.json'), 'utf8');
+      await assert.rejects(app.recoverStopped(false), /Confirm/);
+      assert.deepEqual((await app.getState()).server, before);
+      assert.equal(await readFile(path.join(relay.root, 'host-observation.json'), 'utf8'), observation);
+      if (kind === 'lost-start-ack' || kind === 'restart') {
+        const recovery = await app.groupRecoveryStatus();
+        assert.equal(recovery.admission.deviceId, member.identity.fingerprint);
+        assert.equal(recovery.admission.relayFingerprint, pin);
+        assert.deepEqual(recovery.admission.revision, {
+          generation: recovery.remote.observation.generation, snapshotId: recovery.remote.observation.snapshotId,
+          lineage: recovery.remote.observation.lineage, reservation: recovery.remote.observation.reservation,
+        });
+        await app.recoverStopped(true);
+        const after = (await app.getState()).server;
+        assert.equal(after.ownership.state, 'owned');
+        assert.equal(after.state, 'offline', 'recovery cannot execute');
+        assert.equal(JSON.parse(await readFile(path.join(relay.root, 'host-observation.json'), 'utf8')).state, 'stopped');
+      } else {
+        await assert.rejects(app.recoverStopped(true), /reservation|admission|exact|custody/i);
+        assert.deepEqual((await app.getState()).server, before);
+        assert.equal(await readFile(path.join(relay.root, 'host-observation.json'), 'utf8'), observation);
+      }
+    });
+  }
+});
+
+test('failed Park preflight stays owned unchanged and confirmed stopped recovery permits subsequent Start', async t => {
+  const { owner, member, relay, pin } = await fixture(t);
+  await owner.parkAtRelay();
+  const resolver = member.options.resolveGroupLaunchProfile;
+  member.options.resolveGroupLaunchProfile = async () => ({ executable: process.execPath, args: ['-e', 'process.exit(0)'] });
+  await assert.rejects(member.startGroup(pin, true), /before stdout readiness/);
+  await member.ledger().recoverStopped(true); // reproduce old local-only recovery then refused Park
+  const before = (await member.getState()).server;
+  const custody = await relay.custody();
+  const observation = await readFile(path.join(relay.root, 'host-observation.json'), 'utf8');
+  await assert.rejects(member.parkAtRelay(), /pending/i);
+  assert.deepEqual((await member.getState()).server, before, 'preflight cannot snapshot, offer, or alter owned authority');
+  assert.equal(before.ownership.state, 'owned');
+  assert.equal(before.ownership.offer, undefined);
+  assert.deepEqual(await relay.custody(), custody);
+  assert.equal(await readFile(path.join(relay.root, 'host-observation.json'), 'utf8'), observation);
+  await member.ledger().markUncertain();
+  await member.recoverStopped(true);
+  assert.equal((await member.getState()).server.ownership.state, 'owned');
+  assert.equal(JSON.parse(await readFile(path.join(relay.root, 'host-observation.json'), 'utf8')).state, 'stopped');
+  member.options.resolveGroupLaunchProfile = resolver;
+  await member.startGroup(pin, true);
+  assert.equal((await member.getState()).server.state, 'running');
+  await member.stopServer();
+});
+
+test('lost explicit stopped acknowledgment retains uncertainty and exact reservation for confirmed retry', async t => {
+  const { owner, member, relay, pin } = await fixture(t);
+  await owner.parkAtRelay();
+  member.options.resolveGroupLaunchProfile = async () => ({ executable: process.execPath, args: ['-e', 'process.exit(0)'] });
+  await assert.rejects(member.startGroup(pin, true), /before stdout readiness/);
+  const reservation = member.groupHostReservation.revision.reservation;
+  const gate = pauseHostAcknowledgment(relay);
+  const recovery = assert.rejects(member.recoverStopped(true), /unresolved|unreachable/i);
+  (await gate.admitted).destroy(); gate.release(); await recovery;
+  assert.equal((await member.getState()).server.ownership.state, 'uncertain');
+  assert.equal(member.groupHostReservation.revision.reservation, reservation);
+  assert.equal(JSON.parse(await readFile(path.join(relay.root, 'host-observation.json'), 'utf8')).state, 'stopped');
+  await assert.rejects(member.parkAtRelay(), /ownership/i);
+  await member.recoverStopped(true);
+  assert.equal((await member.getState()).server.ownership.state, 'owned');
+  await member.parkAtRelay();
+});
+
+test('explicit stopped recovery refuses a tracked live group process', async t => {
+  const { owner, member, pin } = await fixture(t);
+  await owner.parkAtRelay(); await member.startGroup(pin, true);
+  const before = (await member.getState()).server;
+  await assert.rejects(member.recoverStopped(true), /Stop the server/i);
+  assert.deepEqual((await member.getState()).server, before);
+  await member.stopServer();
+});
+
 test('legacy pending admission fences Claim even when recovered custody appears parked', async t => {
   const { owner, member, relay, pin } = await fixture(t);
   await owner.parkAtRelay(); await relay.settled();

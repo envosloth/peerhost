@@ -43,6 +43,8 @@ export class OwnershipLedger {
       if(db.prepare('PRAGMA journal_mode').get()?.journal_mode!=='delete'||db.prepare('PRAGMA synchronous').get()?.synchronous!==3)throw new Error('Ownership durability unavailable: DELETE journal and synchronous EXTRA are required');
       db.exec('CREATE TABLE IF NOT EXISTS ownership (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL) STRICT');
       db.exec('CREATE TABLE IF NOT EXISTS accepted_offers (id TEXT PRIMARY KEY) STRICT');
+      db.exec('CREATE TABLE IF NOT EXISTS accepted_offer_details (id TEXT PRIMARY KEY, data TEXT NOT NULL) STRICT');
+      db.exec('CREATE TABLE IF NOT EXISTS withdrawn_offers (id TEXT PRIMARY KEY, data TEXT NOT NULL) STRICT');
       return db;
     }catch(error){
       db.close();
@@ -86,6 +88,56 @@ export class OwnershipLedger {
       return this.readState(db)?.acceptedOfferId===offerId;
     }finally{db.close();}
   }
+  /**
+   * The durable acceptance record for a replayable park: the exact stored offer details plus whether this
+   * acceptance predates the details table. Relays accepted before the details table existed have no exact
+   * metadata to compare, so a replay of those records fails closed (explicit operator recovery required).
+   */
+  async acceptedOfferDetails(offerId:string):Promise<{offer:TransferOffer;durable:boolean;custody:{lineage?:string;generation:number}}|null>{
+    try{await access(this.file);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return null;throw error;}
+    const db=this.openDatabase();
+    try{
+      const detail=db.prepare('SELECT data FROM accepted_offer_details WHERE id = ?').get(offerId);
+      if(detail){
+        // Detail rows without an ownership row are not replayable evidence: fail closed with the typed null.
+        const state=this.readState(db);
+        if(!state)return null;
+        return {offer:JSON.parse(detail.data as string),durable:true,custody:state};
+      }
+      const state=this.readState(db);
+      if(state?.acceptedOfferId===offerId&&state.offer)return {offer:state.offer,durable:false,custody:state};
+      return null;
+    }finally{db.close();}
+  }
+  async hasWithdrawn(offerId:string):Promise<boolean>{
+    try{await access(this.file);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return false;throw error;}
+    const db=this.openDatabase();
+    try{return !!db.prepare('SELECT 1 FROM withdrawn_offers WHERE id = ?').get(offerId);}finally{db.close();}
+  }
+  /** Must also run under the relay's cross-process admission/acceptance lock. Never restore source authority here. */
+  async withdrawIncoming(offer:TransferOffer,authenticatedSource:string):Promise<{disposition:'accepted'|'withdrawn';custody:OwnershipState}>{
+    if(!offer || offer.source!==authenticatedSource || offer.target!==this.deviceId || offer.source===offer.target ||
+      typeof offer.id!=='string' || !/^[a-f0-9-]{36}$/.test(offer.id) || typeof offer.lineage!=='string' || !offer.lineage ||
+      !Number.isSafeInteger(offer.generation) || offer.generation<1 || !/^[a-f0-9]{64}$/.test(offer.snapshotId)) throw new Error('Invalid exact withdrawal offer');
+    return this.transaction<{disposition:'accepted'|'withdrawn';custody:OwnershipState}>(async(s,db)=>{
+      if(!s)throw new Error('No exact custody for withdrawal');
+      const accepted=!!db.prepare('SELECT 1 FROM accepted_offers WHERE id = ?').get(offer.id) || s.acceptedOfferId===offer.id;
+      if(accepted){
+        const detail=db.prepare('SELECT data FROM accepted_offer_details WHERE id = ?').get(offer.id);
+        if(!detail || JSON.stringify(JSON.parse(detail.data as string))!==JSON.stringify(offer))throw new Error('Exact accepted offer details mismatch or unavailable');
+        if(s.lineage!==offer.lineage || s.generation<offer.generation)throw new Error('Accepted history custody mismatch');
+        return {state:s,value:{disposition:'accepted' as const,custody:s}};
+      }
+      const previous=db.prepare('SELECT data FROM withdrawn_offers WHERE id = ?').get(offer.id);
+      if(previous){
+        if(JSON.stringify(JSON.parse(previous.data as string))!==JSON.stringify(offer))throw new Error('Withdrawal exact offer mismatch');
+        return {state:s,value:{disposition:'withdrawn' as const,custody:s}};
+      }
+      if(s.state!=='transferred' || s.owner!==authenticatedSource || s.offer || s.lineage!==offer.lineage || s.generation+1!==offer.generation)throw new Error('Withdrawal requires exact checked-out holder custody');
+      db.prepare('INSERT INTO withdrawn_offers(id,data) VALUES (?,?)').run(offer.id,JSON.stringify(offer));
+      return {state:s,value:{disposition:'withdrawn' as const,custody:s}};
+    });
+  }
   private async transaction<T>(change:(s:OwnershipState|undefined,db:DatabaseSync)=>Promise<{state:OwnershipState,value:T}>):Promise<T>{
     await mkdir(path.dirname(this.file),{recursive:true});
     const db=this.openDatabase();
@@ -124,8 +176,10 @@ export class OwnershipLedger {
     if(offer.snapshotId!==verifiedSnapshotId)throw new Error('Verified revision does not match offer');
     if(!Number.isSafeInteger(offer.generation)||offer.generation<1||typeof offer.id!=='string'||offer.id.length>128||typeof offer.lineage!=='string'||!offer.lineage||offer.lineage.length>128)throw new Error('Invalid ownership offer');
     await this.transaction(async (s,db)=>{
+      if(db.prepare('SELECT 1 FROM withdrawn_offers WHERE id = ?').get(offer.id)) throw new Error('Ownership offer was durably withdrawn');
       if(!canAcceptOffer(s,offer,authenticatedSource,this.deviceId))throw new Error('Stale or conflicting ownership offer');
       db.prepare('INSERT OR IGNORE INTO accepted_offers (id) VALUES (?)').run(offer.id);
+      db.prepare('INSERT OR IGNORE INTO accepted_offer_details (id,data) VALUES (?,?)').run(offer.id,JSON.stringify(offer));
       return {state:{version:1,lineage:offer.lineage,owner:this.deviceId,generation:offer.generation,snapshotId:offer.snapshotId,state:'owned',acceptedOfferId:offer.id},value:undefined};
     });
   }
@@ -138,6 +192,16 @@ export class OwnershipLedger {
       if(!s||s.owner!==this.deviceId||s.state!=='offered'||s.offer?.id!==offerId||s.offer.target!==authenticatedTarget)throw new Error('Ownership cancellation mismatch');
       const {offer:_withdrawn,...rest}=s;
       return {state:{...rest,state:'owned'},value:undefined};
+    });
+  }
+  async reconcileRecoveryOffer(offer:TransferOffer,authenticatedTarget:string,disposition:'accepted'|'withdrawn'):Promise<void>{
+    await this.transaction(async s=>{
+      if(!s || s.owner!==this.deviceId || !['offered','uncertain'].includes(s.state) || s.offer?.target!==authenticatedTarget ||
+        JSON.stringify(s.offer)!==JSON.stringify(offer)) throw new Error('Exact recovery offer reconciliation mismatch');
+      if(disposition==='accepted')return {state:{version:1 as const,lineage:offer.lineage,owner:authenticatedTarget,generation:offer.generation,snapshotId:offer.snapshotId,state:'transferred' as const},value:undefined};
+      if(disposition!=='withdrawn')throw new Error('Durable withdrawal receipt required');
+      const {offer:_withdrawn,...rest}=s;
+      return {state:{...rest,state:'uncertain' as const},value:undefined};
     });
   }
   async markUncertain():Promise<void>{

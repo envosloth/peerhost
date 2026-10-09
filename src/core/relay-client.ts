@@ -8,8 +8,18 @@ import { friendName } from './relay-friends-store.js';
 
 /** Relay connections start with one of these frames; `park` and `claim` then run the ordinary transfer protocol. */
 export const RELAY_PROTOCOL_VERSION = 1;
-export type RelayOperation = 'status' | 'park' | 'claim' | 'join' | 'invite' | 'friends' | 'gateway-status' | 'game-tunnel' | 'public-status' | 'public-enable' | 'public-disable' | 'remove-friend' | 'invite-for' | 'disband' | 'disband-status' | 'initial-publish' | 'host-start' | 'host-running' | 'host-cancel' | 'host-stopped';
+export type RelayOperation = 'withdraw-offer' | 'recovery-status' | 'status' | 'park' | 'claim' | 'join' | 'invite' | 'friends' | 'gateway-status' | 'game-tunnel' | 'public-status' | 'public-enable' | 'public-disable' | 'remove-friend' | 'invite-for' | 'disband' | 'disband-status' | 'initial-publish' | 'host-start' | 'host-running' | 'host-cancel' | 'host-stopped';
 export const relayRequest = (op: RelayOperation) => ({ type: 'relay', version: RELAY_PROTOCOL_VERSION, op });
+
+/** The only hostnames this app's public addresses take; shared by the relay store and its clients. */
+export const HOST_ENDPOINT_ADDRESS = /^[a-z0-9][a-z0-9-]{0,62}\.(?:tun\.ply\.gg|joinmc\.link)$/;
+export interface HostEndpoint { address: string; verifiedAt: number }
+export function validHostEndpoint(value: unknown): value is HostEndpoint {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.address === 'string' && HOST_ENDPOINT_ADDRESS.test(record.address) &&
+    Number.isSafeInteger(record.verifiedAt) && (record.verifiedAt as number) > 0;
+}
 
 export interface RelayCustody {
   /** Fingerprint of the current authority: the relay itself while parked, otherwise the PC that claimed it. */
@@ -20,7 +30,7 @@ export interface RelayCustody {
   /** Set while a claim is waiting for that PC's acknowledgment. Only that PC can complete (retry) it. */
   pendingTarget: string | null;
 }
-export interface RelayStatus extends RelayCustody { ownerName: string | null; pendingName: string | null; /** True only with a current authenticated host control session; null means unknown, never idle. */ hosting: true | null; /** Null for older relays: absence never proves no pending admission. */ pendingStart: boolean | null }
+export interface RelayStatus extends RelayCustody { ownerName: string | null; pendingName: string | null; /** True only with a current authenticated host control session; null means unknown, never idle. */ hosting: true | null; /** Null for older relays: absence never proves no pending admission. */ pendingStart: boolean | null; /** The verified join address the current host session published, or null. Only meaningful while `hosting` is true. */ holderEndpoint: HostEndpoint | null }
 export type RelayFriendsCustody = 'unknown' | 'parked' | 'pending' | 'held';
 export interface RelayFriends {
   canManage: boolean;
@@ -151,7 +161,41 @@ function parseStatus(frame: unknown): RelayStatus | null {
   return { owner: custody.owner, state: custody.state as RelayCustody['state'], generation: custody.generation as number,
     snapshotId: custody.snapshotId, pendingTarget: custody.pendingTarget as string | null,
     ownerName: name(reply.ownerName), pendingName: name(reply.pendingName), hosting: reply.hosting === true ? true : null,
-    pendingStart: typeof reply.pendingStart === 'boolean' ? reply.pendingStart : null };
+    pendingStart: typeof reply.pendingStart === 'boolean' ? reply.pendingStart : null,
+    // Lenient: a missing or malformed endpoint is simply "not published", never a reply failure.
+    holderEndpoint: validHostEndpoint(reply.holderEndpoint) ? reply.holderEndpoint : null };
+}
+
+export async function relayWithdrawOffer(identity: PeerIdentity, relay: RelayPeer, offer: import('./ownership.js').TransferOffer) {
+  const request = { ...relayRequest('withdraw-offer'), offer };
+  const reply = await friendRequest(identity, relay, request);
+  const custody = reply.custody as import('./ownership.js').OwnershipState;
+  if (Object.keys(reply).sort().join(',') !== 'custody,disposition,offer,type' || reply.type !== 'relay-withdrawal' ||
+      !['accepted','withdrawn'].includes(reply.disposition as string) || JSON.stringify(reply.offer) !== JSON.stringify(offer) || !custody ||
+      !hex(custody.owner) || !hex(custody.snapshotId) || custody.version !== 1 || custody.lineage !== offer.lineage || !Number.isSafeInteger(custody.generation) ||
+      (reply.disposition === 'withdrawn' && (custody.owner !== identity.fingerprint || custody.state !== 'transferred' || custody.generation + 1 !== offer.generation || custody.offer)) ||
+      (reply.disposition === 'accepted' && custody.generation < offer.generation)) throw new Error('Exact durable offer withdrawal could not be verified');
+  // Read the same durable receipt again: an acknowledgment alone is not evidence of durable state.
+  const readback = await friendRequest(identity, relay, request);
+  if (JSON.stringify(readback) !== JSON.stringify(reply)) throw new Error('Withdrawal receipt changed; recovery remains blocked');
+  return { disposition: reply.disposition as 'accepted' | 'withdrawn', offer, custody };
+}
+
+export interface GroupRecoveryRemote {
+  custody: import('./ownership.js').OwnershipState;
+  observation: ({ owner: string; state: 'starting' | 'hosting' | 'cancelled' | 'stopped' } & import('./recovery-journal.js').HostingRevision) | null;
+}
+export async function relayRecoveryStatus(identity: PeerIdentity, relay: RelayPeer): Promise<GroupRecoveryRemote> {
+  const reply = await friendRequest(identity, relay, relayRequest('recovery-status'));
+  const c = reply.custody as GroupRecoveryRemote['custody'];
+  const o = reply.observation as GroupRecoveryRemote['observation'];
+  if (Object.keys(reply).sort().join(',') !== 'custody,observation,type' || reply.type !== 'relay-recovery-status' ||
+      !c || c.version !== 1 || c.owner !== identity.fingerprint || c.state !== 'transferred' || c.offer ||
+      !Number.isSafeInteger(c.generation) || c.generation < 1 || !hex(c.snapshotId) || typeof c.lineage !== 'string' || !c.lineage) throw new Error('Invalid exact recovery custody');
+  if (o !== null && (!o || o.owner !== identity.fingerprint || o.generation !== c.generation || o.snapshotId !== c.snapshotId || o.lineage !== c.lineage ||
+      typeof o.reservation !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(o.reservation) ||
+      !['starting', 'hosting', 'cancelled', 'stopped'].includes(o.state))) throw new Error('Invalid exact recovery reservation');
+  return { custody: c, observation: o };
 }
 
 export async function relayHostState(identity: PeerIdentity, relay: RelayPeer, op: 'host-start' | 'host-running' | 'host-cancel' | 'host-stopped', revision: { generation: number; snapshotId: string; lineage: string; reservation: string }): Promise<void> {
@@ -159,8 +203,13 @@ export async function relayHostState(identity: PeerIdentity, relay: RelayPeer, o
   if (Object.keys(reply).sort().join(',') !== 'type' || reply.type !== 'relay-host-accepted') throw new Error('Group hosting admission could not be verified; do not retry an uncertain launch automatically');
 }
 
+export interface RelayHostSession {
+  close(): void;
+  /** Publish (or clear, with null) the verified join address on the retained session socket. Transport errors surface to the caller only. */
+  sendEndpoint(endpoint: HostEndpoint | null): Promise<void>;
+}
 /** Keep authenticated liveness separate from durable custody; a disconnect never releases the world. */
-export async function openRelayHostSession(identity: PeerIdentity, relay: RelayPeer, revision: { generation: number; snapshotId: string; lineage: string; reservation: string }): Promise<{ close(): void }> {
+export async function openRelayHostSession(identity: PeerIdentity, relay: RelayPeer, revision: { generation: number; snapshotId: string; lineage: string; reservation: string }): Promise<RelayHostSession> {
   const socket = await connectPeer(identity, relay.fingerprint, relay.host, relay.port);
   try {
     await writeFrame(socket, { ...relayRequest('host-running'), ...revision });
@@ -168,7 +217,15 @@ export async function openRelayHostSession(identity: PeerIdentity, relay: RelayP
     if (reply?.type === 'error') throw new Error(`Relay refused: ${String(reply.message).slice(0, 512)}`);
     if (!reply || Object.keys(reply).join(',') !== 'type' || reply.type !== 'relay-host-accepted') throw new Error('Group host session could not be verified');
     socket.on('error', () => {});
-    return { close: () => socket.destroy() };
+    return {
+      close: () => socket.destroy(),
+      sendEndpoint: async (endpoint) => {
+        if (endpoint !== null && !validHostEndpoint(endpoint)) throw new Error('Invalid join address: expected a verified hostname or null');
+        await writeFrame(socket, endpoint === null
+          ? { type: 'host-endpoint', address: null, verifiedAt: null }
+          : { type: 'host-endpoint', address: endpoint.address, verifiedAt: endpoint.verifiedAt });
+      },
+    };
   } catch (error) { socket.destroy(); throw error; }
 }
 

@@ -35,7 +35,11 @@ const hexKey = (v: unknown): v is string => typeof v === 'string' && /^[a-fA-F0-
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export type PublicState = 'off' | 'unsupported' | 'downloading' | 'approve' | 'starting' | 'creating' | 'pending' | 'reserved' | 'reachable' | 'error';
-export interface PublicStatus { state: PublicState; address: string | null; detail: string; approveUrl: string | null }
+export type PublicReadiness = 'off' | 'checking' | 'reserved' | 'verified' | 'missing-binding' | 'route-changed' | 'dns-failure' | 'provider-failure' | 'agent-failure' | 'game-failure';
+export type PublicRepairAction = 'review-provider-binding' | 'approve-new-agent' | 'provider-api-required';
+export interface PublicStatus { state: PublicState; /** Legacy secondary reservation, not join readiness. */ address: string | null; detail: string; approveUrl: string | null; joinAddress?: string | null; reservedAddress?: string | null; verifiedAt?: number | null; readiness?: PublicReadiness; repairAction?: PublicRepairAction | null }
+class BindingFailure extends Error { constructor(message:string, readonly readiness:PublicReadiness, readonly repairAction:PublicRepairAction) { super(message); } }
+const missingAgent = (error:unknown) => error instanceof PlayitApiRefusal && ['AgentNotFound','AgentDeleted'].includes(error.code ?? '');
 export interface PublicAddressDeps {
   vault: IdentityVault;
   /** Exact world identity for a scoped binding. Legacy unscoped tunnels are never inferred as belonging to it. */
@@ -48,7 +52,7 @@ export interface PublicAddressDeps {
   api: (key: string, route: string, payload?: unknown) => Promise<any>;
   /** Unauthenticated claim API; returns the raw {status, data} envelope. */
   claim: (route: '/claim/setup' | '/claim/exchange', payload: unknown) => Promise<{ status: string; data: unknown }>;
-  probe: (endpoint: { host: string; port: number; serverName: string }) => Promise<boolean>;
+  probe: (endpoint: { host: string; port: number; serverName: string }) => Promise<boolean | {ok:boolean;failure?:'dns-failure'|'game-failure'}>;
   /** Opens playit's approval page. Optional: a headless always-on PC hands the URL to the gaming PC instead. */
   openBrowser?: (url: string) => Promise<void>;
   /** An agent key the owner already approved (e.g. an existing playit install). Skips the browser step. */
@@ -101,6 +105,7 @@ export class PublicAddress {
   private lastCheck = 0;
   private epoch = 0;
   private checkGeneration = 0;
+  private verifiedTarget?: {host:string;port:number};
   private writing: Promise<void> = Promise.resolve();
 
   constructor(root: string, private readonly deps: PublicAddressDeps) { this.dir = path.join(root, 'public-address'); }
@@ -151,8 +156,21 @@ export class PublicAddress {
     } catch (error) { this.fail(error); }
   }
 
-  status(): PublicStatus { return { ...this.progress }; }
+  status(): PublicStatus {
+    const target = this.deps.target();
+    if (this.progress.verifiedAt != null && (!target || target.host !== this.verifiedTarget?.host || target.port !== this.verifiedTarget?.port)) {
+      this.progress = {...this.progress,state:'reserved',verifiedAt:null,readiness:'route-changed',repairAction:'review-provider-binding'};
+    }
+    const verified = this.progress.state === 'reachable' && this.progress.verifiedAt != null && Date.now() - this.progress.verifiedAt <= 30_000;
+    return { ...this.progress, state: this.progress.state === 'reachable' && !verified ? 'reserved' : this.progress.state, joinAddress: verified ? this.progress.address : null, reservedAddress: this.progress.address, verifiedAt: verified ? this.progress.verifiedAt : null, readiness: verified ? 'verified' : this.progress.state === 'reachable' ? 'reserved' : this.progress.readiness ?? (this.progress.state === 'off' ? 'off' : 'checking'), repairAction: this.progress.repairAction ?? null };
+  }
   async validateSaved(): Promise<void> { await this.read(); }
+  /** Host session/process/route changed: no cached sample or older check may advertise readiness. */
+  invalidateVerification(readiness: PublicReadiness = 'game-failure'): void {
+    ++this.checkGeneration;
+    this.verifiedTarget = undefined;
+    this.progress = {...this.progress, state:this.progress.state === 'reachable' ? 'reserved' : this.progress.state, verifiedAt:null, readiness};
+  }
   async settled(): Promise<void> { await this.running; }
   async approvedKey(): Promise<string> {
     await this.enable(); await this.settled();
@@ -179,6 +197,7 @@ export class PublicAddress {
 
   /** Turn the public address off: stop the agent. The approved agent is remembered, so turning it back on is instant. */
   async disable(): Promise<PublicStatus> {
+    this.invalidateVerification('off');
     this.cancelled = true; ++this.epoch;
     await this.stopAgent();
     // A rename already issued cannot be cancelled. Drain it before reading, then
@@ -193,7 +212,8 @@ export class PublicAddress {
 
   private fail(error: unknown): void {
     if (this.cancelled) return;
-    this.progress = { state: 'error', address: this.progress.address, detail: String((error as Error)?.message ?? error).slice(0, 300), approveUrl: null };
+    if (missingAgent(error)) { this.progress = {...this.progress,state:'error',verifiedAt:null,readiness:'agent-failure',repairAction:'approve-new-agent',approveUrl:null,detail:'playit reports the approved agent is missing. Approve a new agent explicitly; existing world and old route reservations remain protected. No replacement was created.'}; return; }
+    this.progress = { state: 'error', address: this.progress.address, detail: String((error as Error)?.message ?? error).replace(/[a-fA-F0-9]{32,}/g, '[redacted]').slice(0, 300), approveUrl: null, verifiedAt: null, readiness: error instanceof BindingFailure ? error.readiness : 'provider-failure', repairAction: error instanceof BindingFailure ? error.repairAction : null };
   }
 
   private async run(saved: Saved | null, epoch = this.epoch): Promise<void> {
@@ -293,6 +313,7 @@ export class PublicAddress {
       if (this.agent !== child) return;
       this.agent = undefined;
       if (this.stopping || this.cancelled || epoch !== this.epoch) return;
+      this.invalidateVerification('agent-failure');
       // Restart a crashed agent, at most 5 times in 10 minutes.
       const now = Date.now(); this.restarts = this.restarts.filter((t) => now - t < 600_000);
       if (this.restarts.length >= 5) { this.fail(new Error('The public address keeps stopping. Turn it off and on again.')); return; }
@@ -336,7 +357,7 @@ export class PublicAddress {
     if (!Array.isArray(list?.tunnels) || list.tunnels.length > 1000) throw new Error('Unexpected playit tunnel list');
     if (saved.target && (saved.target.host !== target.host || saved.target.port !== target.port)) throw new Error('The saved public binding targets a different Minecraft port. It was not rebound.');
     let tunnel = saved.tunnelId ? list.tunnels.find((t: any) => t.id === saved.tunnelId && this.matches(t, saved.agentId, target)) : undefined;
-    if (saved.tunnelId && !tunnel) throw new Error('The saved playit tunnel is missing or its route changed. It was not replaced or rebound.');
+    if (saved.tunnelId && !tunnel) throw new BindingFailure('The saved playit tunnel is missing or its route changed. It was not replaced or rebound. Review the exact saved tunnel in playit; automatic replacement requires a provider identity and absence proof API.', list.tunnels.some((t:any)=>t.id===saved.tunnelId) ? 'route-changed' : 'missing-binding', 'provider-api-required');
     if (!tunnel) {
       const tunnelName = saved.tunnelName ?? `Seed Hosting ${randomUUID()}`;
       // Persist the unique reservation before sending a mutation. An uncertain create must never be retried.
@@ -375,35 +396,43 @@ export class PublicAddress {
     if (!force && Date.now() - this.lastCheck < 10_000) return this.status();
     if (!['pending', 'reserved', 'reachable'].includes(this.progress.state)) return this.status();
     this.lastCheck = Date.now();
+    this.progress = { ...this.progress, verifiedAt: null, readiness: 'checking' };
     const epoch = this.epoch, check = ++this.checkGeneration;
     const saved = await this.read();
     const target = this.deps.target();
-    if (!saved?.enabled || target === null) return this.status();
+    if (!saved?.enabled || target === null) { this.progress = { ...this.progress, state: 'reserved', verifiedAt: null, readiness: 'game-failure' }; return this.status(); }
     try {
       const key = this.deps.vault.decrypt(Buffer.from(saved.encryptedKey, 'base64'));
       const list = await this.deps.api(key, '/v1/tunnels/list');
       if (epoch !== this.epoch || check !== this.checkGeneration || this.cancelled) return this.status();
+      if (!Array.isArray(list?.tunnels) || list.tunnels.length > 1000) throw new Error('Unexpected playit tunnel list');
       const tunnel = Array.isArray(list?.tunnels) ? list.tunnels.find((t: any) => t.id === saved.tunnelId && this.matches(t, saved.agentId, target)) : undefined;
       if (!tunnel || saved.target && (saved.target.host !== target.host || saved.target.port !== target.port)) {
-        this.progress = { state: 'error', address: null, detail: 'The saved playit tunnel is missing or its route changed. It was not replaced or rebound.', approveUrl: null }; return this.status();
+        this.progress = { state: 'error', address: null, detail: 'The saved playit tunnel is missing or its route changed. It was not replaced or rebound. Review the saved binding in playit; verified replacement needs provider identity and absence proof.', approveUrl: null, verifiedAt: null, readiness: list.tunnels.some((t:any)=>t.id===saved.tunnelId) ? 'route-changed' : 'missing-binding', repairAction: 'provider-api-required' }; return this.status();
       }
       if (epoch !== this.epoch || check !== this.checkGeneration || this.cancelled) return this.status();
       const address = Array.isArray(tunnel.connect_addresses) ? tunnel.connect_addresses.map((a: any) => a?.value?.address).find((a: unknown) => typeof a === 'string' && PLAYIT_HOST.test(a)) ?? null : null;
       const offline = tunnel.user_enabled === false || tunnel.disabled_by_admin === true || tunnel.origin?.details?.config_invalid ||
         (tunnel.offline_reasons != null && (!Array.isArray(tunnel.offline_reasons) || tunnel.offline_reasons.length));
-      if (!address || offline) { this.progress = { state: 'pending', address, detail: offline ? 'Connecting to playit…' : 'playit is assigning your address (usually under a minute)…', approveUrl: null }; return this.status(); }
-      const answered = await this.deps.probe({ host: address, port: 25565, serverName: address });
+      if (!address || offline) { this.progress = { state: 'pending', address, detail: offline ? 'Connecting to playit…' : 'playit is assigning your address (usually under a minute)…', approveUrl: null, readiness: offline ? 'agent-failure' : 'reserved', verifiedAt: null }; return this.status(); }
+      const result = await this.deps.probe({ host: address, port: 25565, serverName: address });
+      const answered = result === true || typeof result === 'object' && result?.ok === true;
       if (epoch !== this.epoch || check !== this.checkGeneration || this.cancelled) return this.status();
+      const currentTarget = this.deps.target();
+      if (!currentTarget || currentTarget.host !== target.host || currentTarget.port !== target.port) {
+        this.progress = {...this.progress,state:'reserved',verifiedAt:null,readiness:'route-changed',repairAction:'review-provider-binding'}; return this.status();
+      }
+      this.verifiedTarget = answered ? {...target} : undefined;
       this.progress = answered
-        ? { state: 'reachable', address, detail: 'Live. Anyone can join this address from anywhere.', approveUrl: null }
-        : { state: 'reserved', address, detail: 'Your address is ready. It answers whenever someone is hosting the world.', approveUrl: null };
-    } catch { if (epoch !== this.epoch || check !== this.checkGeneration || this.cancelled) return this.status(); this.progress = { ...this.progress, state: this.progress.address ? 'reserved' : 'pending', detail: 'Couldn’t reach playit to check the address. Reachability is not verified; it will retry.' }; }
+        ? { state: 'reachable', address, detail: 'Minecraft status verified through the public address from this PC.', approveUrl: null, verifiedAt: Date.now(), readiness: 'verified' }
+        : { state: 'reserved', address, detail: 'Address reserved; Minecraft did not answer. Recheck whenever someone is hosting the world.', approveUrl: null, verifiedAt: null, readiness: typeof result === 'object' && result?.failure === 'dns-failure' ? 'dns-failure' : 'game-failure' };
+    } catch (error) { if (epoch !== this.epoch || check !== this.checkGeneration || this.cancelled) return this.status(); if (missingAgent(error)) this.fail(error); else this.progress = { ...this.progress, state: this.progress.address ? 'reserved' : 'pending', detail: 'Couldn’t reach playit to check the address. Reachability is not verified; it will retry.', verifiedAt: null, readiness: 'provider-failure',repairAction:null }; }
     return this.status();
   }
 
   /** Runtime shutdown is not the user's off choice. Fence all continuations and
    * drain already-issued publication without clearing enabled or route ownership. */
-  async close(): Promise<void> { this.cancelled = true; ++this.epoch; this.running = undefined; await this.stopAgent(); await this.writing; this.progress = { state: 'off', address: null, detail: 'Public agent stopped on this PC.', approveUrl: null }; }
+  async close(): Promise<void> { this.invalidateVerification('off'); this.cancelled = true; ++this.epoch; this.running = undefined; await this.stopAgent(); await this.writing; this.progress = { state: 'off', address: null, detail: 'Public agent stopped on this PC.', approveUrl: null }; }
 }
 
 export interface PublicServer { id: string; playerPort: number; state: string }
@@ -492,10 +521,17 @@ export class PerServerPublicAddresses {
   private agentKey(): Promise<string> {
     return this.key ??= this.owner.approvedKey().catch(error => { this.key = undefined; throw error; });
   }
-  status(server: PublicServer): PublicStatus {
+  invalidateVerification(serverId:string, readiness:PublicReadiness='game-failure'): void {
+    this.bindings.get(serverId)?.public.invalidateVerification(readiness);
+  }
+  status(server:PublicServer):PublicStatus {
+    const status=this.serverStatus(server);
+    return {...status,joinAddress:status.state==='reachable' ? status.joinAddress ?? null : null,reservedAddress:status.reservedAddress ?? status.address,verifiedAt:status.state==='reachable' ? status.verifiedAt ?? null : null,readiness:status.readiness ?? (status.state==='off' ? 'off' : status.state==='error' ? 'provider-failure' : 'checking'),repairAction:status.repairAction ?? null};
+  }
+  private serverStatus(server: PublicServer): PublicStatus {
     const binding = this.bindings.get(server.id);
     if (!binding) return { state: 'off', address: null, detail: 'No public address is set for this server.', approveUrl: null };
-    if (binding.error || binding.port !== server.playerPort) return { state: 'error', address: null, detail: binding.error ?? 'Minecraft port changed. The saved public tunnel was not rebound.', approveUrl: null };
+    if (binding.error || binding.port !== server.playerPort) { const owner=this.owner.status(); return { state: 'error', address: null, detail: (binding.error ?? 'Minecraft port changed. The saved public tunnel was not rebound.').replace(/[a-fA-F0-9]{32,}/g,'[redacted]'), approveUrl: null,readiness:binding.port!==server.playerPort ? 'route-changed' : owner.readiness==='agent-failure' ? 'agent-failure' : 'provider-failure',repairAction:binding.port!==server.playerPort ? 'review-provider-binding' : owner.repairAction ?? null }; }
     let status = binding.public.status();
     if (status.address && [...this.bindings.entries()].some(([id, other]) => id !== server.id && other.public.status().address === status.address)) {
       return { state: 'error', address: null, detail: 'playit returned the same address for different server tunnels. No conflicting address is advertised. Check the provider bindings.', approveUrl: null };
@@ -504,7 +540,7 @@ export class PerServerPublicAddresses {
       status = this.owner.status();
       return { ...status, address: null, state: status.state === 'reserved' || status.state === 'off' ? 'starting' : status.state };
     }
-    if (status.state === 'reachable' && server.state !== 'running') return { ...status, state: 'reserved', detail: 'Address reserved. No running Minecraft process is tracked for this server on this PC.' };
+    if (status.state === 'reachable' && server.state !== 'running') { binding.public.invalidateVerification('game-failure'); return { ...status, state: 'reserved', joinAddress: null, verifiedAt: null, readiness: 'game-failure', detail: 'Address reserved. No running Minecraft process is tracked for this server on this PC.' }; }
     if (status.state === 'reserved') return { ...status, detail: 'Address reserved, but this server is not reachable through it. Start Minecraft on this PC and check again.' };
     return status;
   }

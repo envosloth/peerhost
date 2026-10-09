@@ -8,10 +8,10 @@ import { isGameVersion, isModLoader, isProjectKey, validateModSort } from './mod
 import { accountPassword, accountUsername } from './accounts.js';
 import { validateOnboarding } from './onboarding.js';
 import { validateSimpleProfileInput } from './java-arguments.js';
-const NO_PAYLOAD=new Set(['listHostingGroups','accountFriends','accountFriendRequests','accountStartGroup','accountStatus','accountRequests','accountLogout','playitStatus','playitImport','playitCheck','playitCreate','playitDisconnect','playitSetup','getState','importServer','createSnapshot','startServer','stopServer','startPeerListener','cleanUp','parkAtRelay','claimFromRelay','checkRelay','exportClientPack','createInvite','listFriends','listSnapshots','listServerVersions','discoverJava','pickJava','checkGameGateway','alwaysOnStatus','alwaysOnDisable','alwaysOnNewCode',
+const NO_PAYLOAD=new Set(['listHostingGroups','accountFriends','accountFriendRequests','accountStartGroup','accountStatus','accountRequests','accountLogout','playitStatus','playitImport','playitCheck','playitCreate','playitDisconnect','playitSetup','getState','importServer','createSnapshot','startServer','stopServer','startPeerListener','cleanUp','parkAtRelay','claimFromRelay','checkRelay','exportClientPack','createInvite','listFriends','listSnapshots','listServerVersions','discoverJava','pickJava','checkGameGateway','alwaysOnStatus','alwaysOnDisable','alwaysOnNewCode','groupRecoveryStatus',
   // Window chrome acts only on the trusted app window.
   'getWindowState','windowMinimize','windowToggleFullscreen','windowClose','quitApp','updateStatus','updateCheck','updateDownload','updateInstall']);
-const METHODS=new Set(['respondIncomingHandoff','openServerFolder','getHostingControlRoute','setHostingControlRoute','claimPendingGroup','startGroup',...DASHBOARD_METHODS,...NO_PAYLOAD,'disbandGroup','publicAddressStatus','publicAddressEnable','publicAddressDisable','publicAddressOpenApproval','accountUpdateProfile','accountRegister','accountLogin','accountSend','accountAccept','accountDecline','accountFriendSend','accountFriendAccept','accountFriendDecline','accountFriendRemove','removeFriend','saveProfile','sendCommand','saveSettings','addPeer','sendSnapshot','handoff','recoverStopped','saveRelay','addMods','removeMod','searchMods','installMod','saveModTarget','openModPage','previewInvite','joinWithInvite','saveOnboarding','restoreSnapshot','createServer','configureSimpleProfile','saveGameGateway','openSetupLink','selectServer','deleteServer','alwaysOnEnable','pairAlwaysOn','setupFabricMods','searchSetupMods']);
+const METHODS=new Set(['respondIncomingHandoff','openServerFolder','getHostingControlRoute','setHostingControlRoute','claimPendingGroup','startGroup',...DASHBOARD_METHODS,...NO_PAYLOAD,'disbandGroup','publicAddressStatus','publicAddressEnable','publicAddressDisable','publicAddressOpenApproval','accountUpdateProfile','accountRegister','accountLogin','accountSend','accountAccept','accountDecline','accountFriendSend','accountFriendAccept','accountFriendDecline','accountFriendRemove','removeFriend','saveProfile','sendCommand','saveSettings','addPeer','sendSnapshot','handoff','recoverStopped','groupRecoveryStatus','saveRelay','addMods','removeMod','searchMods','installMod','saveModTarget','openModPage','previewInvite','joinWithInvite','saveOnboarding','restoreSnapshot','createServer','configureSimpleProfile','saveGameGateway','openSetupLink','selectServer','deleteServer','alwaysOnEnable','pairAlwaysOn','setupFabricMods','searchSetupMods']);
 function boundedString(v:unknown,max:number):v is string{return typeof v==='string'&&v.length<=max&&!v.includes('\0');}
 function fingerprint(v:unknown):v is string{return typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);}
 export interface TrustedIpcContext {senderId:number;expectedSenderId:number;isMainFrame:boolean}
@@ -152,8 +152,13 @@ export function validateCall(method:unknown,payload:unknown,senderUrl:string,exp
     case 'removeMod':
       if(Object.keys(p).sort().join(',')!=='kind,name'||!isModKind(p.kind)||!isModName(p.name))throw new Error('Invalid mod name');
       return {kind:p.kind,name:p.name};
-    case 'recoverStopped':
-      if(p.confirmed!==true)throw new Error('Confirm the previous server process is stopped');return {confirmed:true};
+    case 'recoverStopped':{
+      if(Object.keys(p).some(key=>key!=='confirmed'&&key!=='id'&&key!=='epoch'))throw new Error('Invalid recovery request');
+      if(p.confirmed!==true)throw new Error('Confirm the previous server process is stopped');
+      if(p.id!==undefined&&!isServerId(p.id))throw new Error('Invalid recovery server binding');
+      if(p.epoch!==undefined&&(typeof p.epoch!=='number'||!Number.isSafeInteger(p.epoch)||(p.epoch as number)<0))throw new Error('Invalid recovery context');
+      return {confirmed:true,id:p.id??null,epoch:p.epoch??null};
+    }
     default:throw new Error('Unknown IPC method');
   }
 }

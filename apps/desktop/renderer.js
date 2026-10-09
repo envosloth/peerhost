@@ -52,6 +52,9 @@
     if (context !== relayContext) {
       relayContext = context; relayRequest++;
       relayStatus = null; relayStatusError = null;
+      // A world/relay switch invalidates the cached projection: refetch quietly so the current holder's
+      // join address is shown without waiting for a manual check. A→B→A refetches again.
+      if (context) void checkRelay(false);
     }
     return context;
   }
@@ -709,6 +712,60 @@
 
   // ---------- Setup guide: one-click always-on PC ----------
   let alwaysOnStatus = null, alwaysOnMode = null, alwaysOnPaired = '', alwaysOnTimer = null;
+  // ---------- Recovery: exact-evidence status for group worlds ----------
+  // Read-only evidence only. Nothing here starts, publishes, or recovers automatically: the explicit
+  // captured-world click and confirmation stay required, and main rechecks the context before the call.
+  let recoveryStatus = null, recoveryNotice = '', recoveryContext = '', recoveryRequest = 0;
+  function syncRecoveryContext() {
+    // The cached evidence belongs to one selected world of one hosting group; switching either clears it so
+    // another world’s verdict is never shown for this selection.
+    const context = JSON.stringify([state?.server?.id ?? null, state?.server?.group?.fingerprint ?? null]);
+    if (context !== recoveryContext) { recoveryContext = context; ++recoveryRequest; recoveryStatus = null; recoveryNotice = ''; }
+    return context;
+  }
+  async function refreshGroupRecovery() {
+    const context = syncRecoveryContext();
+    if (!bridgeReady || !state?.server?.group) { recoveryStatus = null; recoveryNotice = ''; renderGroupRecovery(); return; }
+    const request = ++recoveryRequest;
+    const current = () => request === recoveryRequest && context === recoveryContext;
+    try {
+      const result = await window.seedhost.call('groupRecoveryStatus');
+      if (!current()) return;
+      // Evidence that names another world (or another group) is refused outright: it must never stand in for
+      // this selection’s own reading.
+      if (!result || typeof result !== 'object' || result.serverId !== (state?.server?.id ?? null) || result.groupFingerprint !== (state?.server?.group?.fingerprint ?? null)) {
+        recoveryStatus = null;
+        recoveryNotice = 'The recovery evidence did not match the selected world; nothing was executed.';
+      } else {
+        recoveryStatus = result;
+        recoveryNotice = '';
+      }
+    } catch (error) {
+      if (!current()) return;
+      recoveryStatus = null; recoveryNotice = String(error?.message ?? error).slice(0, 300);
+    }
+    renderGroupRecovery();
+  }
+  function renderGroupRecovery() {
+    const el = $('group-recovery-status'), server = state?.server;
+    if (!server?.group) { el.hidden = true; el.textContent = ''; el.dataset.state = 'off'; $('group-recovery-actions').hidden = true; return; }
+    const admission = recoveryStatus?.admission ?? null, observation = recoveryStatus?.remote?.observation ?? null;
+    let text = '', stateName = 'loading';
+    if (recoveryNotice) { text = `Recovery evidence could not be read: ${recoveryNotice} Nothing was executed.`; stateName = 'blocked'; }
+    else if (!recoveryStatus) text = 'Checking recovery evidence…';
+    else if (!admission) { text = 'No acknowledged local hosting reservation (recovery journal) is recorded for this world. Recovery is blocked on this PC; nothing was executed and no identifier was guessed.'; stateName = 'blocked'; }
+    else if (observation && observation.owner && observation.owner !== state?.deviceId) { text = 'Another PC currently holds this world at the relay. Recovery on this PC is refused; let the current holder finish, or reconcile the world with them.'; stateName = 'refused'; }
+    else if (admission.stopped && observation && observation.state !== 'stopped') { text = 'The last stop was not published to the group. Use the same-PC controls below: try Stop again, or hand the world to your always-on PC (Park). Nothing was executed automatically.'; stateName = 'publication-pending'; }
+    else if (!observation || observation.state === 'cancelled') { text = 'The relay has no usable reading for this world; recovery evidence is not confirmed. Nothing was executed.'; stateName = 'blocked'; }
+    else if (observation.reservation !== admission.revision.reservation || observation.generation !== admission.revision.generation || observation.snapshotId !== admission.revision.snapshotId || observation.lineage !== admission.revision.lineage) { text = 'The relay’s hosting evidence does not match this PC’s exact reservation. Recovery stays blocked; do not guess or force it.'; stateName = 'blocked'; }
+    else { text = 'Exact local admission and relay evidence match. Confirm every previous Java / server process is stopped, then use Confirm stopped & recover.'; stateName = 'ready'; }
+    el.hidden = false; el.textContent = text; el.dataset.state = stateName;
+    const pending = stateName === 'publication-pending';
+    $('group-recovery-actions').hidden = !pending;
+    $('recovery-stop').disabled = !pending || !bridgeReady || isBusy() || !isStopped();
+    $('recovery-park').disabled = !pending || !bridgeReady || isBusy() || !isStopped() || !state?.relay;
+  }
+
   // ---------- Public address: one button on My server ----------
   // Each address belongs to the captured local server. Shared hosting has its own gateway controls.
   let publicStatus = null, publicTimer = null;
@@ -739,38 +796,65 @@
   }
   function renderPublicCard() {
     syncPublicContext();
-    const stopped = publicStatus?.state === 'reachable' && state?.server?.state !== 'running';
-    const st = stopped ? 'reserved' : publicStatus?.state ?? 'off', working = PUBLIC_WORKING.includes(st), card = $('public-card');
-    const address = ['reachable', 'reserved'].includes(st) ? publicStatus.address : null;
+    const status = publicStatus;
+    const running = state?.server?.state === 'running';
+    // A fresh verified join address is the only copyable value. The reserved address is explicit
+    // secondary data; an unverified, route-changed or stopped address is never offered for copying.
+    const join = typeof status?.joinAddress === 'string' && status.joinAddress ? status.joinAddress : null;
+    const reserved = (typeof status?.reservedAddress === 'string' && status.reservedAddress) || status?.address || null;
+    const stopped = status?.state === 'reachable' && !running;
+    const st = stopped ? 'reserved' : status?.state ?? 'off', working = PUBLIC_WORKING.includes(st), card = $('public-card');
+    const live = join && running ? join : null;
+    const ownership = state?.server?.ownership;
+    const remote = Boolean(state?.server?.group && ownership && ownership.owner && ownership.owner !== state?.deviceId && !['owned', 'hosting'].includes(ownership.state));
+    // Cheap plumbing: when the relay already told us this world's exact remote holder published a verified join
+    // address (same world-and-relay context as the multi-host card), show it instead of an unknown. Never fall
+    // back to this PC's old reserved address, which does not belong to the current host.
+    const remoteJoin = remote && typeof relayStatus !== 'undefined' && relayStatus && relayStatus.state === 'transferred' && relayStatus.owner !== state?.deviceId && relayStatus.holderEndpoint && Number.isSafeInteger(relayStatus.holderEndpoint.verifiedAt) && relayStatus.holderEndpoint.verifiedAt > 0 && typeof relayStatus.holderEndpoint.address === 'string' && relayStatus.holderEndpoint.address ? relayStatus.holderEndpoint.address : null;
+    const shownAddress = live ?? remoteJoin ?? (st === 'reserved' && !remote ? reserved : null);
+    const READINESS_DETAIL = {
+      'dns-failure': 'The address is reserved, but its DNS record is not answering yet. Recheck in a minute; nothing needs to be recreated.',
+      'game-failure': 'The address is reserved, but Minecraft did not answer through it. Start Minecraft on this PC and recheck.',
+      'provider-failure': 'Couldn’t reach playit to check the address. Reachability is not verified; a recheck retries.',
+      'agent-failure': 'playit reports the approved agent is missing. Approve a new agent explicitly; the world and its old route reservations stay protected.',
+      'missing-binding': 'The saved playit tunnel is missing. Repair needs provider review; nothing was recreated or rebound.',
+      'route-changed': 'The saved tunnel’s route changed. Review the provider binding before trusting any address.',
+    };
     card.dataset.state = st;
     card.hidden = st === 'unsupported';
-    $('public-title').textContent = address ? (st === 'reachable' ? 'Your world is open to friends 🎉' : 'Your address is ready') : working ? 'Setting up your address…' : st === 'error' ? 'That didn’t work' : 'Let friends join from anywhere';
-    $('public-detail').textContent = address
-      ? (st === 'reachable' ? 'Verified on this PC. Friends put this in Minecraft → Multiplayer → Add Server. This local address does not follow multi-host handoffs.' : stopped ? 'Address reserved. No running Minecraft process is tracked for this server on this PC.' : publicStatus.detail)
+    $('public-title').textContent = live ? 'Your world is open to friends 🎉' : remote && !working ? 'Hosted on another PC' : shownAddress ? 'Address reserved — joining is not verified' : working ? 'Setting up your address…' : st === 'error' ? 'That didn’t work' : 'Let friends join from anywhere';
+    $('public-detail').textContent = live ? 'Verified on this PC. Friends put this in Minecraft → Multiplayer → Add Server. This local address does not follow multi-host handoffs.'
+      : remoteJoin ? `Join at ${remoteJoin} — the address the current host published through the group. It changes when hosting moves to another PC.`
+      : stopped ? 'Address reserved. No running Minecraft process is tracked for this server on this PC.'
       : st === 'approve' ? 'playit.gg opened in your browser. Make a free account or log in, then click the big Approve button. Come back here after — the rest is automatic.'
       : working ? 'This takes about a minute. You don’t need to do anything.'
-      : st === 'error' ? `${publicStatus.detail} Press the button to try again.`
-      : publicStatus?.detail || 'Get an address for this server on this PC. No hosting group or helper is required. Each server needs a distinct Minecraft port.';
+      : st === 'error' ? `${status.detail} Press the button to try again.`
+      : remote && !shownAddress ? 'This world is hosted on another PC. Its current public endpoint is not available to this PC yet; any address saved on this PC is a reserved local route, not this PC’s join address.'
+      : READINESS_DETAIL[status?.readiness] ?? status?.detail ?? 'Get an address for this server on this PC. No hosting group or helper is required. Each server needs a distinct Minecraft port.';
     $('public-steps').hidden = !working;
-    const order = ['download', 'approve', 'address'], now = st === 'approve' ? 'approve' : ['downloading', 'starting'].includes(st) && !publicStatus?.approveUrl ? 'download' : 'address';
+    const order = ['download', 'approve', 'address'], now = st === 'approve' ? 'approve' : ['downloading', 'starting'].includes(st) && !status?.approveUrl ? 'download' : 'address';
     for (const li of $('public-steps').querySelectorAll('li')) {
       li.classList.toggle('is-now', li.dataset.step === now);
       li.classList.toggle('is-done', order.indexOf(li.dataset.step) < order.indexOf(now));
     }
-    $('public-live').hidden = !address;
-    $('public-value').textContent = address ?? '';
-    $('public-go').hidden = working || Boolean(address);
+    $('public-live').hidden = !shownAddress;
+    $('public-value').textContent = live ?? remoteJoin ?? '';
+    $('public-reserved').hidden = !(st === 'reserved' && reserved && reserved !== live);
+    $('public-reserved-value').textContent = st === 'reserved' && reserved ? reserved : '';
+    $('public-go').hidden = working || Boolean(shownAddress);
     $('public-go').textContent = st === 'error' ? 'Try again' : 'Get my address';
     $('public-approve').hidden = st !== 'approve';
-    $('public-port-settings').hidden = st !== 'error' || !/port/i.test(publicStatus?.detail ?? '');
-    $('public-off').hidden = !address && st !== 'error';
+    $('public-port-settings').hidden = st !== 'error' || !/port/i.test(status?.detail ?? '');
+    $('public-off').hidden = !shownAddress && st !== 'error';
     $('public-off').textContent = 'Disconnect locally';
     const blocked = !bridgeReady || isBusy() || publicBusy || !publicSelection;
     for (const id of ['public-go', 'public-approve', 'public-off', 'public-copy', 'public-port-settings']) $(id).disabled = blocked;
+    $('public-copy').disabled = blocked || !(live || remoteJoin);
     // Poll quickly while something is happening, slowly otherwise.
     const wanted = working ? 2000 : 30000;
     if (publicTimer?.ms !== wanted) { clearInterval(publicTimer?.id); publicTimer = { ms: wanted, id: setInterval(() => void refreshPublicAddress(), wanted) }; }
   }
+
   async function publicAction(method) {
     const id = syncPublicContext();
     if (!id || publicBusy || isBusy()) return;
@@ -798,7 +882,11 @@
   $('public-off').addEventListener('click', () => publicAction('publicAddressDisable'));
   $('public-approve').addEventListener('click', () => publicAction('publicAddressOpenApproval'));
   $('public-copy').addEventListener('click', async () => {
+    if ($('public-copy').disabled) return;
     const value = $('public-value').textContent; if (!value) return;
+    // A local address is copyable only while this PC runs the server; a remote address only while the live relay
+    // read still vouches for the exact remote holder — never across a world or relay switch.
+    if (state?.server?.state !== 'running' && value !== (typeof currentRemoteJoin === 'function' ? currentRemoteJoin() : null)) return;
     try { await navigator.clipboard.writeText(value); $('public-copy').textContent = 'Copied ✓'; setTimeout(() => { $('public-copy').textContent = 'Copy'; }, 2000); } catch { /* text is selectable */ }
   });
 
@@ -961,6 +1049,7 @@
     const server = state?.server;
     const blocked = !bridgeReady || isBusy();
     if (publicStatus) renderPublicCard();
+    renderGroupRecovery();
     renderAppNotices(blocked);
     renderAlwaysOn(blocked);
     const active = !isStopped() || isHosting();
@@ -1390,6 +1479,7 @@
     const ownership = server?.ownership;
     const blocked = !bridgeReady || isBusy();
     $('relay-card').hidden = !relay;
+    $('relay-join').hidden = true; $('relay-join-note').hidden = true;
     if (relay) {
       $('relay-name').textContent = relay.name;
       const atRelay = ownership?.owner === relay.fingerprint;
@@ -1409,6 +1499,16 @@
         : ownership?.state === 'offered' ? 'A hand-over is pending. Hosting has not been confirmed; check its status before retrying.'
         : here && ['owned', 'hosting'].includes(ownership?.state) ? server.state === 'running' ? 'This PC is running the server. Stop it before handing the world off.' : 'This PC owns the stopped world. Start it here, or hand it off to the always-on PC.'
         : 'Hosting is not observed here. Check the group’s world status before requesting a hand-over.';
+      // The verified join address published by the ACTIVE host session on another PC: shown only while the
+      // relay’s live status vouches for that exact holder; otherwise an honest unknown, never this PC’s old data.
+      const joinAddress = currentRemoteJoin();
+      const hostedElsewhere = Boolean(relayStatus && relayStatus.state === 'transferred' && relayStatus.owner && relayStatus.owner !== state.deviceId && relayStatus.owner !== relay.fingerprint);
+      $('relay-join').hidden = !joinAddress;
+      $('relay-join-value').textContent = joinAddress || '';
+      $('relay-join-copy').hidden = !joinAddress;
+      $('relay-join-copy').disabled = blocked || !joinAddress;
+      $('relay-join-note').hidden = !hostedElsewhere || Boolean(joinAddress);
+      $('relay-join-note').textContent = hostedElsewhere && !joinAddress ? 'The host has not published a join address yet — they can open Join address on their PC.' : '';
     }
     const select = $('relay-peer');
     const options = [['', 'None: hand off directly between PCs'], ...(state?.peers || []).map((peer) => [peer.fingerprint, `${peer.name} · ${formatEndpoint(peer.host, peer.port)}`])];
@@ -1422,6 +1522,28 @@
     }
     select.disabled = blocked;
     $('park-on-stop').disabled = blocked || !select.value;
+  }
+
+  // The verified join address the current remote holder published through the relay. Null unless the exact
+  // transferred-to-another-PC context is live; the relay only vouches for it while that host session is current.
+  function currentRemoteJoin() {
+    const status = relayStatus;
+    const relay = state?.relay;
+    if (!status || !relay || status.state !== 'transferred' || !status.owner || status.owner === state.deviceId || status.owner === relay.fingerprint) return null;
+    const endpoint = status.holderEndpoint;
+    return endpoint && Number.isSafeInteger(endpoint.verifiedAt) && endpoint.verifiedAt > 0 && typeof endpoint.address === 'string' && endpoint.address ? endpoint.address : null;
+  }
+
+  // Copy only after a live re-read: a cached projection must never copy an address the relay no longer vouches
+  // for, and a world or relay switch between render and click must never copy across contexts.
+  async function copyRelayJoin() {
+    if ($('relay-join-copy').disabled || !relayStatus || !state?.relay) return;
+    const context = syncRelayContext();
+    await checkRelay(false);
+    if (syncRelayContext() !== context) return;
+    const address = currentRemoteJoin();
+    if (!address) return;
+    try { await navigator.clipboard.writeText(address); $('relay-join-copy').textContent = 'Copied ✓'; setTimeout(() => { $('relay-join-copy').textContent = 'Copy'; }, 2000); } catch { /* text is selectable */ }
   }
 
   function renderPeerList() {
@@ -1516,10 +1638,16 @@
       return runAction(method);
     });
   }
-  $('recover-ownership').addEventListener('click', () => {
+  $('recover-ownership').addEventListener('click', async () => {
     if ($('recover-ownership').disabled) return;
-    return runAction('recoverStopped', { confirmed: true });
+    const id = state?.server?.id; if (!id) return;
+    await runAction('recoverStopped', { confirmed: true, id });
+    // Even a refused or failed attempt can change the journal; re-read the evidence instead of keeping the old verdict.
+    void refreshGroupRecovery();
   });
+  // Same-PC publication retry and Park stay inline; nothing is executed without this click.
+  $('recovery-stop').addEventListener('click', async () => { if ($('recovery-stop').disabled) return; await runAction('stopServer'); void refreshGroupRecovery(); });
+  $('recovery-park').addEventListener('click', async () => { if ($('recovery-park').disabled) return; await runAction('parkAtRelay'); void refreshGroupRecovery(); });
   async function checkRelay(foreground = true) {
     if (!state?.relay || !bridgeReady) return;
     const context = syncRelayContext();
@@ -1540,6 +1668,7 @@
     }
   }
   $('check-relay').addEventListener('click', () => { if (!$('check-relay').disabled) void checkRelay(); });
+  $('relay-join-copy').addEventListener('click', () => { void copyRelayJoin(); });
   for (const [id, method] of [['park-relay', 'parkAtRelay'], ['claim-relay', 'claimFromRelay']]) {
     $(id).addEventListener('click', async () => {
       if ($(id).disabled) return;
@@ -1807,6 +1936,9 @@
         syncPublicContext();
         bridgeReady = true;
         if (!publicStatus) void refreshPublicAddress();
+        // The evidence cache is keyed to the selected world and group; a key change clears it before this check.
+        syncRecoveryContext();
+        if (!recoveryStatus) void refreshGroupRecovery();
         if (errorKind === 'state') { $('error-banner').hidden = true; errorKind = null; }
         render();
         if (state.relay && Date.now() - friendCheckedAt > 10000 && !isBusy()) void refreshFriends();
