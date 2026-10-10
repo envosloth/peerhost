@@ -28,6 +28,27 @@ function bindScope(text: string): string {
   return scope;
 }
 
+/** Preserve interface scope for discovered link-local addresses; explicit server-ip stays exact. */
+export function deriveMinecraftProbeHosts(
+  scope: string,
+  interfaces: ReturnType<typeof networkInterfaces> = networkInterfaces(),
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  const addresses = Object.entries(interfaces).flatMap(([name, entries]) => (entries ?? []).map(entry => {
+    const address = entry.address;
+    // fe80::/10 needs a zone. Linux/libuv requires the interface name, not the numeric index.
+    // Windows uses the reported numeric scope ID when available. Never duplicate an existing zone.
+    if (!address.includes('%') && /^fe[89ab][0-9a-f]:/i.test(address)) {
+      const zone = platform === 'win32' && typeof entry.scopeid === 'number' && entry.scopeid > 0 ? entry.scopeid : name;
+      return `${address}%${zone}`;
+    }
+    return address;
+  }));
+  // Windows can permit wildcard binds beside an existing specific listener; retain every covered interface.
+  return !scope || scope === '::' ? ['0.0.0.0', ...addresses]
+    : scope === '0.0.0.0' ? ['0.0.0.0', ...addresses.filter(host => !host.includes(':'))] : [scope];
+}
+
 /** A bounded bind probe, never a service stop or a port reassignment. The child still handles races. */
 export async function preflightMinecraftPort(serverDir: string): Promise<void> {
   let text: string;
@@ -37,9 +58,7 @@ export async function preflightMinecraftPort(serverDir: string): Promise<void> {
   if (!/^\d{1,5}$/.test(raw) || Number(raw) > 65535) throw new Error('Minecraft port configuration is invalid');
   // Parse bind scope with the same Java-properties decoder as the ordinary property editor.
   const scope = bindScope(text);
-  // Windows can permit wildcard binds beside an existing specific listener; probe each covered interface too.
-  const interfaces = Object.values(networkInterfaces()).flatMap(entries => entries ?? []).map(entry => entry.address);
-  const hosts = !scope || scope === '::' ? ['0.0.0.0', ...interfaces] : scope === '0.0.0.0' ? ['0.0.0.0', ...interfaces.filter(host => !host.includes(':'))] : [scope];
+  const hosts = deriveMinecraftProbeHosts(scope);
   for (const host of new Set(hosts)) {
     const probe = createServer();
     await new Promise<void>((resolve, reject) => {
